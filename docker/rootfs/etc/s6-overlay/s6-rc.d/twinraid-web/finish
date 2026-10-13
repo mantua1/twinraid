@@ -1,0 +1,7 @@
+#!/bin/sh
+# Exit-Code 2 bedeutet "Startfehler": nicht endlos neu starten, sondern den
+# Container mit diesem Code beenden. $1 ist der Exit-Code des Dienstes.
+if [ "$1" -eq 2 ]; then
+    echo 2 > /run/s6-linux-init-container-results/exitcode
+    exec /run/s6/basedir/bin/halt
+fi

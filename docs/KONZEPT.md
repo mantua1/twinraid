@@ -187,6 +187,7 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 - Der manuelle Sync bleibt jederzeit möglich (außer während eines laufenden Syncs).
 - Der nächste geplante Lauf wird im Dashboard angezeigt.
 - Fehler lösen optional eine Unraid-Benachrichtigung über die API aus.
+- **Hinweis für Phase 6:** Cron-Ausdrücke haben die übliche Crontab-Bedeutung (Wochentag `0` = Sonntag). APScheduler 3.x zählt in `CronTrigger.from_crontab()` den Wochentag ab Montag (`0` = Montag). Die Zeitsteuerung muss das umrechnen, sonst läuft „sonntags 03:00“ montags. In Phase 1 wird nur die Syntax geprüft.
 
 ---
 
@@ -251,15 +252,27 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 - **Unix-Socket:** `/run/twinraid/worker.sock`. Verzeichnis `0750`, Socket `0660`, Gruppe 10001. Der Worker prüft zusätzlich per `SO_PEERCRED`, dass der Aufrufer die UID des Web-Prozesses hat, und weist alle anderen ab.
 - **Capabilities:** Der Container startet mit `--cap-drop=ALL` und bekommt nur die folgenden Capabilities zurück. Ein Starttest prüft die Liste: Der Container startet, beide Prozesse laufen mit den erwarteten Rechten und der Container stoppt sauber. Die Prozesse von s6 selbst behalten diese Capabilities, führen aber keine Aktionen mit Außenwirkung aus.
 
-| Capability | wofür | wer behält sie nach dem Start |
-|---|---|---|
-| `SETUID` | Web-Prozess und Startprüfung auf UID 10001 umstellen | nur s6 |
-| `SETGID` | Gruppen von Web-Prozess, Startprüfung und Worker setzen | nur s6 |
-| `SETPCAP` | Bounding-Set von Web-Prozess und Worker verkleinern | nur s6 |
-| `KILL` | s6 darf dem Web-Prozess (andere UID) beim Stoppen Signale senden | nur s6 |
-| `DAC_READ_SEARCH` | Worker liest Shares und Templates trotz fremder Dateirechte | Worker |
+| Capability | wofür | wer behält sie nach dem Start | Starttest ohne sie |
+|---|---|---|---|
+| `SETUID` | Web-Prozess und Startprüfung auf UID 10001 umstellen | nur s6 | Container startet nicht |
+| `SETGID` | Gruppen von Web-Prozess, Startprüfung und Worker setzen | nur s6 | Container startet nicht |
+| `SETPCAP` | Bounding-Set von Web-Prozess und Worker verkleinern | nur s6 | Container startet nicht |
+| `KILL` | s6 darf dem Web-Prozess (andere UID) beim Stoppen Signale senden | nur s6 | Start klappt, Stoppen nur noch per SIGKILL |
+| `DAC_READ_SEARCH` | Worker liest Shares und Templates trotz fremder Dateirechte | Worker | in Phase 1 ohne Wirkung, ab Phase 5 nötig |
 
-Die Tabelle ist vorläufig und wird durch den Starttest in Phase 1 bestätigt oder korrigiert.
+Bestätigt durch den Starttest `docker/smoke-test.sh` (Phase 1). Mit `CHECK_EACH_CAP=1` lässt er jede Capability einzeln weg. Nicht nötig sind insbesondere `CHOWN`, `FOWNER` und `DAC_OVERRIDE`.
+
+Startoptionen für Docker, entsprechend später im Unraid-Template:
+
+```
+--read-only
+--tmpfs /run:rw,exec,nosuid,nodev,mode=0755,size=16m
+--tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m
+--cap-drop=ALL
+--cap-add=SETUID --cap-add=SETGID --cap-add=SETPCAP --cap-add=KILL --cap-add=DAC_READ_SEARCH
+--security-opt=no-new-privileges
+-e TWINRAID_MODE=…
+```
 
 ### 5.5 Secrets
 
