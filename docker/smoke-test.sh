@@ -98,7 +98,8 @@ trap cleanup EXIT
 start() {
   local name="$1" skip="$2" config="$3" cap
   shift 3
-  local cap_args=() data_args=(--mount "type=volume,src=${name}-data,dst=/data")
+  # DATA_MOUNT_OPTS: zusätzliche Mount-Optionen für /data, z. B. ",volume-nocopy".
+  local cap_args=() data_args=(--mount "type=volume,src=${name}-data,dst=/data${DATA_MOUNT_OPTS:-}")
   for cap in "${CAPS[@]}"; do
     [[ "${cap}" == "${skip}" ]] || cap_args+=("--cap-add=${cap}")
   done
@@ -444,28 +445,88 @@ bad_config="${WORKDIR}/bad.yaml"
 sed 's/- medien/- system/' "${CONFIG}" >"${bad_config}"
 chmod 0644 "${bad_config}"
 
+# Prüft, dass der Container aus genau dem erwarteten Grund nicht startet.
+# $1 = Bezeichnung, $2 = erwartete Logzeile (Prozess und Meldung), $3 = Konfiguration,
+# Rest = docker-run-Argumente. DATA_OWNER/DATA_MODE: /data vorher auf einem eigenen
+# Volume auf diesen Besitzer bzw. diese Rechte setzen (siehe prepare_data_volume).
 refuse() {
   local label="$1" expected="$2" config="$3"
   shift 3
-  local name="${PREFIX}-refuse-$((RANDOM))"
-  start "${name}" "" "${config}" "$@"
-  if wait_for_exit "${name}" && [[ "$(exit_code "${name}")" != "0" ]] \
-    && docker logs "${name}" 2>&1 | grep -q "${expected}"; then
+  local name="${PREFIX}-refuse-$((RANDOM))" logs code problems=()
+  if [[ -n "${DATA_OWNER:-}" ]]; then
+    prepare_data_volume "${name}-data" "${DATA_OWNER}" "${DATA_MODE}"
+    DATA_MOUNT_OPTS=",volume-nocopy" start "${name}" "" "${config}" "$@"
+  else
+    start "${name}" "" "${config}" "$@"
+  fi
+  wait_for_exit "${name}" || problems+=("still running after 30 s")
+  code="$(exit_code "${name}")"
+  # Das Log erst vollständig einlesen und dann durchsuchen. Mit pipefail scheitert
+  # "docker logs | grep -q" sonst zufällig: grep hört nach dem Treffer auf zu lesen,
+  # docker logs schreibt jede Zeile einzeln weiter und endet mit SIGPIPE (Status 141).
+  logs="$(docker logs "${name}" 2>&1)"
+  [[ "${code}" != "0" ]] || problems+=("exit code 0")
+  [[ "${logs}" == *"${expected}"* ]] || problems+=("expected log line missing: ${expected}")
+  [[ "${logs}" != *"worker listening"* ]] || problems+=("the worker started")
+  [[ "${logs}" != *"Uvicorn running"* ]] || problems+=("the web process started")
+  if [[ ${#problems[@]} -eq 0 ]]; then
     pass "refuses to start: ${label}"
   else
-    fail "did not refuse: ${label}"
-    docker logs "${name}" 2>&1 | tail -10
+    fail "did not refuse as expected: ${label} (exit code ${code}): $(printf '%s; ' "${problems[@]}")"
+    printf '%s\n' "${logs}" | sed 's/^/      | /'
   fi
   docker rm -f "${name}" >/dev/null
 }
-refuse "TWINRAID_MODE missing" "TWINRAID_MODE is not set" "${CONFIG}"
-refuse "TWINRAID_MODE invalid" "invalid value" "${CONFIG}" -e TWINRAID_MODE=produktion
-refuse "forbidden share in config" "must never be synced" "${bad_config}" -e TWINRAID_MODE=mock
+
+# Legt ein Volume für /data mit Besitzer und Rechten an, wie sie auf dem Host stehen
+# könnten. Ein Hilfscontainer setzt sie von innen; so ist das Ergebnis mit Docker
+# mit Root-Rechten (Unraid, CI) und rootless gleich. Ein Bind-Mount eines Host-Ordners
+# wäre das nicht: Rootless erscheint der eigene Host-Benutzer im Container als root.
+# volume-nocopy ist nötig: Docker füllt ein leeres Volume sonst bei jedem Einhängen
+# mit /data aus dem Image und setzt dabei Besitzer und Rechte auf root:root 0755
+# zurück. (Bind-Mounts wie auf Unraid kennen das nicht.)
+prepare_data_volume() {
+  local volume="$1" owner="$2" mode="$3"
+  local mount="type=volume,src=${volume},dst=/data,volume-nocopy"
+  docker run --rm --network none --entrypoint chown --mount "${mount}" "${IMAGE}" "${owner}" /data
+  docker run --rm --network none --entrypoint chmod --mount "${mount}" "${IMAGE}" "${mode}" /data
+  local actual
+  actual="$(docker run --rm --network none --entrypoint stat --mount "${mount}" "${IMAGE}" -c '%u:%g %a' /data)"
+  if [[ "${actual}" != "${owner} ${mode#0}" ]]; then
+    fail "could not prepare /data as ${owner} ${mode} (got ${actual})"
+  fi
+}
+
+unreadable_config="${WORKDIR}/unreadable.yaml"
+cp "${CONFIG}" "${unreadable_config}"
+chmod 0600 "${unreadable_config}"
+
+refuse "TWINRAID_MODE missing" "[preflight] twinraid.preflight: TWINRAID_MODE is not set" "${CONFIG}"
+refuse "TWINRAID_MODE invalid" "[preflight] twinraid.preflight: TWINRAID_MODE has the invalid value 'produktion'" \
+  "${CONFIG}" -e TWINRAID_MODE=produktion
+refuse "forbidden share in config" "share 'system' must never be synced" "${bad_config}" -e TWINRAID_MODE=mock
+# Die Startprüfung läuft als Web-Benutzer: Die Konfiguration muss für alle lesbar sein.
+refuse "config not readable for the web user" "file is not readable (permission denied)" \
+  "${unreadable_config}" -e TWINRAID_MODE=mock
 # Startfehler des Workers: Container hält an, statt den Dienst endlos neu zu starten.
-refuse "worker startup error (web UID 0)" "must not be 0" "${CONFIG}" -e TWINRAID_MODE=mock -e TWINRAID_WEB_UID=0
-# /data für alle beschreibbar: unsicher, Start wird mit Reparaturhinweis verweigert.
-NO_VOLUME=1 refuse "/data writable by others" "chown root:root" "${CONFIG}" -e TWINRAID_MODE=mock \
-  --tmpfs /data:rw,mode=1777
+refuse "worker startup error (web UID 0)" "[worker] twinraid.worker: TWINRAID_WEB_UID must not be 0 (root)" \
+  "${CONFIG}" -e TWINRAID_MODE=mock -e TWINRAID_WEB_UID=0
+# /data unsicher: Start wird mit Reparaturhinweis verweigert (Konzept 5.9).
+repair="On the Unraid host run: chown root:root <data dir> && chmod 755 <data dir>"
+NO_VOLUME=1 refuse "/data on tmpfs writable by others" \
+  "[init] twinraid.init: /data is writable by group or others (mode 1777); only root may write there. ${repair}" \
+  "${CONFIG}" -e TWINRAID_MODE=mock --tmpfs /data:rw,mode=1777
+# Wie ein Unraid-Share-Ordner mit Standardrechten: nobody:users (99:100), 0777.
+DATA_OWNER=99:100 DATA_MODE=0777 refuse "/data owned by nobody:users like an Unraid share" \
+  "[init] twinraid.init: /data is owned by uid 99, expected uid 0 (root). ${repair}" \
+  "${CONFIG}" -e TWINRAID_MODE=mock
+# Besitzer korrigiert, Rechte vergessen.
+DATA_OWNER=0:0 DATA_MODE=0777 refuse "/data owned by root but writable by others" \
+  "[init] twinraid.init: /data is writable by group or others (mode 0777); only root may write there. ${repair}" \
+  "${CONFIG}" -e TWINRAID_MODE=mock
+DATA_OWNER=0:0 DATA_MODE=0775 refuse "/data owned by root but writable by its group" \
+  "[init] twinraid.init: /data is writable by group or others (mode 0775)" \
+  "${CONFIG}" -e TWINRAID_MODE=mock
 
 # --- 16. Modus real nur lesend (Konzept 6.4) ----------------------------------------------------
 # Server-Adressen aus TEST-NET-1 (RFC 5737): Sie werden nie geroutet, es wird also
