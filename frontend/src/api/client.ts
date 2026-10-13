@@ -108,6 +108,11 @@ async function logout(): Promise<void> {
   }
 }
 
+/** Bestätigt den Hinweis zum CA-Wechsel (sendet keine Daten, nur das CSRF-Token). */
+async function acknowledgeCaChange(): Promise<void> {
+  await request("/api/tls/ca-change/acknowledge", { method: "POST" });
+}
+
 async function session(signal?: AbortSignal): Promise<SessionInfo> {
   const info = await getJson<SessionInfo>("/api/auth/session", signal);
   setCsrfToken(info.csrf_token);
@@ -123,4 +128,5 @@ export const api = {
   audit: async (signal?: AbortSignal) =>
     (await getJson<{ entries: AuditEntry[] }>("/api/audit", signal)).entries,
   tls: (signal?: AbortSignal) => getJson<TlsInfo>("/api/tls", signal),
+  acknowledgeCaChange,
 };

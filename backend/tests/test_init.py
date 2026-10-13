@@ -2,6 +2,7 @@
 
 import os
 from datetime import UTC, datetime, timedelta
+from ipaddress import ip_address
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,8 @@ from cryptography import x509
 
 from tests.conftest import EXAMPLE_CONFIG
 from twinraid.init import main
+from twinraid.shared import addresses
+from twinraid.shared.addresses import InterfaceAddress
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.tls import certificate_info, read_runtime
 
@@ -126,3 +129,116 @@ def test_leaf_is_first_in_chain(env: Path) -> None:
     chain = x509.load_pem_x509_certificates((env / "run-tls" / "cert.pem").read_bytes())
     assert len(chain) == 2
     assert chain[0].issuer == chain[1].subject
+
+
+# --- Eigene Adresse und CA-Wechsel (Konzept 5.1 und 5.2) ---------------------------------
+
+
+def _interfaces(monkeypatch: pytest.MonkeyPatch, *entries: tuple[str, str]) -> None:
+    found = [InterfaceAddress(name, ip_address(address)) for name, address in entries]
+    monkeypatch.setattr(addresses, "interface_addresses", lambda: list(found))
+
+
+def test_init_detects_and_logs_the_address(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main([]) == 0
+    assert "TLS address: 192.168.10.20 (detected on eth0)" in capsys.readouterr().err
+    state = read_runtime(env / "run-tls")
+    assert state.addresses is not None
+    assert state.addresses.origin == "detected"
+    assert state.addresses.interface == "eth0"
+    assert certificate_info(state.leaf).ip_addresses == {"192.168.10.20"}
+    assert state.ca_change is None
+
+
+@pytest.mark.parametrize(
+    ("entries", "message"),
+    [
+        (
+            (("lo", "127.0.0.1"),),
+            "No usable IPv4 address found for TwinRaid (found: 127.0.0.1 on lo)",
+        ),
+        (
+            (("lo", "127.0.0.1"), ("eth0", "192.168.10.20"), ("eth1", "172.18.0.2")),
+            "Several usable IPv4 addresses found (192.168.10.20 on eth0, 172.18.0.2 on eth1)",
+        ),
+    ],
+)
+def test_init_refuses_without_a_unique_address(
+    env: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    entries: tuple[tuple[str, str], ...],
+    message: str,
+) -> None:
+    _interfaces(monkeypatch, *entries)
+    assert main([]) == 1
+    err = capsys.readouterr().err
+    assert message in err
+    assert "will not start" in err
+    assert not (env / "run-tls" / "cert.pem").exists()
+
+
+def test_init_warns_about_a_bridge_network(
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _interfaces(monkeypatch, ("lo", "127.0.0.1"), ("eth0", "172.17.0.2"))
+    assert main([]) == 0
+    err = capsys.readouterr().err
+    assert "PROBABLY THE WRONG NETWORK TYPE" in err
+    assert "'Bridge' is probably selected instead of 'Custom: br0'" in err
+
+
+def test_configured_bridge_address_is_fine(
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = env / "configured.yaml"
+    text = EXAMPLE_CONFIG.read_text(encoding="utf-8")
+    marker = "    # ip_addresses:\n    #   - 192.168.10.20\n"
+    assert marker in text
+    config.write_text(text.replace(marker, "    ip_addresses:\n      - 172.17.0.2\n"))
+    monkeypatch.setenv("TWINRAID_CONFIG", str(config))
+    assert main([]) == 0
+    err = capsys.readouterr().err
+    assert "TLS address: 172.17.0.2 (configured in web.tls.ip_addresses)" in err
+    assert "WRONG NETWORK TYPE" not in err
+
+
+def test_changed_address_creates_a_new_ca_with_a_notice(
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([]) == 0
+    first = read_runtime(env / "run-tls")
+    capsys.readouterr()
+    # Im Template wurde eine andere feste IP eingetragen.
+    _interfaces(monkeypatch, ("lo", "127.0.0.1"), ("eth0", "192.168.10.21"))
+    assert main([]) == 0
+    err = capsys.readouterr().err
+    assert "A NEW TWINRAID CA WAS CREATED" in err
+    assert "Reason: the TLS addresses have changed." in err
+    assert "Install the new CA certificate on ALL devices" in err
+    state = read_runtime(env / "run-tls")
+    assert state.ca is not None
+    assert state.ca != first.ca
+    assert state.ca_change is not None
+    assert state.ca_change.reason == "addresses_changed"
+    assert state.ca_change.ca_fingerprint == certificate_info(state.ca).fingerprint
+    stored = DataPaths(env / "data").tls_ca_change
+    assert stored.stat().st_mode & 0o777 == 0o600
+    # Der Hinweis bleibt über Neustarts erhalten, bis er bestätigt wird.
+    assert main([]) == 0
+    assert read_runtime(env / "run-tls").ca_change == state.ca_change
+    assert "A NEW TWINRAID CA WAS CREATED" not in capsys.readouterr().err
+
+
+def test_refresh_fails_safely_without_an_address(
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main([]) == 0
+    before = _served_fingerprint(env)
+    _interfaces(monkeypatch, ("lo", "127.0.0.1"))
+    assert main(["--refresh-tls"]) == 1
+    assert "Automatic TLS renewal failed: No usable IPv4 address" in capsys.readouterr().err
+    state = read_runtime(env / "run-tls")
+    assert certificate_info(state.leaf).fingerprint == before
+    assert state.renewal_failed_at is not None
+    assert state.addresses is not None

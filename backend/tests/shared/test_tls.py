@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509 import verification
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from twinraid.config.models import TlsConfig
+from twinraid.shared.addresses import TlsAddresses, configured
 from twinraid.shared.datadirs import DataPaths, prepare_data_dirs
 from twinraid.shared.tls import (
     LEGACY_REASON,
@@ -33,10 +33,10 @@ from twinraid.shared.tls import (
 
 NOW = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
 GID = os.getgid()
-TLS = TlsConfig(ip_addresses=[ip_address("192.168.10.20")], hostnames=["twinraid.home.arpa"])
-TLS_NO_HOSTNAME = TlsConfig(ip_addresses=[ip_address("192.168.10.20")], hostnames=[])
+TLS = configured([ip_address("192.168.10.20")], ["twinraid.home.arpa"])
+TLS_NO_HOSTNAME = configured([ip_address("192.168.10.20")], [])
 type ServerName = x509.DNSName | x509.IPAddress
-LOOPBACK = TlsConfig(ip_addresses=[ip_address("127.0.0.1")], hostnames=["localhost"])
+LOOPBACK = configured([ip_address("127.0.0.1")], ["localhost"])
 
 
 @pytest.fixture
@@ -52,7 +52,7 @@ def paths(tmp_path: Path) -> DataPaths:
 def _activate(
     paths: DataPaths,
     tmp_path: Path,
-    tls: TlsConfig = TLS,
+    tls: TlsAddresses = TLS,
     now: datetime = NOW,
     renew_server: bool = False,
     new_ca: bool = False,
@@ -63,7 +63,7 @@ def _activate(
 
 
 def _ca_and_key(
-    tls: TlsConfig = TLS, now: datetime = NOW
+    tls: TlsAddresses = TLS, now: datetime = NOW
 ) -> tuple[x509.Certificate, ec.EllipticCurvePrivateKey]:
     ca_pem, key_pem = generate_ca(tls, now)
     key = serialization.load_pem_private_key(key_pem, password=None)
@@ -72,7 +72,7 @@ def _ca_and_key(
 
 
 def _server(
-    tls: TlsConfig, ca: x509.Certificate, key: ec.EllipticCurvePrivateKey, now: datetime = NOW
+    tls: TlsAddresses, ca: x509.Certificate, key: ec.EllipticCurvePrivateKey, now: datetime = NOW
 ) -> x509.Certificate:
     return x509.load_pem_x509_certificate(generate_server(tls, ca, key, now)[0])
 
@@ -132,7 +132,7 @@ def test_ca_without_hostnames_allows_no_real_dns_name() -> None:
 
 
 def test_ipv6_constraint_is_a_single_address() -> None:
-    tls = TlsConfig(ip_addresses=[ip_address("fd00::20")], hostnames=[])
+    tls = configured([ip_address("fd00::20")], [])
     ca, _ = _ca_and_key(tls)
     constraints = ca.extensions.get_extension_for_class(x509.NameConstraints).value
     assert x509.IPAddress(ip_network("fd00::20/128")) in (constraints.permitted_subtrees or ())
@@ -200,18 +200,18 @@ def test_chain_verifies_for_own_addresses(
     ("tls", "name"),
     [
         (
-            TlsConfig(ip_addresses=[ip_address("192.168.10.21")], hostnames=[]),
+            configured([ip_address("192.168.10.21")], []),
             x509.IPAddress(ip_address("192.168.10.21")),
         ),
         (
-            TlsConfig(ip_addresses=[ip_address("10.0.0.1")], hostnames=["bank.example"]),
+            configured([ip_address("10.0.0.1")], ["bank.example"]),
             x509.DNSName("bank.example"),
         ),
     ],
 )
 @pytest.mark.parametrize("ca_tls", [TLS, TLS_NO_HOSTNAME])
 def test_ca_cannot_vouch_for_foreign_addresses(
-    ca_tls: TlsConfig, tls: TlsConfig, name: ServerName
+    ca_tls: TlsAddresses, tls: TlsAddresses, name: ServerName
 ) -> None:
     """Ein gestohlener CA-Schlüssel taugt nur für die eigenen Adressen."""
     ca, key = _ca_and_key(ca_tls)
@@ -359,9 +359,9 @@ def test_new_ca_on_request_also_renews_the_server(paths: DataPaths, tmp_path: Pa
 
 def test_changed_addresses_need_a_new_ca(paths: DataPaths, tmp_path: Path) -> None:
     first = _activate(paths, tmp_path)
-    changed = TlsConfig(ip_addresses=[ip_address("192.168.10.21")], hostnames=[])
+    changed = configured([ip_address("192.168.10.21")], [])
     later = _activate(paths, tmp_path, tls=changed)
-    assert later.ca_generated_because == "the addresses in web.tls have changed"
+    assert later.ca_generated_because == "the TLS addresses have changed"
     assert later.ca.fingerprint != first.ca.fingerprint
     assert later.info.ip_addresses == {"192.168.10.21"}
 
@@ -410,7 +410,7 @@ def test_refresh_failure_is_recorded(paths: DataPaths, tmp_path: Path) -> None:
 # --- Eigenes Zertifikat ------------------------------------------------------------------
 
 
-def _custom_pair(tls: TlsConfig = TLS, now: datetime = NOW) -> tuple[bytes, bytes]:
+def _custom_pair(tls: TlsAddresses = TLS, now: datetime = NOW) -> tuple[bytes, bytes]:
     ca, key = _ca_and_key(tls, now)
     return generate_server(tls, ca, key, now)
 
@@ -423,7 +423,7 @@ def _write_custom(tmp_path: Path, cert_pem: bytes, key_pem: bytes) -> None:
 
 
 def test_custom_certificate_has_priority(paths: DataPaths, tmp_path: Path) -> None:
-    other = TlsConfig(ip_addresses=[ip_address("192.168.10.99")], hostnames=[])
+    other = configured([ip_address("192.168.10.99")], [])
     cert_pem, key_pem = _custom_pair(other)
     _write_custom(tmp_path, cert_pem, key_pem)
     active = _activate(paths, tmp_path)
@@ -453,10 +453,8 @@ def test_switching_back_from_custom_restores_the_ca_download(
 
 
 def test_custom_wildcard_covers_hostname() -> None:
-    # model_construct: web.tls selbst erlaubt keine Platzhalter, ein eigenes Zertifikat schon.
-    wildcard = TlsConfig.model_construct(
-        ip_addresses=[ip_address("192.168.10.20")], hostnames=["*.home.arpa"]
-    )
+    # web.tls selbst erlaubt keine Platzhalter, ein eigenes Zertifikat schon.
+    wildcard = configured([ip_address("192.168.10.20")], ["*.home.arpa"])
     ca, key = _ca_and_key(TLS_NO_HOSTNAME)
     cert = x509.load_pem_x509_certificate(generate_server(wildcard, ca, key, NOW)[0])
     assert uncovered_hosts(certificate_info(cert), TLS) == []

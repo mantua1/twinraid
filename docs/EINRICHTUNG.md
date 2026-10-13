@@ -1,6 +1,6 @@
 # TwinRaid auf Unraid einrichten
 
-> **Stand: Version 0.3 (erste Fassung).** Diese Version zeigt den Status beider Server und der Gaming-VM an. Aktionen wie Wecken, Herunterfahren, VM starten oder Sync folgen in späteren Versionen. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
+> **Stand: Version 0.3.1 (erste Fassung).** Diese Version zeigt den Status beider Server und der Gaming-VM an. Aktionen wie Wecken, Herunterfahren, VM starten oder Sync folgen in späteren Versionen. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
 
 Diese Anleitung führt Schritt für Schritt durch die Installation auf **Unraid Klein** (dem stromsparenden Server, der immer läuft). Am Ende:
 
@@ -45,7 +45,7 @@ Notiere dir vorab diese Werte. Die Beispiele passen zur Beispielkonfiguration; d
 |---|---|---|
 | Server-Netz | `192.168.10.0/24` | UniFi: *Settings → Networks* |
 | Client-Netz | `192.168.20.0/24` | UniFi: *Settings → Networks* |
-| **Feste IP für TwinRaid** | `192.168.10.20` | Selbst wählen: eine freie Adresse im Server-Netz **außerhalb** des DHCP-Bereichs |
+| **Feste IP für TwinRaid** | `192.168.10.20` | Selbst wählen: eine freie Adresse im Server-Netz **außerhalb** des DHCP-Bereichs. Sie wird **nur im Unraid-Template** eingetragen (Schritt 4), nirgends sonst. |
 | IP von Unraid Klein | `192.168.10.10` | Unraid Klein: *Settings → Network Settings* |
 | IP von Unraid Groß | `192.168.10.11` | Unraid Groß: *Settings → Network Settings* |
 | MAC-Adresse von Unraid Groß | `AA:BB:CC:DD:EE:FF` | Unraid Groß: *Settings → Network Settings* (wird erst für Wake-on-LAN gebraucht, muss aber schon in der Konfiguration stehen) |
@@ -102,11 +102,11 @@ Steht dort `nobody users` oder beginnt die Zeile mit `drwxrwxrwx`, die beiden Be
 
 > **Hinweis zu `appdata`:** TwinRaid speichert eine kleine SQLite-Datenbank. Am zuverlässigsten liegt `appdata` auf einem Pool (z. B. Cache) mit der Share-Einstellung *Exclusive access*. Bei den Unraid-Standardeinstellungen ist das meist schon so.
 
-**3.2 Beispielkonfiguration herunterladen.** Die Version im Pfad (`v0.3.0`) passt zur installierten Version.
+**3.2 Beispielkonfiguration herunterladen.** Die Version im Pfad (`v0.3.1`) passt zur installierten Version.
 
 ```bash
 wget -O /mnt/user/appdata/twinraid/config/twinraid.yaml \
-  https://raw.githubusercontent.com/mantua1/twinraid/v0.3.0/config.example.yaml
+  https://raw.githubusercontent.com/mantua1/twinraid/v0.3.1/config.example.yaml
 chmod 644 /mnt/user/appdata/twinraid/config/twinraid.yaml
 ```
 
@@ -119,8 +119,9 @@ nano /mnt/user/appdata/twinraid/config/twinraid.yaml
 Ersetze die Beispielwerte durch deine Werte aus Schritt 1:
 
 - `web.allowed_networks`: Server-Netz und Client-Netz. Nur Geräte aus diesen Netzen dürfen TwinRaid aufrufen.
-- `web.tls.ip_addresses`: die **feste IP für TwinRaid**. Sie kommt ins Zertifikat.
+- **Die IP von TwinRaid trägst du hier nicht ein.** Sie steht nur im Unraid-Template (Schritt 4); TwinRaid erkennt sie beim Start selbst und verwendet sie für Zertifikat und Adressprüfung. Die Zeilen `# ip_addresses:` bleiben auskommentiert.
 - `web.tls.hostnames`: leer lassen (`[]`), außer du hast für TwinRaid einen Namen im DNS eingerichtet.
+- `web.port`: bleibt auskommentiert (Standard 8443, passend zum Template).
 - `servers.source.host` und `servers.target.host`: IPs von Klein und Groß.
 - `servers.*.webgui.scheme`: `http`, wenn bei dem Server *Use SSL/TLS* auf **No** steht; `https` bei **Yes**. Den Port kannst du weglassen (80 bzw. 443).
 - `servers.target.mac` und `servers.target.wol_broadcast`.
@@ -141,7 +142,7 @@ Im Simulationsmodus spricht TwinRaid keine echten Server an. So prüfst du zuers
 
 ```bash
 wget -O /boot/config/plugins/dockerMan/templates-user/my-TwinRaid.xml \
-  https://raw.githubusercontent.com/mantua1/twinraid/v0.3.0/docker/unraid-template.xml
+  https://raw.githubusercontent.com/mantua1/twinraid/v0.3.1/docker/unraid-template.xml
 ```
 
 **4.2 Container anlegen:**
@@ -149,7 +150,7 @@ wget -O /boot/config/plugins/dockerMan/templates-user/my-TwinRaid.xml \
 1. Reiter **Docker** → unten **Add Container**.
 2. Bei **Template** unter *User templates* den Eintrag **TwinRaid** wählen.
 3. **Network Type:** `Custom: br0` (ist vorausgewählt).
-4. **Fixed IP address:** die feste IP für TwinRaid aus Schritt 1.
+4. **Fixed IP address:** die feste IP für TwinRaid aus Schritt 1. Das ist die einzige Stelle, an der die IP steht.
 5. **Betriebsmodus:** `mock` lassen.
 6. **Konfiguration** und **Daten:** die vorgegebenen Pfade lassen (`/mnt/user/appdata/twinraid/config` und `…/data`).
 7. **Apply** klicken.
@@ -163,6 +164,7 @@ Die zusätzlichen Docker-Parameter (*Extra Parameters*, nur in der *Advanced Vie
 **5.1 Log ansehen:** Reiter **Docker** → Symbol *TwinRaid* → **Logs**. Du solltest unter anderem sehen:
 
 - einen deutlichen Hinweis **SIMULATION MODE ACTIVE**,
+- `TLS address: 192.168.10.20 (detected on eth0)` mit deiner festen IP. Steht hier eine andere Adresse oder eine Warnung **PROBABLY THE WRONG NETWORK TYPE**, ist im Template nicht `Custom: br0` gewählt (siehe Abschnitt 12).
 - `Generated the TwinRaid CA. Install its certificate once on your devices.`
 - `TLS CA SHA-256 fingerprint: …` und `TLS CA SHA-1 fingerprint (shown by Windows): …`
 - `No password is set. Run inside the container: twinraid-admin set-password`
@@ -384,7 +386,11 @@ Der Befehl zeigt den Fingerabdruck, den Unraid Groß gerade ausliefert. Vergleic
 | **Der Status ist gerade nicht verfügbar** | Interner Teil von TwinRaid antwortet nicht | Container-Log prüfen, Container neu starten |
 | **Live-Verbindung ist unterbrochen** | Verbindung zum Browser kurz weg (z. B. Neustart) | Verbindet sich von selbst neu |
 | **Automatische Erneuerung … fehlgeschlagen** | Neues Serverzertifikat konnte nicht erzeugt werden | Container-Log prüfen; `twinraid-admin renew-cert` |
-| Browser warnt trotz installierter CA | Falsche Datei installiert oder Adresse nicht in `web.tls` | Fingerabdruck vergleichen; Aufruf genau über die IP aus `web.tls.ip_addresses` |
+| Browser warnt trotz installierter CA | Falsche Datei installiert, alte CA installiert oder Aufruf über eine andere Adresse | Fingerabdruck vergleichen; Aufruf genau über die Adresse, die unter **Einstellungen → Adresse** steht |
+| Dashboard: **Neue TwinRaid-CA – auf allen Geräten neu installieren** | Die CA wurde ersetzt, meist weil im Template eine andere feste IP eingetragen wurde | Neues CA-Zertifikat herunterladen und auf jedem Gerät installieren (Schritt 8), das alte entfernen. Danach im Dashboard **Erledigt – Hinweis bestätigen** klicken. Der Hinweis bleibt bis dahin sichtbar. |
+| Log: `No usable IPv4 address found` | Der Container hat keine eigene Adresse, z. B. Netzwerk „None“ | Im Template **Network Type** `Custom: br0` und **Fixed IP address** eintragen |
+| Log: `Several usable IPv4 addresses found` | Der Container hängt an mehreren Netzwerken | Im Template nur `Custom: br0` verwenden; keine weiteren Netzwerke verbinden |
+| Log: **PROBABLY THE WRONG NETWORK TYPE**, Adresse beginnt mit `172.` | Im Template ist `Bridge` statt `Custom: br0` gewählt; die Adresse ist nur innerhalb von Docker gültig | Im Template **Network Type** `Custom: br0` und **Fixed IP address** wählen. (Wer bewusst Bridge nutzt, trägt die IP von Unraid Klein in `web.tls.ip_addresses` ein.) |
 | Container startet nicht | Fehler in Konfiguration oder Rechten | Ende des Container-Logs lesen; dort steht der Grund und meist der Befehl zur Reparatur. Bei `owned by uid 99` oder `writable by group or others`: unten „Rechte des Datenordners zurückgesetzt“ |
 | Unraid kann das Image nicht laden (`denied` oder `unauthorized`) | Das Paket auf ghcr.io ist noch privat | Nur direkt nach der ersten Veröffentlichung möglich: Paket öffentlich stellen (README, Abschnitt „Release veröffentlichen“) |
 
@@ -425,7 +431,7 @@ Danach den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart
 - Jedes Image wird ausschließlich von GitHub Actions aus diesem Repository gebaut und hat einen signierten Herkunftsnachweis. Prüfen kannst du ihn auf einem PC mit der GitHub-CLI (`gh`):
 
 ```bash
-gh attestation verify oci://ghcr.io/mantua1/twinraid:0.3.0 --owner mantua1
+gh attestation verify oci://ghcr.io/mantua1/twinraid:0.3.1 --owner mantua1
 ```
 
 Steht am Ende `Verification succeeded!`, stammt das Image nachweislich aus diesem Repository.

@@ -11,6 +11,7 @@ from twinraid.shared import runtime
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.logs import configure_logging, warn_if_mock
 from twinraid.shared.mode import RunModeError, resolve_run_mode
+from twinraid.shared.tls import TlsError, read_runtime
 from twinraid.web.app import WebSettings, create_app
 from twinraid.web.db import DatabaseError, WebDatabase
 from twinraid.web.worker_client import WorkerClient
@@ -47,6 +48,14 @@ def main() -> int:
         logger.error("No TLS certificate in %s; twinraid-init must run first.", tls_dir)
         return EXIT_STARTUP_ERROR
 
+    try:
+        addresses = read_runtime(tls_dir).addresses
+    except TlsError:
+        addresses = None
+    if addresses is None:
+        logger.error("No TLS addresses in %s; twinraid-init must run first.", tls_dir)
+        return EXIT_STARTUP_ERROR
+
     data_paths = DataPaths(runtime.data_dir(env))
     database = WebDatabase(data_paths.web_database)
     try:
@@ -61,6 +70,7 @@ def main() -> int:
         frontend_dir=runtime.frontend_dir(env),
         runtime_tls_dir=tls_dir,
         renewal_marker=data_paths.tls_renewal_marker,
+        addresses=addresses,
     )
     server: uvicorn.Server | None = None
 

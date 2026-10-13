@@ -15,9 +15,9 @@ import pytest
 from tests.conftest import EXAMPLE_CONFIG
 from tests.support.tls import install_test_runtime
 from twinraid import healthcheck
-from twinraid.config.models import TlsConfig
+from twinraid.shared.addresses import configured
 
-LOOPBACK = TlsConfig(ip_addresses=[ip_address("127.0.0.1")], hostnames=[])
+LOOPBACK = configured([ip_address("127.0.0.1")])
 
 
 def _write_pair(directory: Path) -> tuple[Path, Path]:
@@ -65,7 +65,11 @@ def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Pat
     cert, key = _write_pair(tmp_path / "served")
     server = TlsServer(cert, key)
     config = tmp_path / "config.yaml"
-    config.write_text(EXAMPLE_CONFIG.read_text().replace("port: 8443", f"port: {server.port}"))
+    # web.port ist optional; hier ausdrücklich auf den Port des Test-Servers setzen.
+    text = EXAMPLE_CONFIG.read_text()
+    marker = "  # port: 8443"
+    assert marker in text
+    config.write_text(text.replace(marker, f"  port: {server.port}"))
     run = tmp_path / "run"
     run.mkdir()
     (run / "worker.heartbeat").touch()

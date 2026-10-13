@@ -71,9 +71,28 @@ class CaDetails(CertificateDetails):
     fingerprint_sha1: str
 
 
+class TlsAddressInfo(StrictModel):
+    """Verwendete Adressen und ihre Herkunft (Konzept 5.1)."""
+
+    ip_addresses: list[str]
+    hostnames: list[str]
+    origin: Literal["detected", "configured"]
+    interface: str | None
+
+
+class CaChangeInfo(StrictModel):
+    """Unbestätigter Hinweis: Die CA wurde ersetzt (Konzept 5.2)."""
+
+    changed_at: datetime
+    reason: Literal["addresses_changed", "expired", "requested", "unusable", "legacy_replaced"]
+
+
 class TlsInfo(StrictModel):
     source: Literal["ca", "custom"]
     server: CertificateDetails
     # None bei eigenem Zertifikat: dann gibt es keine CA zum Download.
     ca: CaDetails | None
     renewal_failed: bool
+    addresses: TlsAddressInfo
+    # None, wenn es keinen Wechsel gab oder der Hinweis bestätigt ist.
+    ca_change: CaChangeInfo | None

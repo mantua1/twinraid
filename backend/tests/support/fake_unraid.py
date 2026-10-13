@@ -10,7 +10,7 @@ from ipaddress import ip_address
 from pathlib import Path
 
 from tests.support.tls import install_test_runtime
-from twinraid.config.models import TlsConfig
+from twinraid.shared.addresses import configured
 from twinraid.shared.tls import fingerprint
 
 
@@ -75,9 +75,7 @@ class FakeUnraid:
         self.server = _QuietServer(("127.0.0.1", 0), Handler)
         if tls:
             runtime = tmp_path / "fake-unraid-tls"
-            leaf, _ca = install_test_runtime(
-                runtime, TlsConfig(ip_addresses=[ip_address("127.0.0.1")], hostnames=[])
-            )
+            leaf, _ca = install_test_runtime(runtime, configured([ip_address("127.0.0.1")]))
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.load_cert_chain(runtime / "cert.pem", runtime / "key.pem")
             self.server.socket = context.wrap_socket(self.server.socket, server_side=True)
@@ -94,7 +92,5 @@ class FakeUnraid:
 
 
 def other_certificate_fingerprint(tmp_path: Path) -> str:
-    leaf, _ = install_test_runtime(
-        tmp_path / "other-tls", TlsConfig(ip_addresses=[ip_address("127.0.0.1")], hostnames=[])
-    )
+    leaf, _ = install_test_runtime(tmp_path / "other-tls", configured([ip_address("127.0.0.1")]))
     return fingerprint(leaf)

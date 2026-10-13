@@ -5,15 +5,17 @@
 # Alle Werte hier sind Beispielwerte, keine echten Adressen.
 
 web:
-  port: 8443
+  # port: 8443                 # optional, Standard 8443; bitte nicht ändern
   allowed_networks:            # nur Clients aus diesen Netzen dürfen zugreifen
     - 192.168.10.0/24          # Server-Netz
     - 192.168.20.0/24          # Client-Netz
   session_idle_minutes: 10     # optional, Standard 10
   default_language: de         # de | en
   tls:
-    ip_addresses:              # feste IP des Containers, kommt ins Zertifikat
-      - 192.168.10.20
+    # Die IP von TwinRaid steht nur im Unraid-Template („Fixed IP address“) und
+    # wird beim Start automatisch erkannt. Nur in Sonderfällen hier festlegen:
+    # ip_addresses:
+    #   - 192.168.10.20
     hostnames: []              # optional, z. B. twinraid.home.arpa
 
 servers:

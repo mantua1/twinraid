@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { api, UnauthorizedError } from "@/api/client";
 import type { AppInfo, AuditEntry, TlsInfo } from "@/api/types";
@@ -11,6 +11,8 @@ export interface DashboardData {
   tls: TlsInfo | null;
   loading: boolean;
   infoFailed: boolean;
+  // Bestätigt den Hinweis zum CA-Wechsel und lädt Zertifikat und Verlauf neu.
+  acknowledgeCaChange: () => Promise<void>;
 }
 
 interface StaticData {
@@ -63,5 +65,19 @@ export function useDashboardData(onUnauthorized: () => void): DashboardData {
     };
   }, [onUnauthorized]);
 
-  return { ...data, stream };
+  const acknowledgeCaChange = useCallback(async () => {
+    try {
+      await api.acknowledgeCaChange();
+      const [tls, audit] = await Promise.all([api.tls(), api.audit()]);
+      setData((previous) => ({ ...previous, tls, audit }));
+    } catch (error) {
+      if (error instanceof UnauthorizedError) {
+        onUnauthorized();
+        return;
+      }
+      throw error;
+    }
+  }, [onUnauthorized]);
+
+  return { ...data, stream, acknowledgeCaChange };
 }

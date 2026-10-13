@@ -6,17 +6,26 @@ durchsuchen alle öffentlichen Antworten nach diesen Werten.
 """
 
 from twinraid.config.models import TwinRaidConfig
+from twinraid.shared.addresses import TlsAddresses
 
 
-def sensitive_values(config: TwinRaidConfig) -> frozenset[str]:
-    """Alle schützenswerten Werte als Text, inklusive üblicher Schreibweisen der MAC."""
+def sensitive_values(
+    config: TwinRaidConfig, addresses: TlsAddresses | None = None
+) -> frozenset[str]:
+    """Alle schützenswerten Werte als Text, inklusive üblicher Schreibweisen der MAC.
+
+    addresses: die verwendeten Adressen, auch wenn sie erkannt statt konfiguriert sind.
+    """
     values: set[str] = set()
     for network in config.web.allowed_networks:
         values.add(str(network))
         values.add(str(network.network_address))
 
     # Adressen aus dem Zertifikat. Loopback ist kein schützenswerter Wert.
-    values.update(str(ip) for ip in config.web.tls.ip_addresses if not ip.is_loopback)
+    ips = list(config.web.tls.ip_addresses or [])
+    if addresses is not None:
+        ips += addresses.ip_addresses
+    values.update(str(ip) for ip in ips if not ip.is_loopback)
     values.update(config.web.tls.hostnames)
 
     source = config.servers.source

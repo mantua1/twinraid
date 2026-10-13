@@ -45,6 +45,8 @@ Port = Annotated[StrictInt, Field(ge=1, le=65535)]
 
 # Standardwert für den Inaktivitäts-Timeout der Sessions (Konzept 5.3).
 DEFAULT_SESSION_IDLE_MINUTES = 10
+# Port der Weboberfläche; passt zum Unraid-Template (Konzept 6.3).
+DEFAULT_WEB_PORT = 8443
 
 
 Weekday = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -56,22 +58,23 @@ TimeZoneName = Annotated[StrictStr, AfterValidator(validate_time_zone)]
 
 
 class TlsConfig(StrictModel):
-    """Adressen für das Zertifikat und die Host-Prüfung (Konzept 5.1 und 5.2)."""
+    """Adressen für das Zertifikat und die Host-Prüfung (Konzept 5.1 und 5.2).
 
-    ip_addresses: Annotated[
-        list[TlsAddress], Field(min_length=1), AfterValidator(reject_duplicates)
-    ]
+    ip_addresses ist optional: Ohne Angabe erkennt twinraid-init die IP des
+    Containers (shared/addresses.py). Die verwendeten Adressen liefert
+    resolve_addresses(), nicht dieses Modell.
+    """
+
+    ip_addresses: (
+        Annotated[list[TlsAddress], Field(min_length=1), AfterValidator(reject_duplicates)] | None
+    ) = None
     hostnames: Annotated[
         list[Hostname], AfterValidator(reject_duplicates), Field(default_factory=list)
     ]
 
-    def allowed_hosts(self) -> frozenset[str]:
-        """Werte, die im Host-Header stehen dürfen (ohne Port)."""
-        return frozenset([*(str(ip) for ip in self.ip_addresses), *self.hostnames])
-
 
 class WebConfig(StrictModel):
-    port: Port
+    port: Port = DEFAULT_WEB_PORT
     allowed_networks: Annotated[list[IPv4Network | IPv6Network], Field(min_length=1)]
     session_idle_minutes: Annotated[StrictInt, Field(ge=1, le=720)] = DEFAULT_SESSION_IDLE_MINUTES
     default_language: Literal["de", "en"]

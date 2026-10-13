@@ -92,5 +92,5 @@ def test_render_lists_every_problem(tmp_path: Path) -> None:
         load_config(path)
     rendered = excinfo.value.render()
     assert rendered.startswith(f"Invalid configuration in {path}:")
-    assert "web.port: required key is missing" in rendered
+    assert "web.allowed_networks: required key is missing" in rendered
     assert "sync.shares: required key is missing" in rendered

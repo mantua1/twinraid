@@ -11,10 +11,13 @@ from pathlib import Path
 
 from twinraid.config import load_config
 from twinraid.config.sensitive import sensitive_values
+from twinraid.shared.tls import read_runtime
 
 FRONTEND_DIR = Path("/app/frontend")
 
 config = load_config(Path("/config/twinraid.yaml"))
+# Auch eine erkannte Adresse (statt konfiguriert) darf nie öffentlich erscheinen.
+addresses = read_runtime(Path("/run/twinraid-tls")).addresses
 paths = ["/health", "/api/auth/state"]
 for file in sorted(FRONTEND_DIR.rglob("*")):
     if file.is_file():
@@ -24,7 +27,7 @@ print(
     json.dumps(
         {
             "paths": paths,
-            "needles": sorted(value.lower() for value in sensitive_values(config)),
+            "needles": sorted(value.lower() for value in sensitive_values(config, addresses)),
             "source_name": config.servers.source.name,
         }
     )

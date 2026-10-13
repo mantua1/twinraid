@@ -303,7 +303,7 @@ def test_webgui_default_ports(
 
 def test_tls_from_example() -> None:
     tls = load_config(EXAMPLE_CONFIG).web.tls
-    assert [str(ip) for ip in tls.ip_addresses] == ["192.168.10.20"]
+    assert tls.ip_addresses is None
     assert tls.hostnames == []
 
 
@@ -318,12 +318,11 @@ def test_tls_hostnames_are_optional_and_lowercased(tmp_path: Path) -> None:
 def test_tls_allows_loopback_and_ipv6(tmp_path: Path) -> None:
     data = _with("web.tls.ip_addresses", ["127.0.0.1", "fd00:10::20"])
     tls = _load(tmp_path, data).web.tls
-    assert tls.allowed_hosts() == {"127.0.0.1", "fd00:10::20"}
+    assert [str(ip) for ip in tls.ip_addresses or []] == ["127.0.0.1", "fd00:10::20"]
 
 
-def test_allowed_hosts_combines_ips_and_names(tmp_path: Path) -> None:
-    data = _with("web.tls.hostnames", ["twinraid.home.arpa"])
-    assert _load(tmp_path, data).web.tls.allowed_hosts() == {
-        "192.168.10.20",
-        "twinraid.home.arpa",
-    }
+def test_ip_addresses_and_port_are_optional() -> None:
+    """Die IP steht nur im Unraid-Template; der Port hat einen Standard (Konzept 6.3)."""
+    web = load_config(EXAMPLE_CONFIG).web
+    assert web.tls.ip_addresses is None
+    assert web.port == 8443

@@ -8,7 +8,15 @@ from pathlib import Path
 from cryptography import x509
 from fastapi.testclient import TestClient
 
-from tests.web.helpers import FakeClock, FakeWorker, build_frontend, login, make_app, make_client
+from tests.web.helpers import (
+    TEST_ADDRESSES,
+    FakeClock,
+    FakeWorker,
+    build_frontend,
+    login,
+    make_app,
+    make_client,
+)
 from twinraid import __version__
 from twinraid.shared.mode import RunMode
 from twinraid.shared.tls import certificate_info, install_runtime, record_refresh_failure
@@ -133,7 +141,8 @@ def test_no_ca_download_with_custom_certificate(tmp_path: Path) -> None:
     client = _client(tmp_path)
     runtime = tmp_path / "run-tls"
     chain = (runtime / "cert.pem").read_bytes()
-    install_runtime(runtime, chain, (runtime / "key.pem").read_bytes(), None, "custom", os.getgid())
+    key = (runtime / "key.pem").read_bytes()
+    install_runtime(runtime, chain, key, None, "custom", os.getgid(), TEST_ADDRESSES)
     assert client.get("/api/tls/ca-certificate").status_code == 404
     info = client.get("/api/tls").json()
     assert info["source"] == "custom"
