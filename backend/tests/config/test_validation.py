@@ -134,6 +134,7 @@ INVALID_CASES: list[tuple[str, object, str]] = [
     ("web.allowed_networks", ["kein-netz"], "allowed_networks[0]"),
     ("web.default_language", "fr", "'de' or 'en'"),
     ("web.session_idle_minutes", 0, "greater than or equal to 1"),
+    ("web.session_idle_minutes", 721, "less than or equal to 720"),
     # --- TLS ---
     ("web.tls.ip_addresses", [], "at least 1"),
     ("web.tls.ip_addresses", ["0.0.0.0"], "cannot be used in a certificate"),  # noqa: S104
@@ -167,6 +168,15 @@ INVALID_CASES: list[tuple[str, object, str]] = [
     ("servers.target.wol_broadcast", "2001:db8::ff", "valid IPv4 address"),
     ("servers.target.boot_timeout_minutes", 0, "greater than or equal to 1"),
     ("servers.source.name", "", "must not be empty"),
+    # --- WebGUI ---
+    ("servers.target.webgui", _DELETE, "servers.target.webgui: required key is missing"),
+    ("servers.source.webgui", {"port": 80}, "servers.source.webgui.scheme: required key"),
+    ("servers.target.webgui", {"scheme": "HTTP"}, "'http' or 'https'"),
+    ("servers.target.webgui", {"scheme": "ftp"}, "'http' or 'https'"),
+    ("servers.target.webgui", {"scheme": "http", "port": 0}, "greater than or equal to 1"),
+    ("servers.target.webgui", {"scheme": "http", "port": 65536}, "less than or equal to 65535"),
+    ("servers.target.webgui", {"scheme": "http", "port": "80"}, "valid integer"),
+    ("servers.target.webgui", {"scheme": "http", "path": "/x"}, "webgui.path: unknown key"),
     ("servers.source.name", "Klein\x07", "control or invisible"),
     # --- Gaming-VM ---
     ("gaming_vm.display_name", "   ", "must not be empty"),
@@ -267,6 +277,28 @@ def test_config_is_immutable() -> None:
     config = load_config(EXAMPLE_CONFIG)
     with pytest.raises(ValueError, match="frozen"):
         config.web.port = 1  # type: ignore[misc]
+
+
+def test_session_idle_minutes_defaults_to_ten(tmp_path: Path) -> None:
+    config = _load(tmp_path, _with("web.session_idle_minutes", _DELETE))
+    assert config.web.session_idle_minutes == 10
+
+
+@pytest.mark.parametrize(
+    ("webgui", "port", "encrypted"),
+    [
+        ({"scheme": "http"}, 80, False),
+        ({"scheme": "https"}, 443, True),
+        ({"scheme": "https", "port": 8443}, 8443, True),
+        ({"scheme": "http", "port": 8080}, 8080, False),
+    ],
+)
+def test_webgui_default_ports(
+    tmp_path: Path, webgui: dict[str, object], port: int, encrypted: bool
+) -> None:
+    target = _load(tmp_path, _with("servers.target.webgui", webgui)).servers.target
+    assert target.webgui.effective_port == port
+    assert target.webgui.encrypted is encrypted
 
 
 def test_tls_from_example() -> None:

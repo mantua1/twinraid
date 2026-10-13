@@ -29,7 +29,7 @@ def test_successful_login_sets_secure_session_cookie(tmp_path: Path) -> None:
     assert not any(a.startswith("domain") for a in attributes)
     body = response.json()
     assert set(body) == {"csrf_token", "expires_at", "idle_timeout_seconds"}
-    assert body["idle_timeout_seconds"] == 30 * 60
+    assert body["idle_timeout_seconds"] == 10 * 60
     assert client.get("/api/status").status_code == 200
     assert _audit(tmp_path) == [("login", "success")]
 
@@ -179,11 +179,11 @@ def test_idle_timeout(tmp_path: Path) -> None:
     clock = FakeClock()
     client = make_client(make_app(tmp_path, clock=clock))
     login(client)
-    clock.advance(29 * 60)
+    clock.advance(9 * 60)
     assert client.get("/api/status").status_code == 200
-    clock.advance(29 * 60)
+    clock.advance(9 * 60)
     assert client.get("/api/status").status_code == 200
-    clock.advance(30 * 60 + 1)
+    clock.advance(10 * 60 + 1)
     assert client.get("/api/status").status_code == 401
     assert ("session", "expired") in _audit(tmp_path)
 
@@ -192,10 +192,11 @@ def test_maximum_lifetime_of_12_hours(tmp_path: Path) -> None:
     clock = FakeClock()
     client = make_client(make_app(tmp_path, clock=clock))
     login(client)
-    for _ in range(35):
-        clock.advance(20 * 60)
+    # 79 × 9 Minuten = 11 Stunden 51 Minuten, jeweils innerhalb des Inaktivitäts-Timeouts.
+    for _ in range(79):
+        clock.advance(9 * 60)
         assert client.get("/api/status").status_code == 200
-    clock.advance(20 * 60)
+    clock.advance(9 * 60)
     assert client.get("/api/status").status_code == 401
 
 

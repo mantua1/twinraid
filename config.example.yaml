@@ -9,7 +9,7 @@ web:
   allowed_networks:            # nur Clients aus diesen Netzen dürfen zugreifen
     - 192.168.10.0/24          # Server-Netz
     - 192.168.20.0/24          # Client-Netz
-  session_idle_minutes: 30
+  session_idle_minutes: 10     # optional, Standard 10
   default_language: de         # de | en
   tls:
     ip_addresses:              # feste IP des Containers, kommt ins Zertifikat
@@ -20,9 +20,15 @@ servers:
   source:                      # Unraid Klein – hier läuft der Container
     name: "Unraid Klein"
     host: 192.168.10.10
+    webgui:                    # wie „SSL/TLS verwenden“ in Unraid: Nein → http, Ja → https
+      scheme: http
+      port: 80                 # optional, Standard 80 bei http, 443 bei https
   target:                      # Unraid Groß
     name: "Unraid Groß"
     host: 192.168.10.11
+    webgui:
+      scheme: http
+      port: 80
     mac: "AA:BB:CC:DD:EE:FF"
     wol_broadcast: 192.168.10.255
     boot_timeout_minutes: 5

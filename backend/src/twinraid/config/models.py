@@ -41,6 +41,10 @@ HostAddress = Annotated[IPv4Address | IPv6Address, AfterValidator(validate_host_
 TlsAddress = Annotated[IPv4Address | IPv6Address, AfterValidator(validate_tls_address)]
 Hostname = Annotated[StrictStr, AfterValidator(validate_hostname)]
 Minutes = Annotated[StrictInt, Field(ge=1, le=60)]
+Port = Annotated[StrictInt, Field(ge=1, le=65535)]
+
+# Standardwert für den Inaktivitäts-Timeout der Sessions (Konzept 5.3).
+DEFAULT_SESSION_IDLE_MINUTES = 10
 
 
 Weekday = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -67,21 +71,43 @@ class TlsConfig(StrictModel):
 
 
 class WebConfig(StrictModel):
-    port: Annotated[StrictInt, Field(ge=1, le=65535)]
+    port: Port
     allowed_networks: Annotated[list[IPv4Network | IPv6Network], Field(min_length=1)]
-    session_idle_minutes: Annotated[StrictInt, Field(ge=1, le=720)]
+    session_idle_minutes: Annotated[StrictInt, Field(ge=1, le=720)] = DEFAULT_SESSION_IDLE_MINUTES
     default_language: Literal["de", "en"]
     tls: TlsConfig
+
+
+class WebGuiConfig(StrictModel):
+    """WebGUI eines Unraid-Servers: Ziel des TCP-Checks und Adresse der API (Konzept 3.5).
+
+    scheme entspricht der Unraid-Einstellung „SSL/TLS verwenden“: Nein → http, Ja → https.
+    """
+
+    scheme: Literal["http", "https"]
+    port: Port | None = None
+
+    @property
+    def effective_port(self) -> int:
+        if self.port is not None:
+            return self.port
+        return 443 if self.scheme == "https" else 80
+
+    @property
+    def encrypted(self) -> bool:
+        return self.scheme == "https"
 
 
 class SourceServerConfig(StrictModel):
     name: DisplayText
     host: HostAddress
+    webgui: WebGuiConfig
 
 
 class TargetServerConfig(StrictModel):
     name: DisplayText
     host: HostAddress
+    webgui: WebGuiConfig
     mac: MacAddress
     wol_broadcast: IPv4Address
     boot_timeout_minutes: Minutes
