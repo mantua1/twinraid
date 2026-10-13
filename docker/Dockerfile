@@ -70,13 +70,24 @@ ENV PATH="/app/.venv/bin:${PATH}" \
     S6_BEHAVIOUR_IF_STAGE2_FAILS=2 \
     S6_CMD_WAIT_FOR_SERVICES_MAXTIME=30000 \
     TWINRAID_CONFIG=/config/twinraid.yaml \
+    TWINRAID_DATA_DIR=/data \
+    TWINRAID_RUNTIME_TLS_DIR=/run/twinraid-tls \
+    TWINRAID_CUSTOM_TLS_DIR=/config/tls \
     TWINRAID_WORKER_SOCKET=/run/twinraid/worker.sock \
     TWINRAID_WEB_UID=10001 \
+    TWINRAID_WEB_GID=10001 \
     TWINRAID_FRONTEND_DIR=/app/frontend \
     TWINRAID_BIND_HOST=0.0.0.0
 
 # TWINRAID_MODE ist bewusst nicht gesetzt: ohne ausdrückliche Angabe startet der
 # Container nicht (Konzept 6.4).
+
+# Healthcheck als Web-Benutzer ohne Capabilities: nur TLS-Handshake zu
+# 127.0.0.1, keine HTTP-Anfrage, plus Herzschlag des Workers (Konzept 5.4).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD ["/usr/bin/setpriv", "--reuid=10001", "--regid=10001", "--clear-groups", \
+         "--inh-caps=-all", "--bounding-set=-all", "--no-new-privs", \
+         "--", "/app/.venv/bin/twinraid-healthcheck"]
 
 EXPOSE 8443
 ENTRYPOINT ["/init"]

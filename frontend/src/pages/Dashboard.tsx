@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 
 import type { ResourceState } from "@/api/types";
 import { ErrorNotice } from "@/components/ErrorNotice";
+import { HistoryTile } from "@/components/HistoryTile";
 import { PlaceholderTile } from "@/components/PlaceholderTile";
 import { StatusTile } from "@/components/StatusTile";
 import type { DashboardData } from "@/hooks/useDashboardData";
@@ -18,6 +19,9 @@ export function Dashboard({ data }: { data: DashboardData }) {
       {data.loading && <p className="text-sm text-muted-foreground">{t("dashboard.loading")}</p>}
       {data.infoFailed && <ErrorNotice message={t("errors.connection")} />}
       {!data.infoFailed && data.statusFailed && <ErrorNotice message={t("errors.status")} />}
+      {data.tls?.expires_soon === true && (
+        <ErrorNotice message={t("certificateWarning", { count: data.tls.days_left })} />
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatusTile
@@ -40,12 +44,7 @@ export function Dashboard({ data }: { data: DashboardData }) {
           description={t("tiles.sync.description")}
           empty={t("tiles.sync.empty")}
         />
-        <PlaceholderTile
-          className="sm:col-span-2"
-          title={t("tiles.history.title")}
-          description={t("tiles.history.description")}
-          empty={t("tiles.history.empty")}
-        />
+        <HistoryTile className="sm:col-span-2" entries={data.audit} />
       </div>
     </div>
   );

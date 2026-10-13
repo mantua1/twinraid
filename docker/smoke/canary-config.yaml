@@ -7,8 +7,17 @@ web:
   allowed_networks:
     - 10.77.31.0/24
     - 10.77.32.0/24
+    # Docker-Bridge: Anfragen vom Host über die Portweiterleitung kommen von dort.
+    - 172.16.0.0/12
   session_idle_minutes: 30
   default_language: de
+  tls:
+    ip_addresses:
+      - 10.77.31.50
+      # Der Starttest verbindet sich über 127.0.0.1.
+      - 127.0.0.1
+    hostnames:
+      - canary-host-7q.home.arpa
 
 servers:
   source:

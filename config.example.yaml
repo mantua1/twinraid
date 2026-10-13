@@ -11,6 +11,10 @@ web:
     - 192.168.20.0/24          # Client-Netz
   session_idle_minutes: 30
   default_language: de         # de | en
+  tls:
+    ip_addresses:              # feste IP des Containers, kommt ins Zertifikat
+      - 192.168.10.20
+    hostnames: []              # optional, z. B. twinraid.home.arpa
 
 servers:
   source:                      # Unraid Klein – hier läuft der Container

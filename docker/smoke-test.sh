@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Starttest für das Container-Image (Konzept 5.4 und 6.4).
+# Starttest für das Container-Image (Konzept 5.1 bis 5.4, 5.9 und 6.4).
 #
-# Prüft: Start mit read-only Root und --cap-drop=ALL plus nur den nötigen
-# Capabilities, Rechte der Prozesse, Dateirechte, Schutz des Worker-Sockets,
-# sauberes Stoppen und dass der Container bei fehlendem/ungültigem Modus oder
-# ungültiger Konfiguration nicht startet.
+# Prüft unter anderem: Start mit read-only Root und --cap-drop=ALL plus nur den
+# nötigen Capabilities, Rechte der Prozesse und Dateien, nur HTTPS (HTTP wird
+# abgewiesen), Zertifikat und Fingerabdruck, Healthcheck, Login mit Session und
+# CSRF, Sperre nach Fehlversuchen samt "unlock", keine /api-Route ohne Login,
+# keine Konfigurationswerte in öffentlichen Dateien, Netzfilter, Host-Prüfung,
+# Security-Header, Neustart, "renew-cert" und den Startabbruch bei Fehlern.
 #
 # Aufruf aus dem Repo-Hauptordner:
 #   docker/smoke-test.sh [IMAGE]          Standard-Image: twinraid:dev
@@ -18,9 +20,19 @@ CONFIG="${REPO_DIR}/config.example.yaml"
 CANARY_CONFIG="${REPO_DIR}/docker/smoke/canary-config.yaml"
 INSPECT_SCRIPT="$(cat "${REPO_DIR}/docker/smoke/inspect_processes.py")"
 CONTENT_SCRIPT="$(cat "${REPO_DIR}/docker/smoke/check_public_content.py")"
+ROUTES_SCRIPT="$(cat "${REPO_DIR}/docker/smoke/list_routes.py")"
+CERT_SCRIPT="$(cat "${REPO_DIR}/docker/smoke/inspect_certificate.py")"
+PY=/app/.venv/bin/python
 PORT="${SMOKE_PORT:-18443}"
+BASE="https://127.0.0.1:${PORT}"
+ORIGIN="Origin: ${BASE}"
+JSON="Content-Type: application/json"
 PREFIX="twinraid-smoke-$$"
 WORKDIR="$(mktemp -d)"
+CERT="${WORKDIR}/cert.pem"
+JAR="${WORKDIR}/cookies.txt"
+PASSWORD="smoke-test-password-42"
+WRONG_PASSWORD="smoke-wrong-password-17"
 
 # Muss mit docker/run-local.sh und Konzept 5.4 übereinstimmen.
 CAPS=(SETUID SETGID SETPCAP KILL DAC_READ_SEARCH)
@@ -50,43 +62,59 @@ expect_contains() {
   if [[ "${haystack}" == *"${needle}"* ]]; then
     pass "${label}"
   else
-    fail "${label}: '${needle}' not found in '${haystack}'"
+    fail "${label}: '${needle}' not found in '${haystack:0:300}'"
+  fi
+}
+expect_not_contains() {
+  local label="$1" haystack="$2" needle="$3"
+  if [[ "${haystack}" != *"${needle}"* ]]; then
+    pass "${label}"
+  else
+    fail "${label}: '${needle}' must not appear"
   fi
 }
 
 cleanup() {
-  local ids
+  local ids volumes
   ids="$(docker ps -aq --filter "name=${PREFIX}")"
   if [[ -n "${ids}" ]]; then
     # shellcheck disable=SC2086
     docker rm -f ${ids} >/dev/null
   fi
+  volumes="$(docker volume ls -q --filter "name=${PREFIX}")"
+  if [[ -n "${volumes}" ]]; then
+    # shellcheck disable=SC2086
+    docker volume rm ${volumes} >/dev/null
+  fi
   rm -r "${WORKDIR}"
 }
 trap cleanup EXIT
 
-# Startet einen Container. $1 = Name, $2 = wegzulassende Capability (oder ""),
-# $3 = Konfigurationsdatei, Rest = zusätzliche docker-run-Argumente.
+# Startet einen Container mit eigenem Volume für /data. $1 = Name,
+# $2 = wegzulassende Capability (oder ""), $3 = Konfiguration, Rest = docker-run-Argumente.
 start() {
   local name="$1" skip="$2" config="$3" cap
   shift 3
-  local cap_args=()
+  local cap_args=() data_args=(--mount "type=volume,src=${name}-data,dst=/data")
   for cap in "${CAPS[@]}"; do
     [[ "${cap}" == "${skip}" ]] || cap_args+=("--cap-add=${cap}")
   done
+  # NO_VOLUME=1: /data kommt aus den übergebenen Argumenten (z. B. ein tmpfs).
+  [[ "${NO_VOLUME:-0}" == "1" ]] && data_args=()
   docker run -d --name "${name}" "${HARDENING[@]}" "${cap_args[@]}" \
-    -v "${config}:/config/twinraid.yaml:ro" "$@" "${IMAGE}" >/dev/null
+    -v "${config}:/config/twinraid.yaml:ro" "${data_args[@]}" "$@" "${IMAGE}" >/dev/null
 }
 
 running() { [[ "$(docker inspect -f '{{.State.Running}}' "$1")" == "true" ]]; }
 exit_code() { docker inspect -f '{{.State.ExitCode}}' "$1"; }
 
-wait_for_health() {
-  for _ in $(seq 1 30); do
-    if [[ "$(curl -s --max-time 2 "http://127.0.0.1:${PORT}/health" || true)" == "ok" ]]; then
+wait_for_https() {
+  local name="$1" port="${2:-${PORT}}"
+  for _ in $(seq 1 40); do
+    if [[ "$(curl -sk --max-time 2 "https://127.0.0.1:${port}/health" || true)" == "ok" ]]; then
       return 0
     fi
-    running "$1" || return 1
+    running "${name}" || return 1
     sleep 1
   done
   return 1
@@ -100,41 +128,67 @@ wait_for_exit() {
   return 1
 }
 
-field() { python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[sys.argv[1]][sys.argv[2]])' "$@"; }
 json_get() { python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)[sys.argv[1]]))' "$@"; }
+json_str() { python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$@"; }
+field() { python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[sys.argv[1]][sys.argv[2]])' "$@"; }
+
+https_get() { curl -s --cacert "${CERT}" "$@"; }
+status_of() { curl -s -o /dev/null -w '%{http_code}' --cacert "${CERT}" "$@"; }
+headers_of() { curl -s -o /dev/null -D - --cacert "${CERT}" "$@" | tr -d '\r'; }
+login_status() {
+  status_of -H "${ORIGIN}" -H "${JSON}" -d "{\"password\": \"$1\"}" "${BASE}/api/auth/login"
+}
+served_fingerprint() {
+  python3 - "${PORT}" <<'PY'
+import hashlib
+import ssl
+import sys
+
+pem = ssl.get_server_certificate(("127.0.0.1", int(sys.argv[1])))
+print(hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).digest().hex(":").upper())
+PY
+}
 
 echo "== Image: ${IMAGE}"
 
-# --- 1. Start mit minimalen Capabilities ------------------------------------
+# --- 1. Start mit minimalen Capabilities ------------------------------------------
 main="${PREFIX}-main"
-start "${main}" "" "${CANARY_CONFIG}" -e TWINRAID_MODE=mock -p "127.0.0.1:${PORT}:8443"
-if wait_for_health "${main}"; then
+start "${main}" "" "${CANARY_CONFIG}" -e TWINRAID_MODE=mock -p "127.0.0.1:${PORT}:8443" \
+  --health-interval=2s --health-start-period=60s
+if wait_for_https "${main}"; then
   pass "container starts read-only with --cap-drop=ALL + ${CAPS[*]}"
 else
-  fail "container did not become healthy"
-  docker logs "${main}" 2>&1 | tail -30
+  fail "container did not become reachable"
+  docker logs "${main}" 2>&1 | tail -40
   exit 1
 fi
-
-expect_contains "/api/status answers via worker" \
-  "$(curl -s "http://127.0.0.1:${PORT}/api/status")" '"source":"unknown"'
-expect_equal "frontend is served" \
-  "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/")" "200"
+docker exec "${main}" cat /run/twinraid-tls/cert.pem >"${CERT}"
 expect_contains "log warns about simulation mode" "$(docker logs "${main}" 2>&1)" "SIMULATION MODE ACTIVE"
 
-# --- 1b. Öffentliche Dateien enthalten keine Konfigurationswerte -------------
-# Phase 1: /api/info ist im Mock-Modus über den Platzhalter erreichbar. Ab
-# Phase 2 braucht die Gegenprobe eine Session.
-content="$(docker exec "${main}" /app/.venv/bin/python -c "${CONTENT_SCRIPT}")"
-expect_equal "public files contain no config values" "$(json_get leaks <<<"${content}")" "[]"
-expect_equal "config values are delivered via protected /api" \
-  "$(json_get api_delivers_names <<<"${content}")" "true"
-checked="$(json_get checked <<<"${content}")"
-expect_contains "content check covered index.html" "${checked}" '"/"'
-expect_contains "content check covered JavaScript" "${checked}" '.js"'
-expect_contains "content check covered CSS" "${checked}" '.css"'
+# --- 2. Nur HTTPS, Zertifikat und Healthcheck ----------------------------------------
+expect_equal "HTTPS works with the certificate as the only trust anchor" \
+  "$(https_get "${BASE}/health")" "ok"
+expect_equal "plain HTTP gets no answer" "$(curl -s --max-time 5 "http://127.0.0.1:${PORT}/health" || true)" ""
+cert_info="$(docker exec "${main}" "${PY}" -c "${CERT_SCRIPT}")"
+expect_equal "certificate is not a CA" "$(json_get ca <<<"${cert_info}")" "false"
+expect_equal "certificate has EKU serverAuth" "$(json_get server_auth <<<"${cert_info}")" "true"
+expect_equal "certificate is valid for exactly 825 days" "$(json_get validity_days <<<"${cert_info}")" "825.0"
+expect_equal "certificate uses ECDSA P-256" "$(json_str curve <<<"${cert_info}")" "secp256r1"
+expect_equal "certificate SAN contains the configured IPs" "$(json_get ips <<<"${cert_info}")" '["10.77.31.50", "127.0.0.1"]'
+expect_equal "certificate SAN contains the configured hostname" "$(json_get dns <<<"${cert_info}")" '["canary-host-7q.home.arpa"]'
+logged_fp="$(docker logs "${main}" 2>&1 | grep -o 'SHA-256 fingerprint: [0-9A-F:]*' | tail -1 | cut -d' ' -f3)"
+first_fp="$(served_fingerprint)"
+expect_equal "fingerprint in the log matches the served certificate" "${logged_fp}" "${first_fp}"
+health="starting"
+for _ in $(seq 1 30); do
+  health="$(docker inspect -f '{{.State.Health.Status}}' "${main}")"
+  [[ "${health}" == "healthy" ]] && break
+  sleep 1
+done
+expect_equal "Docker healthcheck reports healthy" "${health}" "healthy"
+expect_not_contains "healthcheck causes no rejected requests" "$(docker logs "${main}" 2>&1)" "not in web.allowed_networks"
 
-# --- 2. Rechte der Prozesse --------------------------------------------------
+# --- 3. Rechte der Prozesse ------------------------------------------------------------
 procs="$(docker exec "${main}" python3 -c "${INSPECT_SCRIPT}")"
 check() {
   local proc="$1" key="$2" expected="$3"
@@ -154,24 +208,33 @@ check twinraid-web CapEff 0000000000000000
 check twinraid-web CapBnd 0000000000000000
 check twinraid-web NoNewPrivs 1
 
-# --- 3. Dateirechte und Dateisystem -----------------------------------------
-perm() { docker exec "${main}" stat -c '%a %u:%g' "$1"; }
-expect_equal "/srv/worker is 0700 root" "$(perm /srv/worker)" "700 0:0"
-expect_equal "socket dir is 0750 root:10001" "$(perm /run/twinraid)" "750 0:10001"
-expect_equal "socket is 0660 root:10001" "$(perm /run/twinraid/worker.sock)" "660 0:10001"
-if docker exec -u 10001:10001 "${main}" ls /srv/worker >/dev/null 2>&1; then
-  fail "web user can read /srv/worker"
-else
-  pass "web user cannot read /srv/worker"
-fi
+# --- 4. Dateirechte und Dateisystem ----------------------------------------------------
+perm() { docker exec "${main}" stat -c '%a %u' "$1"; }
+perm_group() { docker exec "${main}" stat -c '%a %u:%g' "$1"; }
+expect_equal "/srv/worker is 0700 root" "$(perm /srv/worker)" "700 0"
+expect_equal "/data/secrets is 0700 root" "$(perm /data/secrets)" "700 0"
+expect_equal "/data/tls is 0700 root" "$(perm /data/tls)" "700 0"
+expect_equal "/data/web is 0770 root:10001" "$(perm_group /data/web)" "770 0:10001"
+expect_equal "web database is 0600 web user" "$(perm_group /data/web/web.sqlite)" "600 10001:10001"
+expect_equal "/run/twinraid-tls is 0750 root:10001" "$(perm_group /run/twinraid-tls)" "750 0:10001"
+expect_equal "TLS key copy is 0640 root:10001" "$(perm_group /run/twinraid-tls/key.pem)" "640 0:10001"
+expect_equal "socket dir is 0750 root:10001" "$(perm_group /run/twinraid)" "750 0:10001"
+expect_equal "socket is 0660 root:10001" "$(perm_group /run/twinraid/worker.sock)" "660 0:10001"
+for dir in /srv/worker /data/secrets /data/tls; do
+  if docker exec -u 10001:10001 "${main}" ls "${dir}" >/dev/null 2>&1; then
+    fail "web user can read ${dir}"
+  else
+    pass "web user cannot read ${dir}"
+  fi
+done
 if docker exec "${main}" touch /app/probe >/dev/null 2>&1; then
   fail "root filesystem is writable"
 else
   pass "root filesystem is read-only"
 fi
 
-# --- 4. Worker-Socket weist fremde UIDs ab -----------------------------------
-probe='import socket;s=socket.socket(socket.AF_UNIX);s.connect("/run/twinraid/worker.sock");s.sendall(b"{\"command\":\"get_status\"}\n");print(s.recv(200).decode())'
+# --- 5. Worker-Socket weist fremde UIDs ab ----------------------------------------------
+probe='import socket;s=socket.socket(socket.AF_UNIX);s.connect("/run/twinraid/worker.sock");s.sendall(b"{\"command\":\"get_status\"}\n");print(s.recv(300).decode())'
 expect_contains "worker rejects foreign UID (SO_PEERCRED)" \
   "$(docker exec -u 10002:10001 "${main}" python3 -c "${probe}" 2>&1 || true)" '"error":"forbidden"'
 if docker exec -u 10002:10002 "${main}" python3 -c "${probe}" >/dev/null 2>&1; then
@@ -180,7 +243,126 @@ else
   pass "socket not reachable without group 10001"
 fi
 
-# --- 5. Sauberes Stoppen -----------------------------------------------------
+# --- 6. Ohne Login ist keine /api-Route erreichbar ---------------------------------------
+routes="$(docker exec "${main}" "${PY}" -c "${ROUTES_SCRIPT}")"
+checked=0
+while read -r method path public; do
+  [[ "${method}" == "HEAD" || "${public}" == "True" ]] && continue
+  expect_equal "${method} ${path} without session is 401" \
+    "$(status_of -X "${method}" -H "${ORIGIN}" "${BASE}${path}")" "401"
+  checked=$((checked + 1))
+done < <(python3 -c 'import json,sys
+for r in json.load(sys.stdin):
+    for m in r["methods"]:
+        print(m, r["path"], r["public"])' <<<"${routes}")
+if [[ "${checked}" -ge 7 ]]; then pass "checked ${checked} protected API routes"; else fail "only ${checked} protected API routes found"; fi
+expect_equal "unknown path without session is 401" "$(status_of "${BASE}/api/nope")" "401"
+
+# --- 7. Öffentliche Dateien enthalten keine Konfigurationswerte ----------------------------
+content="$(docker exec "${main}" "${PY}" -c "${CONTENT_SCRIPT}")"
+printf '%s' "${content}" >"${WORKDIR}/content.json"
+leaks="$(python3 - "${BASE}" "${CERT}" "${WORKDIR}/content.json" <<'PY'
+import json
+import ssl
+import sys
+import urllib.request
+
+with open(sys.argv[3], encoding="utf-8") as handle:
+    data = json.load(handle)
+context = ssl.create_default_context(cafile=sys.argv[2])
+leaks = []
+for path in data["paths"]:
+    with urllib.request.urlopen(sys.argv[1] + path, context=context, timeout=5) as response:
+        body = response.read().decode("utf-8", errors="replace").lower()
+    leaks += [f"{path}: {needle}" for needle in data["needles"] if needle in body]
+print(json.dumps({"checked": len(data["paths"]), "leaks": leaks}))
+PY
+)"
+expect_equal "public files contain no config values" "$(json_get leaks <<<"${leaks}")" "[]"
+expect_equal "content check covered all public files" "$(json_get checked <<<"${leaks}")" \
+  "$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)["paths"]))' <<<"${content}")"
+
+# --- 8. Passwort, Login, Session, CSRF, Logout --------------------------------------------
+expect_contains "no password set after first start" "$(https_get "${BASE}/api/auth/state")" '"password_set":false'
+expect_equal "login fails while no password is set" "$(login_status "irgendein-passwort")" "401"
+expect_contains "set-password via admin CLI" \
+  "$(docker exec -i "${main}" twinraid-admin set-password --stdin <<<"${PASSWORD}" 2>&1)" "Password set"
+expect_contains "password is now reported as set" "$(https_get "${BASE}/api/auth/state")" '"password_set":true'
+expect_equal "wrong password is rejected" "$(login_status "${WRONG_PASSWORD}")" "401"
+expect_equal "login without Origin is rejected" \
+  "$(status_of -H "${JSON}" -d "{\"password\": \"${PASSWORD}\"}" "${BASE}/api/auth/login")" "403"
+expect_equal "login with foreign Origin is rejected" \
+  "$(status_of -H "Origin: https://evil.example" -H "${JSON}" -d "{\"password\": \"${PASSWORD}\"}" "${BASE}/api/auth/login")" "403"
+login_headers="$(curl -s -D - -o "${WORKDIR}/login.json" -c "${JAR}" --cacert "${CERT}" -H "${ORIGIN}" -H "${JSON}" \
+  -d "{\"password\": \"${PASSWORD}\"}" "${BASE}/api/auth/login" | tr -d '\r')"
+expect_contains "login succeeds" "${login_headers}" "HTTP/1.1 200"
+cookie_line="$(grep -i '^set-cookie:' <<<"${login_headers}" || true)"
+for attribute in "__Host-twinraid_session=" "HttpOnly" "Secure" "Path=/" "SameSite=strict"; do
+  expect_contains "session cookie has ${attribute}" "${cookie_line,,}" "${attribute,,}"
+done
+csrf="$(json_str csrf_token <"${WORKDIR}/login.json")"
+expect_equal "status with session" "$(status_of -b "${JAR}" "${BASE}/api/status")" "200"
+expect_contains "API delivers config values after login" "$(https_get -b "${JAR}" "${BASE}/api/info")" \
+  "$(json_str source_name <<<"${content}")"
+expect_contains "audit log lists the login" "$(https_get -b "${JAR}" "${BASE}/api/audit")" '"action":"login","result":"success"'
+expect_equal "logout without CSRF token is rejected" \
+  "$(status_of -b "${JAR}" -H "${ORIGIN}" -X POST "${BASE}/api/auth/logout")" "403"
+expect_equal "logout with CSRF token" \
+  "$(status_of -b "${JAR}" -c "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/auth/logout")" "200"
+expect_equal "session is gone after logout" "$(status_of -b "${JAR}" "${BASE}/api/status")" "401"
+
+# --- 9. Host-Prüfung, Größenlimit, Security-Header ----------------------------------------
+expect_equal "foreign Host header is rejected" "$(status_of -H "Host: evil.example" "${BASE}/health")" "400"
+head -c 17000 /dev/zero | tr '\0' 'x' >"${WORKDIR}/big.json"
+expect_equal "requests over 16 KiB are rejected" \
+  "$(status_of -H "${ORIGIN}" -H "${JSON}" --data-binary "@${WORKDIR}/big.json" "${BASE}/api/auth/login")" "413"
+for request in "${BASE}/health" "${BASE}/api/status" "-H Host:evil.example ${BASE}/health"; do
+  # shellcheck disable=SC2086
+  headers="$(headers_of ${request})"
+  expect_contains "CSP on ${request}" "${headers,,}" "content-security-policy: default-src 'none'; script-src 'self'"
+  expect_contains "X-Frame-Options on ${request}" "${headers,,}" "x-frame-options: deny"
+  expect_contains "Referrer-Policy on ${request}" "${headers,,}" "referrer-policy: no-referrer"
+  expect_contains "nosniff on ${request}" "${headers,,}" "x-content-type-options: nosniff"
+done
+
+# --- 10. Sperre nach 5 Fehlversuchen und Notfall-Entsperrung -------------------------------
+for _ in 1 2 3 4 5; do
+  login_status "${WRONG_PASSWORD}" >/dev/null
+done
+expect_equal "IP is locked after 5 failures (even with the right password)" "$(login_status "${PASSWORD}")" "429"
+expect_contains "unlock via admin CLI" "$(docker exec "${main}" twinraid-admin unlock 2>&1)" "have been cleared"
+expect_equal "login works after unlock" "$(login_status "${PASSWORD}")" "200"
+expect_contains "unlock reset the worker throttling" "$(docker logs "${main}" 2>&1)" "Login throttling in the worker was reset"
+
+# --- 11. Keine Secrets in Logs oder Datenbank ----------------------------------------------
+logs="$(docker logs "${main}" 2>&1)"
+expect_not_contains "log does not contain the password" "${logs}" "${PASSWORD}"
+expect_not_contains "log does not contain the wrong password" "${logs}" "${WRONG_PASSWORD}"
+expect_not_contains "log does not contain the CSRF token" "${logs}" "${csrf}"
+scan='import pathlib,sys
+data=b"".join(p.read_bytes() for p in pathlib.Path("/data/web").iterdir() if p.is_file())
+print(any(s.encode() in data for s in sys.argv[1:]))'
+expect_equal "web database contains no password" "$(docker exec "${main}" "${PY}" -c "${scan}" "${PASSWORD}" "${WRONG_PASSWORD}")" "False"
+
+# --- 12. Neustart und renew-cert --------------------------------------------------------------
+docker restart "${main}" >/dev/null
+if wait_for_https "${main}"; then pass "container restarts"; else fail "container did not restart"; fi
+expect_equal "certificate stays the same after restart" "$(served_fingerprint)" "${first_fp}"
+expect_equal "password survives the restart" "$(login_status "${PASSWORD}")" "200"
+renew="$(docker exec "${main}" twinraid-admin renew-cert 2>&1)"
+new_fp="$(grep -o 'SHA-256 fingerprint: [0-9A-F:]*' <<<"${renew}" | cut -d' ' -f3)"
+served="${first_fp}"
+for _ in $(seq 1 20); do
+  served="$(served_fingerprint 2>/dev/null || true)"
+  [[ "${served}" == "${new_fp}" ]] && break
+  sleep 1
+done
+expect_equal "renew-cert serves the new certificate" "${served}" "${new_fp}"
+if [[ "${new_fp}" != "${first_fp}" ]]; then pass "renew-cert changed the fingerprint"; else fail "fingerprint unchanged"; fi
+docker exec "${main}" cat /run/twinraid-tls/cert.pem >"${CERT}"
+expect_equal "HTTPS works with the renewed certificate" "$(https_get "${BASE}/health")" "ok"
+
+# --- 13. Sauberes Stoppen ------------------------------------------------------------------------
 started=$(date +%s)
 docker stop -t 10 "${main}" >/dev/null
 duration=$(($(date +%s) - started))
@@ -191,7 +373,22 @@ else
   fail "stop took ${duration}s, exit ${code}"
 fi
 
-# --- 6. Kein Start ohne gültigen Modus oder mit ungültiger Konfiguration -----
+# --- 14. Netzfilter: fremdes Netz bekommt 403 --------------------------------------------------
+foreign_config="${WORKDIR}/foreign.yaml"
+grep -v '172.16.0.0/12' "${CANARY_CONFIG}" >"${foreign_config}"
+chmod 0644 "${foreign_config}"
+foreign="${PREFIX}-foreign"
+start "${foreign}" "" "${foreign_config}" -e TWINRAID_MODE=mock -p "127.0.0.1:$((PORT + 1)):8443"
+answer=""
+for _ in $(seq 1 40); do
+  answer="$(curl -sk --max-time 2 -o /dev/null -w '%{http_code}' "https://127.0.0.1:$((PORT + 1))/health" || true)"
+  [[ "${answer}" == "403" ]] && break
+  sleep 1
+done
+expect_equal "client outside allowed_networks gets 403 even for /health" "${answer}" "403"
+docker rm -f "${foreign}" >/dev/null
+
+# --- 15. Kein Start bei fehlerhaftem Modus, Konfiguration oder /data ------------------------------
 bad_config="${WORKDIR}/bad.yaml"
 sed 's/- medien/- system/' "${CONFIG}" >"${bad_config}"
 chmod 0644 "${bad_config}"
@@ -216,8 +413,11 @@ refuse "TWINRAID_MODE=real (not yet supported)" "not available in this version" 
 refuse "forbidden share in config" "must never be synced" "${bad_config}" -e TWINRAID_MODE=mock
 # Startfehler des Workers: Container hält an, statt den Dienst endlos neu zu starten.
 refuse "worker startup error (web UID 0)" "must not be 0" "${CONFIG}" -e TWINRAID_MODE=mock -e TWINRAID_WEB_UID=0
+# /data für alle beschreibbar: unsicher, Start wird mit Reparaturhinweis verweigert.
+NO_VOLUME=1 refuse "/data writable by others" "chown root:root" "${CONFIG}" -e TWINRAID_MODE=mock \
+  --tmpfs /data:rw,mode=1777
 
-# --- 7. Optional: Jede Capability ist nötig ----------------------------------
+# --- 16. Optional: Jede Capability ist nötig ------------------------------------------------------
 if [[ "${CHECK_EACH_CAP:-0}" == "1" ]]; then
   for cap in SETUID SETGID SETPCAP; do
     name="${PREFIX}-no-${cap,,}"
@@ -231,7 +431,7 @@ if [[ "${CHECK_EACH_CAP:-0}" == "1" ]]; then
   done
   name="${PREFIX}-no-kill"
   start "${name}" KILL "${CONFIG}" -e TWINRAID_MODE=mock
-  sleep 5
+  sleep 6
   docker stop -t 3 "${name}" >/dev/null
   if [[ "$(exit_code "${name}")" == "137" ]]; then
     pass "KILL is required (clean stop fails without it)"

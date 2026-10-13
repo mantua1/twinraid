@@ -1,7 +1,8 @@
 """Befehlsprotokoll zwischen Web-Prozess und Worker (Konzept 3.2).
 
 Die Befehlsliste ist fest. Befehle haben keine frei wählbaren Parameter;
-erlaubt sind nur IDs, die der Worker selbst vergeben hat (Job-IDs).
+erlaubt sind nur IDs, die der Worker selbst vergeben hat (Job-IDs). Einzige
+Ausnahme ist das Passwort bei verify_password, das nur verglichen wird.
 
 Übertragung: Unix-Stream-Socket, pro Verbindung genau eine Anfrage und eine
 Antwort, jeweils als eine JSON-Zeile (UTF-8, abgeschlossen mit "\\n").
@@ -14,8 +15,9 @@ from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, Validatio
 
 from twinraid.shared.base import StrictModel
 
-# Obergrenzen schützen den Worker vor übergroßen Nachrichten.
-MAX_REQUEST_BYTES = 4 * 1024
+# Obergrenzen schützen den Worker vor übergroßen Nachrichten. Ein Passwort mit
+# 1024 Zeichen braucht als JSON mit Escapes höchstens 6 KiB.
+MAX_REQUEST_BYTES = 16 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
 
 # Job-IDs vergibt ausschließlich der Worker (uuid4 als 32 Hex-Zeichen).
@@ -24,6 +26,12 @@ JobId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
 
 class GetStatus(StrictModel):
     command: Literal["get_status"]
+
+
+class VerifyPassword(StrictModel):
+    command: Literal["verify_password"]
+    # repr=False: Das Passwort darf nie in Logs oder Fehlermeldungen landen.
+    password: Annotated[str, StringConstraints(min_length=1, max_length=1024)] = Field(repr=False)
 
 
 class WakeTarget(StrictModel):
@@ -62,6 +70,7 @@ class SyncConfirmDeletions(StrictModel):
 
 Command = Annotated[
     GetStatus
+    | VerifyPassword
     | WakeTarget
     | ShutdownTarget
     | VmStart
@@ -78,6 +87,7 @@ Command = Annotated[
 COMMAND_NAMES: frozenset[str] = frozenset(
     {
         "get_status",
+        "verify_password",
         "wake_target",
         "shutdown_target",
         "vm_start",

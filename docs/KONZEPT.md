@@ -1,6 +1,6 @@
 # TwinRaid – Projektkonzept
 
-> Arbeitstitel „TwinRaid“ · Version 0.4 · Stand 13.10.2026
+> Arbeitstitel „TwinRaid“ · Version 0.5 · Stand 13.10.2026
 > Dieses Dokument ist die verbindliche Grundlage für die Entwicklung. Änderungen am Konzept werden hier eingetragen, bevor sie umgesetzt werden.
 
 ---
@@ -74,8 +74,10 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 | Zugriff auf Secrets | **nein** | ja |
 | Zugriff auf Share-Daten | **nein** | nur lesend |
 
-- Die beiden Prozesse kommunizieren über einen Unix-Socket mit einer **festen, kleinen Befehlsliste**: `get_status`, `wake_target`, `shutdown_target`, `vm_start`, `vm_stop`, `vm_force_stop`, `sync_start`, `sync_cancel`, `sync_confirm_deletions`.
+- Die beiden Prozesse kommunizieren über einen Unix-Socket mit einer **festen, kleinen Befehlsliste**: `get_status`, `verify_password`, `wake_target`, `shutdown_target`, `vm_start`, `vm_stop`, `vm_force_stop`, `sync_start`, `sync_cancel`, `sync_confirm_deletions`.
 - Befehle haben **keine frei wählbaren Parameter** (keine Pfade, Hosts oder Shell-Befehle). Erlaubt sind höchstens IDs, die der Worker selbst vergeben hat (z. B. eine Job-ID).
+- **Einzige Ausnahme `verify_password` (ab Phase 2):** Der Befehl trägt das eingegebene Passwort, höchstens 1024 Zeichen. Der Worker vergleicht es nur mit dem Argon2id-Hash und verwendet es nie als Pfad, Argument oder Logeintrag. So bleibt der Hash ein Secret, das nur der Worker lesen kann (siehe 5.3).
+- **Drosselung im Worker:** Der Worker prüft immer nur ein Passwort gleichzeitig. Jede Prüfung dauert mindestens 1 Sekunde. Nach 5 Fehlversuchen in 15 Minuten wartet er vor jeder weiteren Prüfung zusätzlich, beginnend mit 1 Sekunde und verdoppelt bis höchstens 30 Sekunden. Ein erfolgreicher Login setzt die Zählung zurück, ebenso `twinraid-admin unlock`. So kann auch ein übernommener Web-Prozess nicht schnell durchprobieren.
 - **Konsequenz:** Wird der Web-Prozess kompromittiert, kann ein Angreifer nur das tun, was auch die Buttons können. Er kann keine Keys stehlen, keine Daten lesen und keine Pfade ändern.
 - **Pfadschutz:** Datenmounts und Secrets liegen unter `/srv/worker` (Rechte `0700`, Besitzer root). Selbst Dateien, die auf den Shares für alle lesbar sind, kann der Web-Prozess dadurch nicht erreichen.
 
@@ -200,38 +202,99 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 - **UniFi-Firewall:**
   - Client-Netz → Container-IP nur TCP 8443 erlauben.
   - Optional: Container → Internet sperren. Er braucht zur Laufzeit kein Internet; Images lädt der Docker-Dienst des Hosts.
-- **In der App:** Erlaubte Netze kommen aus der Konfiguration. Anfragen von anderen Adressen werden vor jeder Verarbeitung mit 403 abgewiesen. `X-Forwarded-For` wird ignoriert, außer ein Reverse-Proxy ist explizit als vertrauenswürdig konfiguriert.
+- **In der App:** Erlaubte Netze kommen aus der Konfiguration. Anfragen von anderen Adressen werden vor jeder Verarbeitung mit 403 abgewiesen, auch für `/health` und die statischen Dateien. Maßgeblich ist die IP der TCP-Verbindung; IPv4-Adressen in IPv6-Schreibweise werden vorher umgewandelt. `X-Forwarded-For` wird ignoriert, außer ein Reverse-Proxy ist explizit als vertrauenswürdig konfiguriert (bisher nicht vorgesehen). Abweisungen stehen höchstens einmal pro Minute und IP im Container-Log.
+- **Host-Prüfung (ab Phase 2):** Der `Host`-Header muss eine der Adressen aus `web.tls.ip_addresses` oder `web.tls.hostnames` sein, sonst 400. Das verhindert DNS-Rebinding, bei dem eine fremde Webseite über einen eigenen Hostnamen auf den Container zugreift.
 - **Unraid Klein:** In den Docker-Einstellungen „Host access to custom networks“ aktivieren. Sonst erreicht der Container mit eigener IP seinen eigenen Host (API von Klein) nicht.
 
 ### 5.2 HTTPS
 
 - **Entschieden: nur HTTPS mit selbstsigniertem Zertifikat.** Beim ersten Start erzeugt der Container das Zertifikat (in `/data/tls`) und schreibt den Fingerabdruck ins Container-Log, damit man ihn mit der Browser-Anzeige vergleichen kann.
-- **Eigenschaften des Zertifikats**, damit es auch als vertrauenswürdig installiert werden kann (inklusive iOS/macOS):
+- **Zielgeräte:** Windows, Linux und Android, jeweils mit Chrome bzw. Edge und Firefox. iOS und macOS werden nicht eingesetzt.
+- **Eigenschaften des Zertifikats:**
   - Gültigkeit höchstens 825 Tage.
   - Subject Alternative Name mit der Container-IP und optional einem Hostnamen aus der Config.
   - Extended Key Usage `serverAuth`.
   - Kein CA-Zertifikat. Es kann nur sich selbst bestätigen; wird es auf einem Gerät als vertrauenswürdig installiert, entsteht kein Risiko für andere Webseiten.
 - **Beständigkeit:** Das Zertifikat bleibt über Neustarts und Image-Updates gleich. Neu erzeugt wird es nur bei Ablauf oder auf Befehl (`twinraid-admin renew-cert`).
 - **Ablaufwarnung:** Das Dashboard warnt 30 Tage vor Ablauf. Die automatische Erneuerung erfolgt beim Ablauf und erfordert einmalig eine neue Bestätigung bzw. Installation auf den Geräten.
-- **Download:** Das Zertifikat (nur der öffentliche Teil) ist nach dem Login unter „Einstellungen“ herunterladbar, um es auf Geräten als vertrauenswürdig zu installieren. Anleitung pro Gerätetyp folgt in `docs/EINRICHTUNG.md`.
+- **Download:** Das Zertifikat (nur der öffentliche Teil) ist nach dem Login unter „Einstellungen“ herunterladbar, um es auf Geräten als vertrauenswürdig zu installieren. Die Anleitung für Windows, Linux und Android mit Chrome bzw. Edge und Firefox folgt in `docs/EINRICHTUNG.md` (Phase 7), auf Grundlage der Testergebnisse aus Issue #3.
 - **Optional:** ein eigenes Zertifikat unter `/config/tls` mounten (z. B. später Let's Encrypt über DNS-Challenge). Dafür ist keine Codeänderung nötig.
+
+Umsetzung (Phase 2):
+
+- **Erzeugung:** Der Startdienst `twinraid-init` (siehe 5.4) erzeugt Schlüssel und Zertifikat als root in `/data/tls` (Verzeichnis `0700`, Schlüssel `0600`). Schlüssel: ECDSA P-256, Signatur SHA-256. Gültigkeit genau 825 Tage, `BasicConstraints CA:FALSE`, `KeyUsage digitalSignature`, `ExtendedKeyUsage serverAuth`, SAN aus `web.tls.ip_addresses` und `web.tls.hostnames`.
+- **Neu erzeugt** wird es beim Start, wenn es fehlt, abgelaufen ist oder die SAN nicht mehr zur Konfiguration passen, sowie mit `twinraid-admin renew-cert`.
+- **Eigenes Zertifikat:** Liegen `/config/tls/cert.pem` und `/config/tls/key.pem` vor, haben sie Vorrang. Der Startdienst prüft, dass beide lesbar sind, zusammenpassen und das Zertifikat nicht abgelaufen ist. Sonst startet der Container nicht. Auf dem Host darf der Schlüssel root gehören und `0600` haben.
+- **Zugriff des Web-Prozesses:** Der Startdienst kopiert das aktive Paar nach `/run/twinraid-tls` (nur im RAM; Verzeichnis `0750`, Schlüssel `0640`, jeweils Gruppe 10001). Der Web-Prozess liest nur dort. Der TLS-Schlüssel ist das einzige Secret, das er hält, weil er TLS selbst abwickelt. An `/data/secrets` und `/data/tls` kommt er nicht heran.
+- **Fingerabdruck:** SHA-256 des aktiven Zertifikats steht bei jedem Start im Log und ist mit `twinraid-admin show-cert-fingerprint` abrufbar.
+- **Nur HTTPS** auf `web.port`, TLS 1.2 und 1.3, keine schwachen Cipher. Es gibt keinen HTTP-Port; HTTP-Anfragen an den Port scheitern am TLS-Handshake.
+- **Kein HSTS:** Browser ignorieren HSTS bei IP-Adressen. Bei einem Hostnamen würde HSTS nach einer Zertifikatserneuerung die Warnung unüberspringbar machen und den Nutzer aussperren. Ohne HTTP-Port bringt HSTS keinen Gewinn.
+- **Grenze bei Android (recherchiert):** Android installiert nur Zertifikate mit `CA:TRUE` als vertrauenswürdige Zertifizierungsstelle. Ein Zertifikat ohne CA-Eigenschaft gilt dort als Benutzerzertifikat und wird ohne privaten Schlüssel abgelehnt (Android-Quellcode, CertInstaller). Mit dem jetzigen Zertifikat ist auf Android also keine dauerhafte Vertrauensstellung möglich, nur das Bestätigen der Warnung. Chrome auf Android lädt dagegen vom Nutzer installierte Zertifizierungsstellen als Vertrauensanker (Chromium-Quellcode). Laut Chrome-Unternehmensrichtlinien erzwingt Chrome Namensbeschränkungen in lokal installierten Vertrauensankern; ob das auf Android ebenso gilt, wird im Test geprüft.
+- **Auch Firefox** importiert nur Zertifikate mit `CA:TRUE` als Zertifizierungsstelle; für das jetzige Zertifikat bleibt dort eine dauerhaft gespeicherte Ausnahme.
+- **Mögliche Alternative (noch nicht umgesetzt):** eine kleine eigene CA mit Namensbeschränkung auf die eigene IP und die eigenen Hostnamen, die ein separates Serverzertifikat signiert. Auf den Geräten wird nur die CA installiert. Ein CA-Zertifikat direkt als Serverzertifikat scheidet aus, weil Firefox das ablehnt. Tests, Recherche und Entwurf stehen in Issue #3; umgesetzt wird erst nach Entscheidung und Konzeptänderung.
 - Alle Ressourcen (Schriften, Skripte, Icons) sind im Image enthalten; es werden keine externen CDNs geladen. Das ermöglicht eine strikte Content-Security-Policy.
 
 ### 5.3 Login und Sessions
 
-- Ein Benutzer. Das **Passwort wird ausschließlich über die Admin-CLI im Container gesetzt** (`twinraid-admin set-password`). Es gibt keine Ersteinrichtung über die Webseite, die ein Angreifer im Netz zuerst ausführen könnte.
-- Passwort-Hash mit Argon2id.
-- Session-Cookie mit `HttpOnly`, `Secure` und `SameSite=Strict`. Inaktivitäts-Timeout 30 Minuten (konfigurierbar), maximale Lebensdauer 12 Stunden.
-- CSRF-Token für alle zustandsändernden Requests.
-- Rate-Limit: nach 5 Fehlversuchen 15 Minuten Sperre (pro IP und global).
-- Security-Header: CSP, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`.
-- Audit-Log: jede Aktion mit Zeitstempel und Client-IP.
-- Ohne Login erreichbar sind nur die Login-Seite und `/health` (liefert nur „ok“).
-- **Geschützt per Default:** Jede Route ist automatisch geschützt. Öffentliche Routen müssen im Code ausdrücklich markiert werden. Öffentlich sind nur `/health`, später die Login-Route und die Auslieferung der Oberfläche selbst (`index.html`, JavaScript, CSS, Icon). Die Oberfläche ist öffentlich, weil sie die Login-Seite enthält. Sie enthält keine Daten; alle Daten kommen über geschützte Routen unter `/api`.
+- Ein Benutzer, Login nur mit Passwort. Das **Passwort wird ausschließlich über die Admin-CLI im Container gesetzt** (`twinraid-admin set-password`). Es gibt keine Ersteinrichtung über die Webseite, die ein Angreifer im Netz zuerst ausführen könnte.
+- Ohne Login erreichbar sind nur `/health` (liefert nur „ok“), die Oberfläche selbst (`index.html`, JavaScript, CSS, Icon), `GET /api/auth/state` und `POST /api/auth/login`.
+- **Geschützt per Default:** Jede Route ist automatisch geschützt. Öffentliche Routen müssen im Code ausdrücklich markiert werden. Die Oberfläche ist öffentlich, weil sie die Login-Seite enthält. Sie enthält keine Daten; alle Daten kommen über geschützte Routen unter `/api`.
 - **Keine Konfigurationswerte in öffentlichen Dateien:** Die ausgelieferten Frontend-Dateien und alle anderen öffentlichen Routen enthalten keine Werte aus der Konfiguration, also keine IP-Adressen, Netze, MAC-Adressen, Hostnamen, Share-Namen, Pfade, Container-, VM- oder Servernamen. Solche Werte gibt es nur über geschützte Routen unter `/api`. Abgesichert durch einen Backend-Test und durch den Container-Starttest, der eine Konfiguration mit eindeutigen Testwerten verwendet und alle öffentlich ausgelieferten Dateien danach durchsucht.
+- `GET /api/auth/state` liefert nur, ob eine Session besteht, ob der Simulationsmodus aktiv ist und ob ein Passwort gesetzt ist. Die Login-Seite zeigt damit das Banner „Simulationsmodus“ und, falls kein Passwort gesetzt ist, den Hinweis auf `twinraid-admin set-password`. Ihre Sprache kommt aus der gespeicherten Wahl oder der Browsersprache.
 - Unbekannte Pfade werden wie geschützte Routen behandelt. Ohne Session gibt es also 401 statt 404.
 - Ein Test stellt sicher, dass es außer den markierten Routen keine ungeschützte Route gibt.
-- **Bis Phase 2:** An der Stelle der Login-Prüfung steht ein Platzhalter. Er lässt Anfragen nur im Mock-Modus durch (siehe 6.4).
+
+**Passwort**
+
+- Der Argon2id-Hash liegt in `/data/secrets/password.argon2` (Datei `0600`, root). Der Worker prüft ihn über `verify_password` (siehe 3.2). Grund: Der Hash ist ein Secret, und der Web-Prozess darf keine Secrets lesen. Ein übernommener Web-Prozess kann ihn daher nicht für einen Offline-Angriff kopieren; das schützt auch bei Wiederverwendung des Passworts an anderer Stelle.
+- Parameter nach RFC 9106 (zweite Empfehlung): 64 MiB Speicher, 3 Durchläufe, Parallelität 4, Salt 16 Byte, Hash 32 Byte.
+- Länge mindestens 12, höchstens 1024 Zeichen, keine Steuerzeichen.
+- Der Vergleich ist zeitkonstant. Ist kein Passwort gesetzt, läuft trotzdem eine Prüfung gegen einen Dummy-Hash; jeder Login schlägt dann fehl. Session-IDs und CSRF-Tokens werden mit `hmac.compare_digest` verglichen.
+
+**Sessions**
+
+- Serverseitig in der SQLite-Datenbank des Web-Prozesses (`/data/web`). Die Session-ID hat 256 Bit Zufall und wird in der Datenbank nur als SHA-256-Hash gespeichert.
+- Cookie `__Host-twinraid_session` mit `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, ohne `Domain`.
+- Inaktivitäts-Timeout `web.session_idle_minutes` (Standard 30 Minuten), maximale Lebensdauer fest 12 Stunden.
+- Jeder Login erzeugt eine neue Session-ID; ein mitgebrachtes Cookie wird verworfen. Logout löscht die Session in der Datenbank und das Cookie. `twinraid-admin set-password` beendet alle Sessions.
+
+**CSRF und Herkunft**
+
+- Jede Session hat ein eigenes CSRF-Token (256 Bit). Die Oberfläche holt es nach dem Login über eine geschützte Route und sendet es bei jedem POST, PUT, PATCH und DELETE im Header `X-CSRF-Token`.
+- Zusätzlich muss bei diesen Requests der `Origin`-Header vorhanden sein und genau zur eigenen Adresse passen, auch beim Login.
+- Dazu kommt die Host-Prüfung gegen DNS-Rebinding (siehe 5.1).
+
+**Rate-Limit**
+
+- **Pro IP:** 5 Fehlversuche in 15 Minuten sperren diese IP für 15 Minuten (Antwort 429, keine Passwortprüfung). IPv6-Adressen werden pro /64-Netz gezählt.
+- **Global ohne harte Sperre:** Ab 20 Fehlversuchen insgesamt in 15 Minuten wartet jeder Login-Versuch 2 Sekunden länger. Höchstens 2 Prüfungen laufen gleichzeitig; weitere Versuche bekommen sofort 429 mit `Retry-After`. Von einer nicht gesperrten IP kommt der Nutzer also immer herein, schlimmstenfalls nach kurzer Wartezeit.
+- Dazu kommt die Drosselung im Worker (siehe 3.2).
+- Ein erfolgreicher Login setzt die Zähler der eigenen IP zurück. Sperren liegen in SQLite und überstehen einen Neustart. **Notfall:** `twinraid-admin unlock` hebt alle Sperren und Zähler sofort auf, auch die im Worker.
+
+**Security-Header** (an jeder Antwort, auch 401, 403, 413 und 429)
+
+```
+Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'
+X-Frame-Options: DENY
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+Permissions-Policy: camera=(), microphone=(), geolocation=(), usb=(), payment=()
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Resource-Policy: same-origin
+```
+
+- `/api`-Antworten haben zusätzlich `Cache-Control: no-store`.
+- Keine Inline-Skripte und keine Inline-Styles im HTML.
+- Requests über 16 KiB werden mit 413 abgewiesen.
+
+**Audit-Log**
+
+- Tabelle in der SQLite-Datenbank des Web-Prozesses: Zeit (UTC), Client-IP, Aktion, Ergebnis. Aktion und Ergebnis stammen aus festen Listen; kein Feld übernimmt Text aus Requests.
+- Phase 2 protokolliert: Login erfolgreich, fehlgeschlagen, gesperrt oder ohne gesetztes Passwort; Beginn einer Sperre; Logout; abgelaufene Session; fehlgeschlagene CSRF- oder Origin-Prüfung; die CLI-Befehle `set-password`, `renew-cert` und `unlock`. Gleiche Abweisungen derselben IP werden höchstens einmal pro Minute eingetragen.
+- **Nie gespeichert oder geloggt:** Passwörter, Session-IDs, CSRF-Tokens, Cookies, Request-Inhalte.
+- Aufbewahrung 180 Tage und höchstens 50.000 Einträge; aufgeräumt wird beim Start und stündlich.
+- Die Kachel „Verlauf“ zeigt die letzten 50 Einträge über eine geschützte Route.
+- **Ab Phase 4:** Aktionen mit Außenwirkung (WoL, VM, Shutdown, Sync) protokolliert der Worker zusätzlich in einem eigenen Log unter `/data/worker`, das der Web-Prozess nicht verändern kann.
 
 ### 5.4 Container-Härtung
 
@@ -247,6 +310,8 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 - s6-overlay startet und überwacht beide Prozesse. Es ist für Container gebaut, sehr klein und braucht keinen zusätzlichen Interpreter, der als root läuft.
 - **Read-only Root:** `S6_READ_ONLY_ROOT=1`. `/run` ist ein `tmpfs` und darf nicht `noexec` sein, weil s6 dort seine Dienstverzeichnisse anlegt und ausführt. `/tmp` ist ebenfalls ein `tmpfs`.
 - **Startprüfung:** Ein einmaliger Dienst prüft vor dem Start der beiden Prozesse den Betriebsmodus (siehe 6.4) und die Konfiguration (siehe 6.3). Er läuft bereits als unprivilegierter Web-Benutzer. Schlägt er fehl, beendet sich der Container (`S6_BEHAVIOUR_IF_STAGE2_FAILS=2`).
+- **Startdienst `twinraid-init` (ab Phase 2):** Läuft nach der Startprüfung als root mit GID 10001, Bounding-Set nur `DAC_READ_SEARCH` (zum Lesen eines eigenen Schlüssels unter `/config/tls`). Er prüft und korrigiert die Datenablage (siehe 5.9) und richtet TLS ein (siehe 5.2). Schlägt er fehl, startet der Container nicht.
+- **Healthcheck (ab Phase 2):** Der Docker-Healthcheck läuft als Web-Benutzer ohne Capabilities und sendet keine HTTP-Anfrage. Er baut nur eine TLS-Verbindung zu `127.0.0.1:<web.port>` auf und vergleicht das ausgelieferte Zertifikat mit `/run/twinraid-tls`. Der Netzfilter arbeitet auf HTTP-Ebene und wird dadurch nicht berührt; es gibt keine Ausnahme für Loopback. Zusätzlich prüft er, dass der Worker seinen Herzschlag (`/run/twinraid/worker.heartbeat`, alle 10 Sekunden) aktualisiert.
 - **Rechte abgeben:** Beide Prozesse werden über `setpriv` gestartet, jeweils mit `no_new_privs`.
   - Web-Prozess: UID und GID 10001, keine zusätzlichen Gruppen, keine Capabilities, leeres Bounding-Set.
   - Worker: UID 0, GID 10001, keine zusätzlichen Gruppen, Bounding-Set nur `DAC_READ_SEARCH`, `umask 077`. Die GID 10001 dient nur dazu, dass der Socket der Gruppe des Web-Prozesses gehört. Wegen `umask 077` legt der Worker keine Dateien an, die diese Gruppe lesen kann.
@@ -279,11 +344,14 @@ Startoptionen für Docker, entsprechend später im Unraid-Template:
 
 - Gespeichert in `/data/secrets` (Rechte `0700`, root). Nur der Worker hat Zugriff.
 - Angelegt über die Admin-CLI im Container (aufrufbar über die Container-Konsole in Unraid, also nur für Unraid-Admins):
-  - `twinraid-admin set-password`
+  - `twinraid-admin set-password`: fragt das Passwort zweimal ohne Anzeige ab, nie als Argument (Shell-Historie). Für Skripte und Tests gibt es `--stdin`. Beendet alle Sessions.
+  - `twinraid-admin renew-cert`, `twinraid-admin show-cert-fingerprint`, `twinraid-admin unlock` (Phase 2, siehe 5.2 und 5.3).
   - `twinraid-admin init-ssh-keys`: erzeugt ed25519-Keys „sync“ und „power“ und gibt die fertigen `authorized_keys`-Zeilen inklusive Einschränkungen aus.
   - `twinraid-admin set-api-key source|target`
   - `twinraid-admin trust-host-key target`: zeigt den SSH-Fingerabdruck von Groß zur Bestätigung an. Danach gilt strikte Hostkey-Prüfung.
 - Secrets stehen niemals in der YAML-Datei, in Git, in Logs oder im Frontend.
+- Die Befehle für SSH- und API-Keys folgen in Phase 4.
+- Die CLI läuft als root. Zugriffe auf die Datenbank des Web-Prozesses erledigt sie in einem Kindprozess als Web-Benutzer, weil root ohne `DAC_OVERRIDE` dort nicht schreiben darf. Der Container braucht dafür keine zusätzliche Capability.
 
 ### 5.6 Rechte auf den Unraid-Servern (Least Privilege)
 
@@ -314,6 +382,19 @@ Das Repo ist öffentlich auf GitHub, das Container-Image wird öffentlich über 
 
 ---
 
+### 5.9 Datenablage unter `/data` (ab Phase 2)
+
+- `/data` muss root gehören und darf weder für die Gruppe noch für alle beschreibbar sein. Sonst verweigert der Container den Start und nennt den Befehl zur Reparatur auf dem Host (`chown root:root …` und `chmod 755 …`). Ein von Docker angelegtes Verzeichnis erfüllt das.
+- `twinraid-init` legt die Unterordner an, prüft bei jedem Start Besitzer, Gruppe und Rechte und korrigiert sie, soweit das ohne zusätzliche Capabilities geht (Rechte und Gruppe als Besitzer). Symlinks und fremde Besitzer führen zum Abbruch mit Meldung.
+
+| Pfad | Besitzer | Rechte | Inhalt |
+|---|---|---|---|
+| `/data/secrets` | root | 0700 | Passwort-Hash, ab Phase 4 API- und SSH-Keys |
+| `/data/tls` | root | 0700 | selbstsigniertes Zertifikat und Schlüssel |
+| `/data/web` | root, Gruppe 10001 | 0770 | SQLite des Web-Prozesses (Datei `0600`, Besitzer 10001) |
+| `/data/worker` (ab Phase 4) | root | 0700 | Aktionslog des Workers; der Web-Prozess kann es weder lesen noch verändern |
+| `/run/twinraid-tls` | root, Gruppe 10001 | 0750 | aktives Zertifikat und Schlüssel für den Web-Prozess, nur im RAM |
+
 ## 6. Konfiguration
 
 ### 6.1 Volumes (Unraid-Template)
@@ -338,6 +419,10 @@ web:
     - 192.168.20.0/24          # Client-Netz
   session_idle_minutes: 30
   default_language: de         # de | en
+  tls:
+    ip_addresses:              # feste IP des Containers, kommt ins Zertifikat
+      - 192.168.10.20
+    hostnames: []              # optional, z. B. twinraid.home.arpa
 
 servers:
   source:                      # Unraid Klein – hier läuft der Container
@@ -389,6 +474,7 @@ Ergänzende Regeln:
 - **Share-Namen** (`shares`, `appdata_share`): Prüfung über eine Positivliste erlaubter Zeichen. Erlaubt sind die Buchstaben `A–Z` und `a–z`, Ziffern, Punkt, Unterstrich und Bindestrich. Das erste Zeichen muss ein Buchstabe oder eine Ziffer sein, höchstens 64 Zeichen. Damit sind Schrägstrich, `..`, führendes Minus, Leerzeichen und Steuerzeichen ausgeschlossen. `system` und `domains` sind unabhängig von Groß- und Kleinschreibung verboten. Doppelte Einträge sind ein Fehler. `appdata_share` muss in `shares` enthalten sein.
 - **Pfade** (`exclude`, `protect_on_target`): relativ zu `/mnt/user`, also ohne führenden Schrägstrich. Nicht erlaubt sind `..`, `.` und leere Bestandteile, Bestandteile mit führendem Minus sowie Steuer- und unsichtbare Formatzeichen. Zusätzlich verboten sind die Platzhalterzeichen `*`, `?`, `[`, `]` und der Backslash, weil rsync sie in Filterregeln als Muster auswertet. Der erste Bestandteil muss eine konfigurierte Share sein. Eine ganze Share darf nicht ausgeschlossen werden; dafür wird sie aus `shares` entfernt.
 - **Container-Namen** in `never_stop`: nur die von Docker erlaubten Zeichen.
+- **TLS** (`web.tls`): `ip_addresses` enthält mindestens eine IP-Adresse, keine Multicast- oder unspezifizierte Adresse, ohne Duplikate. `hostnames` ist optional; erlaubt sind DNS-Namen nach RFC 1123 ohne Platzhalter, in Kleinbuchstaben gespeichert, ohne Duplikate. Beide Listen bilden zusammen die erlaubten `Host`-Header und gehören zu den Werten, die nie öffentlich ausgeliefert werden.
 - **Zeitplan** (`sync.schedule`): `days` enthält nur die Kürzel `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`, ohne Duplikate und mindestens einen Tag. `time` hat das Format `HH:MM` (`00:00` bis `23:59`) und steht in Anführungszeichen. Ohne Anführungszeichen liest YAML manche Uhrzeiten wie `13:30` als Zahl; das wird mit einem klaren Hinweis abgelehnt. `timezone` ist eine gültige IANA-Zeitzone, die im Container vorhanden ist (z. B. `Europe/Berlin`); Sondereinträge wie `localtime` sind nicht erlaubt.
 
 ### 6.4 Betriebsmodus (`TWINRAID_MODE`)
@@ -409,7 +495,7 @@ twinraid/
 ├── README.md
 ├── docs/
 │   ├── KONZEPT.md             # dieses Dokument
-│   ├── EINRICHTUNG.md         # Installation auf Unraid (Phase 7)
+│   ├── EINRICHTUNG.md         # Installation auf Unraid und Zertifikat auf Windows/Linux/Android (Phase 7)
 │   └── WIEDERHERSTELLUNG.md   # Notfall-Anleitung (Phase 6)
 ├── backend/
 │   ├── pyproject.toml
@@ -454,7 +540,7 @@ Jede Phase endet mit lauffähigem, getestetem Stand und einem Commit auf GitHub.
 | 1 | Grundgerüst: Backend- und Frontend-Skelett, Dockerfile mit beiden Prozessen, Config laden und validieren, Mock-Modus, DE/EN, Dark/Light, CI | Container startet lokal im Mock-Modus, Dashboard (leer) sichtbar, CI grün |
 | 2 | Sicherheit: HTTPS, Admin-CLI, Login, Sessions, CSRF, Netzfilter, Rate-Limit, Security-Header, Audit-Log | Ohne Login ist nichts erreichbar; jede Schutzmaßnahme hat einen Test |
 | 3 | Status: Server-Checks, VM-Status, Live-Updates per SSE | Dashboard zeigt Status im Mock-Modus korrekt und live |
-| 4 | Aktionen: WoL, VM Start/Stop/Force, Shutdown Groß, Sperrlogik, Auto-Wecken; erster Test gegen echte Server | Alle Buttons funktionieren auf den echten Servern; Rechte der API-Keys sind geprüft |
+| 4 | Aktionen: WoL, VM Start/Stop/Force, Shutdown Groß, Sperrlogik, Auto-Wecken, eigenes Aktionslog des Workers (siehe 5.3); erster Test gegen echte Server | Alle Buttons funktionieren auf den echten Servern; Rechte der API-Keys sind geprüft; jede Aktion steht im Aktionslog des Workers |
 | 5 | Sync: Dry-Run, rsync, Fortschritt/Restzeit, Container stoppen/starten, Templates, Schutzmechanismen, Historie | Erst Sync einer Test-Share, danach vollständiger Sync erfolgreich |
 | 6 | Zeitsteuerung, Auto-Wecken/-Herunterfahren, Benachrichtigungen, Notfall-Info auf Groß | Ein geplanter Lauf läuft unbeaufsichtigt durch |
 | 7 | Unraid-Template, Einrichtungsanleitung, Image-Build per GitHub Actions, unabhängiges Security-Review | Installation auf Unraid nach Anleitung möglich; Review-Befunde behoben |
@@ -469,7 +555,10 @@ Jede Phase endet mit lauffähigem, getestetem Stand und einem Commit auf GitHub.
 - [ ] Klein: „Host access to custom networks“ in den Docker-Einstellungen aktivieren
 - [ ] Klein: Container-Templates auf Pool-Pfade prüfen und auf `/mnt/user/…` umstellen
 - [ ] UniFi: feste IP für den Container, Firewall-Regel Client-Netz → Container-IP:8443
+- [ ] Klein: `/mnt/user/appdata/twinraid/data` gehört root und ist nur für root beschreibbar (siehe 5.9)
+- [ ] Konfiguration: `web.tls.ip_addresses` enthält die feste Container-IP
 - [ ] Container installieren, Konfiguration anlegen, Passwort setzen, Hostkey von Groß bestätigen
+- [ ] Geräte: Zertifikat auf Windows, Linux und Android für Chrome bzw. Edge und Firefox als vertrauenswürdig einrichten (Ergebnis aus Issue #3)
 
 ---
 

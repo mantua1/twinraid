@@ -1,6 +1,7 @@
 """Worker-Socket: Rechte, Aufruferprüfung und Protokoll (Konzept 3.2 und 5.4)."""
 
 import asyncio
+import json
 import os
 import shutil
 import socket
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.passwords import TEST_PASSWORD, password_check
 from twinraid.integrations.mocks.status import MockStatusProvider
 from twinraid.shared.ipc import MAX_REQUEST_BYTES, ErrorCode, ErrorResponse, OkResponse, Response
 from twinraid.shared.ipc import decode_response as decode
@@ -34,7 +36,10 @@ def socket_dir() -> Iterator[Path]:
 
 async def _start(path: Path, allowed_uid: int, read_timeout: float = 2.0) -> WorkerServer:
     server = WorkerServer(
-        path, allowed_uid, CommandHandler(MockStatusProvider()), read_timeout=read_timeout
+        path,
+        allowed_uid,
+        CommandHandler(MockStatusProvider(), password_check(path.parent.parent)),
+        read_timeout=read_timeout,
     )
     await server.start()
     return server
@@ -77,7 +82,35 @@ async def test_get_status_returns_unknown(server: WorkerServer) -> None:
         "target": "unknown",
         "vm": "unknown",
         "checked_at": None,
+        "password_set": True,
     }
+
+
+@pytest.mark.parametrize(
+    ("password", "outcome"),
+    [(TEST_PASSWORD, "valid"), ("falsches-passwort-123", "invalid"), ("x", "invalid")],
+)
+async def test_verify_password(server: WorkerServer, password: str, outcome: str) -> None:
+    payload = json.dumps({"command": "verify_password", "password": password}).encode() + b"\n"
+    response = await _raw(server.path, payload)
+    assert isinstance(response, OkResponse)
+    assert response.result == {"outcome": outcome}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"command":"verify_password"}\n',
+        b'{"command":"verify_password","password":""}\n',
+        b'{"command":"verify_password","password":123}\n',
+        b'{"command":"verify_password","password":"x","path":"/etc"}\n',
+        ('{"command":"verify_password","password":"' + "a" * 1025 + '"}\n').encode(),
+    ],
+)
+async def test_verify_password_rejects_invalid_requests(
+    server: WorkerServer, payload: bytes
+) -> None:
+    assert await _error_code(server.path, payload) is ErrorCode.INVALID_REQUEST
 
 
 @pytest.mark.parametrize(

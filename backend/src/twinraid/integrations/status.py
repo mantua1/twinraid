@@ -2,8 +2,8 @@
 
 from typing import Protocol
 
-from twinraid.shared.status import StatusSnapshot
+from twinraid.shared.status import ResourceStatus
 
 
 class StatusProvider(Protocol):
-    async def get_status(self) -> StatusSnapshot: ...
+    async def get_status(self) -> ResourceStatus: ...

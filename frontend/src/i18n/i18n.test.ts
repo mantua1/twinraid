@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { RESOURCE_STATES } from "@/api/types";
+import { AUDIT_ACTIONS, AUDIT_RESULTS, LOGIN_ERRORS, RESOURCE_STATES } from "@/api/types";
 
 import de from "./de.json";
+import { browserLanguage } from "./index";
 import en from "./en.json";
 
 type Tree = Record<string, unknown>;
@@ -37,9 +38,33 @@ describe("translations", () => {
     }
   });
 
+  it("cover every audit action, audit result and login error", () => {
+    for (const action of AUDIT_ACTIONS) {
+      expect(german.has(`audit.actions.${action}`), action).toBe(true);
+    }
+    for (const result of AUDIT_RESULTS) {
+      expect(german.has(`audit.results.${result}`), result).toBe(true);
+    }
+    for (const code of [...LOGIN_ERRORS, "network"]) {
+      expect(german.has(`login.errors.${code}`), code).toBe(true);
+    }
+  });
+
   it("cover every status value", () => {
     for (const state of RESOURCE_STATES) {
       expect(german.has(`status.${state}`), state).toBe(true);
     }
+  });
+});
+
+describe("browser language", () => {
+  it.each([
+    ["de-DE", "de"],
+    ["de", "de"],
+    ["en-US", "en"],
+    ["fr-FR", "en"],
+  ])("maps %s to %s", (language, expected) => {
+    vi.spyOn(navigator, "language", "get").mockReturnValue(language);
+    expect(browserLanguage()).toBe(expected);
   });
 });
