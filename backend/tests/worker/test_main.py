@@ -1,11 +1,12 @@
 """Startverhalten des Workers bei fehlerhafter Umgebung."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
 from tests.conftest import EXAMPLE_CONFIG
-from twinraid.worker.main import EXIT_STARTUP_ERROR, main
+from twinraid.worker.main import EXIT_STARTUP_ERROR, heartbeat, main
 
 
 @pytest.fixture(autouse=True)
@@ -38,9 +39,6 @@ def test_invalid_config_stops_worker(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
 
 def test_heartbeat_updates_file(tmp_path: Path) -> None:
-    import asyncio
-
-    from twinraid.worker.main import heartbeat
 
     path = tmp_path / "worker.heartbeat"
 

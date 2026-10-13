@@ -2,9 +2,12 @@
 
 Die Prüfung läuft als ASGI-Middleware vor dem Routing. Dadurch gilt sie auch
 für Mounts, unbekannte Pfade und Routen, die später hinzukommen. Öffentliche
-Routen werden mit @public markiert (Konzept 5.3).
+Routen werden mit @public markiert (Konzept 5.3). Für zustandsändernde
+Requests mit Session prüft die Middleware zusätzlich das CSRF-Token.
 """
 
+import hmac
+from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from starlette.requests import HTTPConnection
@@ -13,9 +16,12 @@ from starlette.routing import BaseRoute, Match, Mount, Route, Router
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocketClose
 
-from twinraid.shared.mode import RunMode
+from twinraid.web.security import UNSAFE_METHODS
+from twinraid.web.sessions import Session
 
 _PUBLIC_ATTRIBUTE = "__twinraid_public__"
+CSRF_HEADER = "x-csrf-token"
+SESSION_STATE_KEY = "twinraid_session"
 
 
 def public[T](target: T) -> T:
@@ -46,29 +52,28 @@ def find_route(router: Router, scope: Scope) -> BaseRoute | None:
     return partial
 
 
-class SessionVerifier(Protocol):
-    def is_authenticated(self, connection: HTTPConnection) -> bool: ...
+class Authenticator(Protocol):
+    async def authenticate(self, connection: HTTPConnection) -> Session | None: ...
 
 
-class PlaceholderSessionVerifier:
-    """Platzhalter bis zur echten Login-Prüfung in Phase 2.
-
-    Lässt Anfragen nur im Mock-Modus durch (Konzept 5.3). In jedem anderen
-    Modus ist ohne echte Login-Prüfung nichts erreichbar.
-    """
-
-    def __init__(self, mode: RunMode) -> None:
-        self._allow = mode is RunMode.MOCK
-
-    def is_authenticated(self, connection: HTTPConnection) -> bool:
-        return self._allow
+def session_of(connection: HTTPConnection) -> Session | None:
+    """Session, die die Middleware für diesen Request ermittelt hat."""
+    value = connection.scope.get("state", {}).get(SESSION_STATE_KEY)
+    return value if isinstance(value, Session) else None
 
 
 class AuthMiddleware:
-    def __init__(self, app: ASGIApp, router: Router, verifier: SessionVerifier) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        router: Router,
+        authenticator: Authenticator,
+        on_csrf_reject: Callable[[Scope], Awaitable[None]] | None = None,
+    ) -> None:
         self._app = app
         self._router = router
-        self._verifier = verifier
+        self._authenticator = authenticator
+        self._on_csrf_reject = on_csrf_reject
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in {"http", "websocket"}:
@@ -78,9 +83,24 @@ class AuthMiddleware:
         if route is not None and is_public_route(route):
             await self._app(scope, receive, send)
             return
-        if self._verifier.is_authenticated(HTTPConnection(scope)):
-            await self._app(scope, receive, send)
+        connection = HTTPConnection(scope)
+        session = await self._authenticator.authenticate(connection)
+        if session is None:
+            await self._reject(scope, receive, send)
             return
+        if scope["type"] == "http" and scope["method"] in UNSAFE_METHODS:
+            token = connection.headers.get(CSRF_HEADER, "")
+            if not hmac.compare_digest(token.encode(), session.csrf_token.encode()):
+                if self._on_csrf_reject is not None:
+                    await self._on_csrf_reject(scope)
+                response = JSONResponse({"detail": "csrf_rejected"}, status_code=403)
+                await response(scope, receive, send)
+                return
+        scope.setdefault("state", {})[SESSION_STATE_KEY] = session
+        await self._app(scope, receive, send)
+
+    @staticmethod
+    async def _reject(scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "websocket":
             await WebSocketClose(code=1008)(scope, receive, send)
             return

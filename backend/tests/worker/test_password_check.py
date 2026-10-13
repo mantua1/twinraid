@@ -1,6 +1,7 @@
 """Drosselung im Worker: Mindestdauer, steigende Verzögerung, eine Prüfung gleichzeitig."""
 
 import asyncio
+import time
 from pathlib import Path
 
 import pytest
@@ -100,7 +101,6 @@ async def test_only_one_check_at_a_time(tmp_path: Path) -> None:
             nonlocal active, peak
             active += 1
             peak = max(peak, active)
-            import time
 
             time.sleep(0.02)
             active -= 1
