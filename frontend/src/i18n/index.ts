@@ -38,13 +38,18 @@ export function chooseLanguage(language: Language): void {
   void i18n.changeLanguage(language);
 }
 
+/** Sprache des Browsers, solange der Nutzer keine eigene gewählt hat (Konzept 5.3). */
+export function browserLanguage(): Language {
+  return navigator.language.toLowerCase().startsWith("de") ? "de" : "en";
+}
+
 i18n.on("languageChanged", (language) => {
   document.documentElement.lang = language;
 });
 
 void i18n.use(initReactI18next).init({
   resources,
-  lng: storedLanguage() ?? "de",
+  lng: storedLanguage() ?? browserLanguage(),
   fallbackLng: "de",
   supportedLngs: LANGUAGES,
   // React maskiert Ausgaben bereits selbst.

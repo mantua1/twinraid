@@ -9,7 +9,8 @@
   },
   "errors": {
     "connection": "Keine Verbindung zum TwinRaid-Server.",
-    "status": "Der Status ist gerade nicht verfügbar."
+    "status": "Der Status ist gerade nicht verfügbar.",
+    "sessionExpired": "Die Sitzung ist abgelaufen. Bitte erneut anmelden."
   },
   "language": {
     "label": "Sprache",
@@ -60,5 +61,78 @@
       "description": "Letzte Aktionen und Sync-Läufe.",
       "empty": "Noch keine Einträge."
     }
+  },
+  "login": {
+    "title": "Anmelden",
+    "description": "Bitte das Passwort für TwinRaid eingeben.",
+    "password": "Passwort",
+    "submit": "Anmelden",
+    "submitting": "Wird geprüft …",
+    "errors": {
+      "invalid_password": "Das Passwort ist falsch.",
+      "password_not_set": "Es ist noch kein Passwort gesetzt.",
+      "locked": "Zu viele Fehlversuche. Die Anmeldung ist in {{minutes}} Minuten wieder möglich.",
+      "busy": "Gerade laufen zu viele Anmeldungen. Bitte in {{seconds}} Sekunden erneut versuchen.",
+      "worker_unavailable": "Der Server ist gerade nicht bereit. Bitte gleich erneut versuchen.",
+      "invalid_request": "Bitte ein Passwort eingeben.",
+      "network": "Keine Verbindung zum TwinRaid-Server."
+    },
+    "noPassword": {
+      "title": "Noch kein Passwort gesetzt",
+      "text": "Das Passwort wird in der Container-Konsole von Unraid mit diesem Befehl gesetzt:",
+      "command": "twinraid-admin set-password"
+    }
+  },
+  "nav": {
+    "dashboard": "Übersicht",
+    "settings": "Einstellungen",
+    "logout": "Abmelden"
+  },
+  "settings": {
+    "title": "Einstellungen",
+    "back": "Zurück zur Übersicht",
+    "certificate": {
+      "title": "TLS-Zertifikat",
+      "description": "Mit diesem Zertifikat ist die Verbindung verschlüsselt. Wird es auf einem Gerät als vertrauenswürdig installiert, erscheint dort keine Warnung mehr.",
+      "source": "Herkunft",
+      "sources": {
+        "self-signed": "Selbstsigniert",
+        "custom": "Eigenes Zertifikat"
+      },
+      "fingerprint": "SHA-256-Fingerabdruck",
+      "compare": "Der Fingerabdruck muss mit der Anzeige im Browser und im Container-Log übereinstimmen.",
+      "validUntil": "Gültig bis",
+      "daysLeft_one": "noch {{count}} Tag",
+      "daysLeft_other": "noch {{count}} Tage",
+      "download": "Zertifikat herunterladen",
+      "unavailable": "Die Zertifikatsdaten sind gerade nicht verfügbar."
+    }
+  },
+  "certificateWarning_one": "Das TLS-Zertifikat läuft in {{count}} Tag ab. Danach wird automatisch ein neues erzeugt, das auf den Geräten neu bestätigt werden muss.",
+  "certificateWarning_other": "Das TLS-Zertifikat läuft in {{count}} Tagen ab. Danach wird automatisch ein neues erzeugt, das auf den Geräten neu bestätigt werden muss.",
+  "audit": {
+    "actions": {
+      "login": "Anmeldung",
+      "logout": "Abmeldung",
+      "session": "Sitzung",
+      "csrf_check": "CSRF-Prüfung",
+      "origin_check": "Herkunftsprüfung",
+      "cli_set_password": "Passwort gesetzt (CLI)",
+      "cli_renew_cert": "Zertifikat erneuert (CLI)",
+      "cli_unlock": "Sperren aufgehoben (CLI)"
+    },
+    "results": {
+      "success": "erfolgreich",
+      "invalid_password": "falsches Passwort",
+      "password_not_set": "kein Passwort gesetzt",
+      "locked": "gesperrt",
+      "lockout_started": "Sperre begonnen",
+      "busy": "zu viele Versuche",
+      "expired": "abgelaufen",
+      "rejected": "abgewiesen"
+    },
+    "unknown": "unbekannt",
+    "from": "von {{ip}}",
+    "local": "im Container"
   }
 }

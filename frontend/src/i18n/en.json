@@ -9,7 +9,8 @@
   },
   "errors": {
     "connection": "No connection to the TwinRaid server.",
-    "status": "Status is currently unavailable."
+    "status": "Status is currently unavailable.",
+    "sessionExpired": "The session has expired. Please sign in again."
   },
   "language": {
     "label": "Language",
@@ -60,5 +61,78 @@
       "description": "Recent actions and sync runs.",
       "empty": "No entries yet."
     }
+  },
+  "login": {
+    "title": "Sign in",
+    "description": "Please enter the TwinRaid password.",
+    "password": "Password",
+    "submit": "Sign in",
+    "submitting": "Checking …",
+    "errors": {
+      "invalid_password": "The password is wrong.",
+      "password_not_set": "No password has been set yet.",
+      "locked": "Too many failed attempts. You can sign in again in {{minutes}} minutes.",
+      "busy": "Too many sign-ins right now. Please try again in {{seconds}} seconds.",
+      "worker_unavailable": "The server is not ready right now. Please try again shortly.",
+      "invalid_request": "Please enter a password.",
+      "network": "No connection to the TwinRaid server."
+    },
+    "noPassword": {
+      "title": "No password set yet",
+      "text": "Set the password in the Unraid container console with this command:",
+      "command": "twinraid-admin set-password"
+    }
+  },
+  "nav": {
+    "dashboard": "Overview",
+    "settings": "Settings",
+    "logout": "Sign out"
+  },
+  "settings": {
+    "title": "Settings",
+    "back": "Back to overview",
+    "certificate": {
+      "title": "TLS certificate",
+      "description": "This certificate encrypts the connection. Once it is installed as trusted on a device, the warning no longer appears there.",
+      "source": "Source",
+      "sources": {
+        "self-signed": "Self-signed",
+        "custom": "Custom certificate"
+      },
+      "fingerprint": "SHA-256 fingerprint",
+      "compare": "The fingerprint must match the one shown by the browser and in the container log.",
+      "validUntil": "Valid until",
+      "daysLeft_one": "{{count}} day left",
+      "daysLeft_other": "{{count}} days left",
+      "download": "Download certificate",
+      "unavailable": "Certificate details are not available right now."
+    }
+  },
+  "certificateWarning_one": "The TLS certificate expires in {{count}} day. A new one is then created automatically and must be confirmed again on your devices.",
+  "certificateWarning_other": "The TLS certificate expires in {{count}} days. A new one is then created automatically and must be confirmed again on your devices.",
+  "audit": {
+    "actions": {
+      "login": "Sign-in",
+      "logout": "Sign-out",
+      "session": "Session",
+      "csrf_check": "CSRF check",
+      "origin_check": "Origin check",
+      "cli_set_password": "Password set (CLI)",
+      "cli_renew_cert": "Certificate renewed (CLI)",
+      "cli_unlock": "Locks cleared (CLI)"
+    },
+    "results": {
+      "success": "successful",
+      "invalid_password": "wrong password",
+      "password_not_set": "no password set",
+      "locked": "locked",
+      "lockout_started": "lock started",
+      "busy": "too many attempts",
+      "expired": "expired",
+      "rejected": "rejected"
+    },
+    "unknown": "unknown",
+    "from": "from {{ip}}",
+    "local": "in the container"
   }
 }
