@@ -17,6 +17,7 @@ dependencies = [
 twinraid-web = "twinraid.web.main:main"
 twinraid-worker = "twinraid.worker.main:main"
 twinraid-preflight = "twinraid.preflight:main"
+twinraid-init = "twinraid.init:main"
 
 [build-system]
 requires = ["uv_build==0.13.0"]
