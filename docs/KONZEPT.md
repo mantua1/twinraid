@@ -1,6 +1,6 @@
 # TwinRaid – Projektkonzept
 
-> Arbeitstitel „TwinRaid“ · Version 0.3 · Stand 13.10.2026
+> Arbeitstitel „TwinRaid“ · Version 0.4 · Stand 13.10.2026
 > Dieses Dokument ist die verbindliche Grundlage für die Entwicklung. Änderungen am Konzept werden hier eingetragen, bevor sie umgesetzt werden.
 
 ---
@@ -88,7 +88,7 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 | Sprachen der Oberfläche | Deutsch / Englisch umschaltbar (react-i18next) |
 | Live-Updates | Server-Sent Events (SSE) |
 | Persistenz | SQLite in `/data` (Job-Historie, Sessions, Audit-Log) |
-| Zeitsteuerung | APScheduler im Worker, Cron-Ausdruck aus der Konfiguration |
+| Zeitsteuerung | im Worker; Zeitplan aus Wochentagen, Uhrzeit und Zeitzone (siehe 4.8); die technische Umsetzung wird in Phase 6 festgelegt |
 | Prozessverwaltung | s6-overlay mit read-only Root (entschieden, siehe 5.4) |
 | Unraid-Steuerung | offizielle Unraid-GraphQL-API (in Unraid 7.3.3 enthalten), API-Keys mit minimalen Rechten |
 | Kopieren | `rsync` über SSH |
@@ -183,11 +183,11 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 
 ### 4.8 Zeitsteuerung
 
-- Zeitplan als Cron-Ausdruck in der Konfiguration (z. B. sonntags 03:00), optional mit Wecken und Herunterfahren.
+- Zeitplan als Wochentage plus Uhrzeit in einer festen Zeitzone (z. B. sonntags 03:00, `Europe/Berlin`), optional mit Wecken und Herunterfahren. Ein Cron-Ausdruck wird bewusst nicht verwendet, weil er schwer lesbar ist und Bibliotheken den Wochentag unterschiedlich zählen.
+- Die Uhrzeit gilt als Ortszeit der angegebenen Zeitzone. Das Verhalten an den Tagen der Zeitumstellung wird in Phase 6 festgelegt.
 - Der manuelle Sync bleibt jederzeit möglich (außer während eines laufenden Syncs).
-- Der nächste geplante Lauf wird im Dashboard angezeigt.
+- Der nächste geplante Lauf wird im Dashboard und im Startlog mit Wochentag und Uhrzeit angezeigt (ab Phase 6).
 - Fehler lösen optional eine Unraid-Benachrichtigung über die API aus.
-- **Hinweis für Phase 6:** Cron-Ausdrücke haben die übliche Crontab-Bedeutung (Wochentag `0` = Sonntag). APScheduler 3.x zählt in `CronTrigger.from_crontab()` den Wochentag ab Montag (`0` = Montag). Die Zeitsteuerung muss das umrechnen, sonst läuft „sonntags 03:00“ montags. In Phase 1 wird nur die Syntax geprüft.
 
 ---
 
@@ -228,6 +228,7 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 - Audit-Log: jede Aktion mit Zeitstempel und Client-IP.
 - Ohne Login erreichbar sind nur die Login-Seite und `/health` (liefert nur „ok“).
 - **Geschützt per Default:** Jede Route ist automatisch geschützt. Öffentliche Routen müssen im Code ausdrücklich markiert werden. Öffentlich sind nur `/health`, später die Login-Route und die Auslieferung der Oberfläche selbst (`index.html`, JavaScript, CSS, Icon). Die Oberfläche ist öffentlich, weil sie die Login-Seite enthält. Sie enthält keine Daten; alle Daten kommen über geschützte Routen unter `/api`.
+- **Keine Konfigurationswerte in öffentlichen Dateien:** Die ausgelieferten Frontend-Dateien und alle anderen öffentlichen Routen enthalten keine Werte aus der Konfiguration, also keine IP-Adressen, Netze, MAC-Adressen, Hostnamen, Share-Namen, Pfade, Container-, VM- oder Servernamen. Solche Werte gibt es nur über geschützte Routen unter `/api`. Abgesichert durch einen Backend-Test und durch den Container-Starttest, der eine Konfiguration mit eindeutigen Testwerten verwendet und alle öffentlich ausgelieferten Dateien danach durchsucht.
 - Unbekannte Pfade werden wie geschützte Routen behandelt. Ohne Session gibt es also 401 statt 404.
 - Ein Test stellt sicher, dass es außer den markierten Routen keine ungeschützte Route gibt.
 - **Bis Phase 2:** An der Stelle der Login-Prüfung steht ein Platzhalter. Er lässt Anfragen nur im Mock-Modus durch (siehe 6.4).
@@ -371,14 +372,16 @@ sync:
   copy_templates: true
   schedule:
     enabled: true
-    cron: "0 3 * * 0"          # sonntags 03:00
+    timezone: "Europe/Berlin"  # IANA-Zeitzone
+    days: [sun]                # mon, tue, wed, thu, fri, sat, sun
+    time: "03:00"              # HH:MM, Anführungszeichen sind Pflicht
     wake_target: true
     shutdown_after: true       # nur wenn der Sync geweckt hat und die VM aus ist
 ```
 
 ### 6.3 Validierung
 
-Die Konfiguration wird beim Start mit Pydantic vollständig validiert: Pflichtfelder, IP- und MAC-Formate, Cron-Syntax, verbotene Shares (`system`, `domains`), Überschneidungen von `exclude` und `shares`. Ist die Konfiguration ungültig, startet der Container **nicht** und meldet im Log genau, was falsch ist. Die Weboberfläche zeigt die aktive Konfiguration nur lesend an.
+Die Konfiguration wird beim Start mit Pydantic vollständig validiert: Pflichtfelder, IP- und MAC-Formate, Zeitplan, verbotene Shares (`system`, `domains`), Überschneidungen von `exclude` und `shares`. Ist die Konfiguration ungültig, startet der Container **nicht** und meldet im Log genau, was falsch ist. Die Weboberfläche zeigt die aktive Konfiguration nur lesend an.
 
 Ergänzende Regeln:
 
@@ -386,6 +389,7 @@ Ergänzende Regeln:
 - **Share-Namen** (`shares`, `appdata_share`): Prüfung über eine Positivliste erlaubter Zeichen. Erlaubt sind die Buchstaben `A–Z` und `a–z`, Ziffern, Punkt, Unterstrich und Bindestrich. Das erste Zeichen muss ein Buchstabe oder eine Ziffer sein, höchstens 64 Zeichen. Damit sind Schrägstrich, `..`, führendes Minus, Leerzeichen und Steuerzeichen ausgeschlossen. `system` und `domains` sind unabhängig von Groß- und Kleinschreibung verboten. Doppelte Einträge sind ein Fehler. `appdata_share` muss in `shares` enthalten sein.
 - **Pfade** (`exclude`, `protect_on_target`): relativ zu `/mnt/user`, also ohne führenden Schrägstrich. Nicht erlaubt sind `..`, `.` und leere Bestandteile, Bestandteile mit führendem Minus sowie Steuer- und unsichtbare Formatzeichen. Zusätzlich verboten sind die Platzhalterzeichen `*`, `?`, `[`, `]` und der Backslash, weil rsync sie in Filterregeln als Muster auswertet. Der erste Bestandteil muss eine konfigurierte Share sein. Eine ganze Share darf nicht ausgeschlossen werden; dafür wird sie aus `shares` entfernt.
 - **Container-Namen** in `never_stop`: nur die von Docker erlaubten Zeichen.
+- **Zeitplan** (`sync.schedule`): `days` enthält nur die Kürzel `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`, ohne Duplikate und mindestens einen Tag. `time` hat das Format `HH:MM` (`00:00` bis `23:59`) und steht in Anführungszeichen, weil YAML ein unquotiertes `03:00` als Zahl liest. `timezone` ist eine gültige IANA-Zeitzone, die im Container vorhanden ist (z. B. `Europe/Berlin`); Sondereinträge wie `localtime` sind nicht erlaubt.
 
 ### 6.4 Betriebsmodus (`TWINRAID_MODE`)
 
