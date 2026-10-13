@@ -425,6 +425,38 @@ else
   fail "stop took ${duration}s, exit ${code}"
 fi
 
+# --- 13a. Rechte zurückgesetzt und nach Anleitung repariert (docs/EINRICHTUNG.md, Abschnitt 12) ---
+# Wie Unraid "New Permissions": alles nobody:users, Verzeichnisse 0777, Dateien 0666.
+on_data() {
+  docker run --rm --network none --entrypoint sh \
+    --mount "type=volume,src=${main}-data,dst=/data" "${IMAGE}" -c "$1"
+}
+on_data 'chown -R 99:100 /data && chmod -R u-x,go-rwx,go+u,ugo+X /data'
+docker start "${main}" >/dev/null
+if wait_for_exit "${main}" && [[ "$(exit_code "${main}")" != "0" ]] \
+  && [[ "$(docker logs --since 1m "${main}" 2>&1)" == *"/data is owned by uid 99, expected uid 0 (root)"* ]]; then
+  pass "reset permissions (New Permissions) stop the start"
+else
+  fail "start was not refused after New Permissions"
+fi
+# Genau die Befehle aus der Anleitung, mit /data statt des Host-Pfads. $D wird
+# absichtlich erst im Hilfscontainer ausgewertet.
+# shellcheck disable=SC2016
+on_data 'D=/data; chown -R root:root "$D"; chmod 755 "$D"; chown 10001:10001 "$D"/web/web.sqlite*'
+docker start "${main}" >/dev/null
+if wait_for_https "${main}"; then
+  pass "container starts again after the documented repair"
+  repaired_logs="$(docker logs --since 1m "${main}" 2>&1)"
+  expect_contains "start log reports the corrected modes" "${repaired_logs}" "Data directory: set mode 0700 on /data/secrets"
+  expect_equal "password survives the repair" "$(login_status "${PASSWORD}")" "200"
+  expect_equal "/data/web is 0770 root:10001 again" "$(perm_group /data/web)" "770 0:10001"
+  expect_equal "password file is 0600 root again" "$(perm /data/secrets/password.argon2)" "600 0"
+else
+  fail "container did not start after the documented repair"
+  docker logs "${main}" 2>&1 | tail -20
+fi
+docker stop -t 10 "${main}" >/dev/null
+
 # --- 14. Netzfilter: fremdes Netz bekommt 403 --------------------------------------------------
 foreign_config="${WORKDIR}/foreign.yaml"
 grep -v '172.16.0.0/12' "${CANARY_CONFIG}" >"${foreign_config}"
