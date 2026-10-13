@@ -3,10 +3,12 @@
 #
 # Prüft unter anderem: Start mit read-only Root und --cap-drop=ALL plus nur den
 # nötigen Capabilities, Rechte der Prozesse und Dateien, nur HTTPS (HTTP wird
-# abgewiesen), Zertifikat und Fingerabdruck, Healthcheck, Login mit Session und
-# CSRF, Sperre nach Fehlversuchen samt "unlock", keine /api-Route ohne Login,
-# keine Konfigurationswerte in öffentlichen Dateien, Netzfilter, Host-Prüfung,
-# Security-Header, Neustart, "renew-cert" und den Startabbruch bei Fehlern.
+# abgewiesen), CA und Serverzertifikat samt Fingerabdrücken (die CA ist der
+# einzige Vertrauensanker), Healthcheck, Login mit Session und CSRF, Live-Datenstrom,
+# simulierten Kopierjob, Sperre nach Fehlversuchen samt "unlock", keine
+# /api-Route ohne Login, keine Konfigurationswerte in öffentlichen Dateien,
+# Netzfilter, Host-Prüfung, Security-Header, Neustart, "renew-cert" mit und ohne
+# neue CA, den Modus real nur lesend und den Startabbruch bei Fehlern.
 #
 # Aufruf aus dem Repo-Hauptordner:
 #   docker/smoke-test.sh [IMAGE]          Standard-Image: twinraid:dev
@@ -29,7 +31,8 @@ ORIGIN="Origin: ${BASE}"
 JSON="Content-Type: application/json"
 PREFIX="twinraid-smoke-$$"
 WORKDIR="$(mktemp -d)"
-CERT="${WORKDIR}/cert.pem"
+# Nur das CA-Zertifikat dient als Vertrauensanker, wie später auf den Geräten.
+CERT="${WORKDIR}/ca.pem"
 JAR="${WORKDIR}/cookies.txt"
 PASSWORD="smoke-test-password-42"
 WRONG_PASSWORD="smoke-wrong-password-17"
@@ -162,23 +165,38 @@ else
   docker logs "${main}" 2>&1 | tail -40
   exit 1
 fi
-docker exec "${main}" cat /run/twinraid-tls/cert.pem >"${CERT}"
+docker exec "${main}" cat /run/twinraid-tls/ca.pem >"${CERT}"
 expect_contains "log warns about simulation mode" "$(docker logs "${main}" 2>&1)" "SIMULATION MODE ACTIVE"
 
-# --- 2. Nur HTTPS, Zertifikat und Healthcheck ----------------------------------------
-expect_equal "HTTPS works with the certificate as the only trust anchor" \
+# --- 2. Nur HTTPS, CA, Serverzertifikat und Healthcheck ------------------------------------
+expect_equal "HTTPS works with only the CA as trust anchor (name constraints accepted)" \
   "$(https_get "${BASE}/health")" "ok"
 expect_equal "plain HTTP gets no answer" "$(curl -s --max-time 5 "http://127.0.0.1:${PORT}/health" || true)" ""
 cert_info="$(docker exec "${main}" "${PY}" -c "${CERT_SCRIPT}")"
-expect_equal "certificate is not a CA" "$(json_get ca <<<"${cert_info}")" "false"
-expect_equal "certificate has EKU serverAuth" "$(json_get server_auth <<<"${cert_info}")" "true"
-expect_equal "certificate is valid for exactly 825 days" "$(json_get validity_days <<<"${cert_info}")" "825.0"
-expect_equal "certificate uses ECDSA P-256" "$(json_str curve <<<"${cert_info}")" "secp256r1"
-expect_equal "certificate SAN contains the configured IPs" "$(json_get ips <<<"${cert_info}")" '["10.77.31.50", "127.0.0.1"]'
-expect_equal "certificate SAN contains the configured hostname" "$(json_get dns <<<"${cert_info}")" '["canary-host-7q.home.arpa"]'
-logged_fp="$(docker logs "${main}" 2>&1 | grep -o 'SHA-256 fingerprint: [0-9A-F:]*' | tail -1 | cut -d' ' -f3)"
+expect_equal "chain is server plus CA" "$(json_get chain_length <<<"${cert_info}")" "2"
+expect_equal "chain ends with the CA" "$(json_get chain_ends_with_ca <<<"${cert_info}")" "true"
+expect_equal "server certificate is not a CA" "$(json_get server_ca <<<"${cert_info}")" "false"
+expect_equal "server certificate has EKU serverAuth" "$(json_get server_auth <<<"${cert_info}")" "true"
+expect_equal "server certificate is valid for exactly 825 days" "$(json_get server_days <<<"${cert_info}")" "825.0"
+expect_equal "server certificate has an empty subject" "$(json_get server_subject_empty <<<"${cert_info}")" "true"
+expect_equal "SAN is critical (RFC 5280, empty subject)" "$(json_get san_critical <<<"${cert_info}")" "true"
+expect_equal "server certificate uses ECDSA P-256" "$(json_str curve <<<"${cert_info}")" "secp256r1"
+expect_equal "server certificate is issued by the CA" "$(json_get issued_by_ca <<<"${cert_info}")" "true"
+expect_equal "SAN contains the configured IPs" "$(json_get ips <<<"${cert_info}")" '["10.77.31.50", "127.0.0.1"]'
+expect_equal "SAN contains the configured hostname" "$(json_get dns <<<"${cert_info}")" '["canary-host-7q.home.arpa"]'
+expect_equal "CA is a CA" "$(json_get ca_ca <<<"${cert_info}")" "true"
+expect_equal "CA has pathLenConstraint 0" "$(json_get ca_path_length <<<"${cert_info}")" "0"
+expect_equal "CA is valid for 10 years" "$(json_get ca_days <<<"${cert_info}")" "3650.0"
+expect_equal "CA may sign certificates" "$(json_get ca_key_cert_sign <<<"${cert_info}")" "true"
+expect_equal "CA name constraints are critical" "$(json_get name_constraints_critical <<<"${cert_info}")" "true"
+expect_equal "CA allows only the own addresses" "$(json_get permitted <<<"${cert_info}")" \
+  '["10.77.31.50/32", "127.0.0.1/32", "canary-host-7q.home.arpa"]'
+logs="$(docker logs "${main}" 2>&1)"
+logged_fp="$(grep -o 'TLS server certificate (ca) SHA-256 fingerprint: [0-9A-F:]*' <<<"${logs}" | tail -1 | awk '{print $NF}')"
 first_fp="$(served_fingerprint)"
-expect_equal "fingerprint in the log matches the served certificate" "${logged_fp}" "${first_fp}"
+expect_equal "server fingerprint in the log matches the served certificate" "${logged_fp}" "${first_fp}"
+ca_fp="$(python3 -c 'import hashlib,ssl,sys; print(hashlib.sha256(ssl.PEM_cert_to_DER_cert(open(sys.argv[1]).read())).digest().hex(":").upper())' "${CERT}")"
+expect_contains "CA fingerprint is in the log" "${logs}" "TLS CA SHA-256 fingerprint: ${ca_fp}"
 health="starting"
 for _ in $(seq 1 30); do
   health="$(docker inspect -f '{{.State.Health.Status}}' "${main}")"
@@ -218,6 +236,11 @@ expect_equal "/data/web is 0770 root:10001" "$(perm_group /data/web)" "770 0:100
 expect_equal "web database is 0600 web user" "$(perm_group /data/web/web.sqlite)" "600 10001:10001"
 expect_equal "/run/twinraid-tls is 0750 root:10001" "$(perm_group /run/twinraid-tls)" "750 0:10001"
 expect_equal "TLS key copy is 0640 root:10001" "$(perm_group /run/twinraid-tls/key.pem)" "640 0:10001"
+expect_equal "CA key is 0600 root" "$(perm /data/tls/ca-key.pem)" "600 0"
+ca_key_scan='import pathlib
+key=pathlib.Path("/data/tls/ca-key.pem").read_bytes()
+print(any(key in p.read_bytes() for p in pathlib.Path("/run/twinraid-tls").iterdir()))'
+expect_equal "web process gets no copy of the CA key" "$(docker exec "${main}" "${PY}" -c "${ca_key_scan}")" "False"
 expect_equal "socket dir is 0750 root:10001" "$(perm_group /run/twinraid)" "750 0:10001"
 expect_equal "socket is 0660 root:10001" "$(perm_group /run/twinraid/worker.sock)" "660 0:10001"
 for dir in /srv/worker /data/secrets /data/tls; do
@@ -305,6 +328,24 @@ expect_equal "status with session" "$(status_of -b "${JAR}" "${BASE}/api/status"
 expect_contains "API delivers config values after login" "$(https_get -b "${JAR}" "${BASE}/api/info")" \
   "$(json_str source_name <<<"${content}")"
 expect_contains "audit log lists the login" "$(https_get -b "${JAR}" "${BASE}/api/audit")" '"action":"login","result":"success"'
+expect_contains "status carries reasons and the job flag" "$(https_get -b "${JAR}" "${BASE}/api/status")" '"job_running":false'
+ca_download="${WORKDIR}/twinraid-ca.crt"
+expect_equal "CA certificate download" \
+  "$(curl -s -o "${ca_download}" -w '%{http_code} %{content_type}' --cacert "${CERT}" -b "${JAR}" "${BASE}/api/tls/ca-certificate")" \
+  "200 application/octet-stream"
+expect_equal "downloaded CA is the served CA (DER)" \
+  "$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).digest().hex(":").upper())' "${ca_download}")" "${ca_fp}"
+events="$(curl -s -N --max-time 4 --cacert "${CERT}" -b "${JAR}" "${BASE}/api/events" || true)"
+expect_contains "live stream delivers the status" "${events}" "event: status"
+expect_contains "simulated copy job can be switched on" "$(docker exec "${main}" twinraid-admin mock-job on 2>&1)" "now running"
+job_seen=""
+for _ in $(seq 1 10); do
+  job_seen="$(https_get -b "${JAR}" "${BASE}/api/status")"
+  [[ "${job_seen}" == *'"job_running":true'* ]] && break
+  sleep 1
+done
+expect_contains "status reports the running copy job" "${job_seen}" '"job_running":true'
+docker exec "${main}" twinraid-admin mock-job off >/dev/null
 expect_equal "logout without CSRF token is rejected" \
   "$(status_of -b "${JAR}" -H "${ORIGIN}" -X POST "${BASE}/api/auth/logout")" "403"
 expect_equal "logout with CSRF token" \
@@ -349,18 +390,28 @@ docker restart "${main}" >/dev/null
 if wait_for_https "${main}"; then pass "container restarts"; else fail "container did not restart"; fi
 expect_equal "certificate stays the same after restart" "$(served_fingerprint)" "${first_fp}"
 expect_equal "password survives the restart" "$(login_status "${PASSWORD}")" "200"
+wait_for_fingerprint() {
+  local wanted="$1" served=""
+  for _ in $(seq 1 20); do
+    served="$(served_fingerprint 2>/dev/null || true)"
+    [[ "${served}" == "${wanted}" ]] && break
+    sleep 1
+  done
+  echo "${served}"
+}
+server_fp_of() { grep -A1 '^Server certificate' <<<"$1" | grep -o 'SHA-256 fingerprint: [0-9A-F:]*' | awk '{print $NF}'; }
 renew="$(docker exec "${main}" twinraid-admin renew-cert 2>&1)"
-new_fp="$(grep -o 'SHA-256 fingerprint: [0-9A-F:]*' <<<"${renew}" | cut -d' ' -f3)"
-served="${first_fp}"
-for _ in $(seq 1 20); do
-  served="$(served_fingerprint 2>/dev/null || true)"
-  [[ "${served}" == "${new_fp}" ]] && break
-  sleep 1
-done
-expect_equal "renew-cert serves the new certificate" "${served}" "${new_fp}"
-if [[ "${new_fp}" != "${first_fp}" ]]; then pass "renew-cert changed the fingerprint"; else fail "fingerprint unchanged"; fi
-docker exec "${main}" cat /run/twinraid-tls/cert.pem >"${CERT}"
-expect_equal "HTTPS works with the renewed certificate" "$(https_get "${BASE}/health")" "ok"
+new_fp="$(server_fp_of "${renew}")"
+expect_equal "renew-cert serves the new server certificate" "$(wait_for_fingerprint "${new_fp}")" "${new_fp}"
+if [[ -n "${new_fp}" && "${new_fp}" != "${first_fp}" ]]; then pass "renew-cert changed the server fingerprint"; else fail "server fingerprint unchanged"; fi
+expect_equal "devices with the CA need no change after renew-cert" "$(https_get "${BASE}/health")" "ok"
+renew_ca="$(docker exec "${main}" twinraid-admin renew-cert --new-ca 2>&1)"
+expect_contains "renew-cert --new-ca asks to reinstall the CA" "${renew_ca}" "Install the new CA certificate on all devices"
+newest_fp="$(server_fp_of "${renew_ca}")"
+wait_for_fingerprint "${newest_fp}" >/dev/null
+expect_equal "the old CA no longer verifies after --new-ca" "$(curl -s --max-time 5 --cacert "${CERT}" "${BASE}/health" || echo rejected)" "rejected"
+docker exec "${main}" cat /run/twinraid-tls/ca.pem >"${CERT}"
+expect_equal "HTTPS works with the new CA" "$(https_get "${BASE}/health")" "ok"
 
 # --- 13. Sauberes Stoppen ------------------------------------------------------------------------
 started=$(date +%s)
@@ -409,7 +460,6 @@ refuse() {
 }
 refuse "TWINRAID_MODE missing" "TWINRAID_MODE is not set" "${CONFIG}"
 refuse "TWINRAID_MODE invalid" "invalid value" "${CONFIG}" -e TWINRAID_MODE=produktion
-refuse "TWINRAID_MODE=real (not yet supported)" "not available in this version" "${CONFIG}" -e TWINRAID_MODE=real
 refuse "forbidden share in config" "must never be synced" "${bad_config}" -e TWINRAID_MODE=mock
 # Startfehler des Workers: Container hält an, statt den Dienst endlos neu zu starten.
 refuse "worker startup error (web UID 0)" "must not be 0" "${CONFIG}" -e TWINRAID_MODE=mock -e TWINRAID_WEB_UID=0
@@ -417,7 +467,62 @@ refuse "worker startup error (web UID 0)" "must not be 0" "${CONFIG}" -e TWINRAI
 NO_VOLUME=1 refuse "/data writable by others" "chown root:root" "${CONFIG}" -e TWINRAID_MODE=mock \
   --tmpfs /data:rw,mode=1777
 
-# --- 16. Optional: Jede Capability ist nötig ------------------------------------------------------
+# --- 16. Modus real nur lesend (Konzept 6.4) ----------------------------------------------------
+# Server-Adressen aus TEST-NET-1 (RFC 5737): Sie werden nie geroutet, es wird also
+# kein echter Server angesprochen. Groß per http, damit der Hinweis erscheint.
+real_config="${WORKDIR}/real.yaml"
+python3 - "${CANARY_CONFIG}" "${real_config}" <<'PY'
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+text = text.replace("10.77.31.41", "192.0.2.41").replace("10.77.31.42", "192.0.2.42")
+text = text.replace("      scheme: https\n      port: 4443\n", "      scheme: http\n")
+open(sys.argv[2], "w", encoding="utf-8").write(text)
+PY
+chmod 0644 "${real_config}"
+real="${PREFIX}-real"
+start "${real}" "" "${real_config}" -e TWINRAID_MODE=real -p "127.0.0.1:$((PORT + 2)):8443"
+REAL_BASE="https://127.0.0.1:$((PORT + 2))"
+if wait_for_https "${real}" "$((PORT + 2))"; then
+  pass "container starts with TWINRAID_MODE=real"
+  real_logs="$(docker logs "${real}" 2>&1)"
+  expect_contains "real mode is announced as read-only" "${real_logs}" "Read-only real mode"
+  expect_contains "start log warns about the unencrypted API connection" "${real_logs}" "is unencrypted"
+  expect_not_contains "real mode shows no simulation banner" "${real_logs}" "SIMULATION MODE"
+  docker exec -i "${real}" twinraid-admin set-password --stdin <<<"${PASSWORD}" >/dev/null
+  real_key="SmokeTestKey_0123456789"
+  key_out="$(docker exec -i "${real}" twinraid-admin set-api-key target --stdin <<<"${real_key}" 2>&1 || true)"
+  expect_contains "set-api-key stores the key" "${key_out}" "saved"
+  expect_contains "set-api-key explains an unreachable target" "${key_out}" "is not reachable"
+  real_jar="${WORKDIR}/real-cookies.txt"
+  real_cert="${WORKDIR}/real-ca.pem"
+  docker exec "${real}" cat /run/twinraid-tls/ca.pem >"${real_cert}"
+  curl -s -o /dev/null -c "${real_jar}" --cacert "${real_cert}" -H "Origin: ${REAL_BASE}" -H "${JSON}" \
+    -d "{\"password\": \"${PASSWORD}\"}" "${REAL_BASE}/api/auth/login"
+  real_status=""
+  for _ in $(seq 1 20); do
+    real_status="$(curl -s --cacert "${real_cert}" -b "${real_jar}" "${REAL_BASE}/api/status")"
+    [[ "${real_status}" == *'"target_offline"'* ]] && break
+    sleep 1
+  done
+  expect_contains "unreachable target is reported as offline" "${real_status}" '"target":{"state":"offline","reason":"unreachable"}'
+  expect_contains "VM is off because the target is offline" "${real_status}" '"vm":{"state":"offline","reason":"target_offline"}'
+  expect_contains "info reports read-only mode" \
+    "$(curl -s --cacert "${real_cert}" -b "${real_jar}" "${REAL_BASE}/api/info")" '"read_only":true'
+  for command in wake_target shutdown_target vm_start vm_stop vm_force_stop sync_start; do
+    action='import socket,sys;s=socket.socket(socket.AF_UNIX);s.connect("/run/twinraid/worker.sock");s.sendall(("{\"command\":\""+sys.argv[1]+"\"}\n").encode());print(s.recv(300).decode())'
+    expect_contains "real mode locks ${command}" \
+      "$(docker exec -u 10001:10001 "${real}" "${PY}" -c "${action}" "${command}" 2>&1)" '"error":"not_available"'
+  done
+  expect_contains "mock-job is refused in real mode" "$(docker exec "${real}" twinraid-admin mock-job on 2>&1 || true)" "only works in simulation mode"
+  expect_not_contains "the API key never appears in the log" "$(docker logs "${real}" 2>&1)" "${real_key}"
+else
+  fail "container did not start with TWINRAID_MODE=real"
+  docker logs "${real}" 2>&1 | tail -20
+fi
+docker rm -f "${real}" >/dev/null
+
+# --- 17. Optional: Jede Capability ist nötig ------------------------------------------------------
 if [[ "${CHECK_EACH_CAP:-0}" == "1" ]]; then
   for cap in SETUID SETGID SETPCAP; do
     name="${PREFIX}-no-${cap,,}"
