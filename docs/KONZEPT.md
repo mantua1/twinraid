@@ -209,14 +209,15 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 ### 5.2 HTTPS
 
 - **Entschieden: nur HTTPS mit selbstsigniertem Zertifikat.** Beim ersten Start erzeugt der Container das Zertifikat (in `/data/tls`) und schreibt den Fingerabdruck ins Container-Log, damit man ihn mit der Browser-Anzeige vergleichen kann.
-- **Eigenschaften des Zertifikats**, damit es auch als vertrauenswürdig installiert werden kann (inklusive iOS/macOS):
+- **Zielgeräte:** Windows, Linux und Android, jeweils mit Chrome bzw. Edge und Firefox. iOS und macOS werden nicht eingesetzt.
+- **Eigenschaften des Zertifikats:**
   - Gültigkeit höchstens 825 Tage.
   - Subject Alternative Name mit der Container-IP und optional einem Hostnamen aus der Config.
   - Extended Key Usage `serverAuth`.
   - Kein CA-Zertifikat. Es kann nur sich selbst bestätigen; wird es auf einem Gerät als vertrauenswürdig installiert, entsteht kein Risiko für andere Webseiten.
 - **Beständigkeit:** Das Zertifikat bleibt über Neustarts und Image-Updates gleich. Neu erzeugt wird es nur bei Ablauf oder auf Befehl (`twinraid-admin renew-cert`).
 - **Ablaufwarnung:** Das Dashboard warnt 30 Tage vor Ablauf. Die automatische Erneuerung erfolgt beim Ablauf und erfordert einmalig eine neue Bestätigung bzw. Installation auf den Geräten.
-- **Download:** Das Zertifikat (nur der öffentliche Teil) ist nach dem Login unter „Einstellungen“ herunterladbar, um es auf Geräten als vertrauenswürdig zu installieren. Anleitung pro Gerätetyp folgt in `docs/EINRICHTUNG.md`.
+- **Download:** Das Zertifikat (nur der öffentliche Teil) ist nach dem Login unter „Einstellungen“ herunterladbar, um es auf Geräten als vertrauenswürdig zu installieren. Die Anleitung für Windows, Linux und Android mit Chrome bzw. Edge und Firefox folgt in `docs/EINRICHTUNG.md` (Phase 7), auf Grundlage der Testergebnisse aus Issue #3.
 - **Optional:** ein eigenes Zertifikat unter `/config/tls` mounten (z. B. später Let's Encrypt über DNS-Challenge). Dafür ist keine Codeänderung nötig.
 
 Umsetzung (Phase 2):
@@ -228,7 +229,9 @@ Umsetzung (Phase 2):
 - **Fingerabdruck:** SHA-256 des aktiven Zertifikats steht bei jedem Start im Log und ist mit `twinraid-admin show-cert-fingerprint` abrufbar.
 - **Nur HTTPS** auf `web.port`, TLS 1.2 und 1.3, keine schwachen Cipher. Es gibt keinen HTTP-Port; HTTP-Anfragen an den Port scheitern am TLS-Handshake.
 - **Kein HSTS:** Browser ignorieren HSTS bei IP-Adressen. Bei einem Hostnamen würde HSTS nach einer Zertifikatserneuerung die Warnung unüberspringbar machen und den Nutzer aussperren. Ohne HTTP-Port bringt HSTS keinen Gewinn.
-- **iOS:** Ob iOS einem selbstsignierten Zertifikat ohne CA-Eigenschaft voll vertraut, wird nach Phase 2 auf echten Geräten getestet. Falls nicht, wird eine kleine eigene CA mit Namensbeschränkung auf die eigenen Adressen eingeführt, die ein separates Serverzertifikat signiert. Ein CA-Zertifikat direkt als Serverzertifikat scheidet aus, weil Firefox das ablehnt.
+- **Grenze bei Android (recherchiert):** Android installiert nur Zertifikate mit `CA:TRUE` als vertrauenswürdige Zertifizierungsstelle. Ein Zertifikat ohne CA-Eigenschaft gilt dort als Benutzerzertifikat und wird ohne privaten Schlüssel abgelehnt (Android-Quellcode, CertInstaller). Mit dem jetzigen Zertifikat ist auf Android also keine dauerhafte Vertrauensstellung möglich, nur das Bestätigen der Warnung. Chrome auf Android lädt dagegen vom Nutzer installierte Zertifizierungsstellen als Vertrauensanker (Chromium-Quellcode). Laut Chrome-Unternehmensrichtlinien erzwingt Chrome Namensbeschränkungen in lokal installierten Vertrauensankern; ob das auf Android ebenso gilt, wird im Test geprüft.
+- **Auch Firefox** importiert nur Zertifikate mit `CA:TRUE` als Zertifizierungsstelle; für das jetzige Zertifikat bleibt dort eine dauerhaft gespeicherte Ausnahme.
+- **Mögliche Alternative (noch nicht umgesetzt):** eine kleine eigene CA mit Namensbeschränkung auf die eigene IP und die eigenen Hostnamen, die ein separates Serverzertifikat signiert. Auf den Geräten wird nur die CA installiert. Ein CA-Zertifikat direkt als Serverzertifikat scheidet aus, weil Firefox das ablehnt. Tests, Recherche und Entwurf stehen in Issue #3; umgesetzt wird erst nach Entscheidung und Konzeptänderung.
 - Alle Ressourcen (Schriften, Skripte, Icons) sind im Image enthalten; es werden keine externen CDNs geladen. Das ermöglicht eine strikte Content-Security-Policy.
 
 ### 5.3 Login und Sessions
@@ -492,7 +495,7 @@ twinraid/
 ├── README.md
 ├── docs/
 │   ├── KONZEPT.md             # dieses Dokument
-│   ├── EINRICHTUNG.md         # Installation auf Unraid (Phase 7)
+│   ├── EINRICHTUNG.md         # Installation auf Unraid und Zertifikat auf Windows/Linux/Android (Phase 7)
 │   └── WIEDERHERSTELLUNG.md   # Notfall-Anleitung (Phase 6)
 ├── backend/
 │   ├── pyproject.toml
@@ -555,6 +558,7 @@ Jede Phase endet mit lauffähigem, getestetem Stand und einem Commit auf GitHub.
 - [ ] Klein: `/mnt/user/appdata/twinraid/data` gehört root und ist nur für root beschreibbar (siehe 5.9)
 - [ ] Konfiguration: `web.tls.ip_addresses` enthält die feste Container-IP
 - [ ] Container installieren, Konfiguration anlegen, Passwort setzen, Hostkey von Groß bestätigen
+- [ ] Geräte: Zertifikat auf Windows, Linux und Android für Chrome bzw. Edge und Firefox als vertrauenswürdig einrichten (Ergebnis aus Issue #3)
 
 ---
 
