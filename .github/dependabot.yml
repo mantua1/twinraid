@@ -15,6 +15,10 @@ updates:
     groups:
       frontend-tooling:
         dependency-type: "development"
+    ignore:
+      # Typen folgen der Node-Hauptversion; die wechselt nur bewusst (.nvmrc, engines).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -25,3 +29,12 @@ updates:
     directory: "/docker"
     schedule:
       interval: "weekly"
+    # Digest- und Patch-Updates der Basis-Images kommen weiter als Pull Request,
+    # weil sie Sicherheitsfixes enthalten. Nur Versionswechsel werden ignoriert.
+    ignore:
+      # Node-Hauptversion nur bewusst zusammen mit frontend/.nvmrc und engines.
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
+      # Python-Version nur bewusst zusammen mit backend/.python-version.
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
