@@ -6,6 +6,8 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_CONFIG = REPO_ROOT / "config.example.yaml"
+# Konfiguration mit eindeutigen Testwerten, auch vom Container-Starttest genutzt.
+CANARY_CONFIG = REPO_ROOT / "docker" / "smoke" / "canary-config.yaml"
 
 
 @pytest.fixture(autouse=True)

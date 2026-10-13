@@ -53,8 +53,9 @@ def make_app(
     frontend_dir: Path,
     verifier: AllowAll | DenyAll,
     worker: WorkerApi | None = None,
+    config_path: Path = EXAMPLE_CONFIG,
 ) -> FastAPI:
     settings = WebSettings(
-        mode=RunMode.MOCK, config=load_config(EXAMPLE_CONFIG), frontend_dir=frontend_dir
+        mode=RunMode.MOCK, config=load_config(config_path), frontend_dir=frontend_dir
     )
     return create_app(settings, worker or FakeWorker(), verifier)

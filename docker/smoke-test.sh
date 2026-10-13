@@ -14,7 +14,10 @@ set -euo pipefail
 IMAGE="${1:-twinraid:dev}"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${REPO_DIR}/config.example.yaml"
+# Konfiguration mit eindeutigen Testwerten für die Prüfung der öffentlichen Dateien.
+CANARY_CONFIG="${REPO_DIR}/docker/smoke/canary-config.yaml"
 INSPECT_SCRIPT="$(cat "${REPO_DIR}/docker/smoke/inspect_processes.py")"
+CONTENT_SCRIPT="$(cat "${REPO_DIR}/docker/smoke/check_public_content.py")"
 PORT="${SMOKE_PORT:-18443}"
 PREFIX="twinraid-smoke-$$"
 WORKDIR="$(mktemp -d)"
@@ -98,12 +101,13 @@ wait_for_exit() {
 }
 
 field() { python3 -c 'import json,sys; d=json.load(sys.stdin); print(d[sys.argv[1]][sys.argv[2]])' "$@"; }
+json_get() { python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)[sys.argv[1]]))' "$@"; }
 
 echo "== Image: ${IMAGE}"
 
 # --- 1. Start mit minimalen Capabilities ------------------------------------
 main="${PREFIX}-main"
-start "${main}" "" "${CONFIG}" -e TWINRAID_MODE=mock -p "127.0.0.1:${PORT}:8443"
+start "${main}" "" "${CANARY_CONFIG}" -e TWINRAID_MODE=mock -p "127.0.0.1:${PORT}:8443"
 if wait_for_health "${main}"; then
   pass "container starts read-only with --cap-drop=ALL + ${CAPS[*]}"
 else
@@ -117,6 +121,18 @@ expect_contains "/api/status answers via worker" \
 expect_equal "frontend is served" \
   "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/")" "200"
 expect_contains "log warns about simulation mode" "$(docker logs "${main}" 2>&1)" "SIMULATION MODE ACTIVE"
+
+# --- 1b. Öffentliche Dateien enthalten keine Konfigurationswerte -------------
+# Phase 1: /api/info ist im Mock-Modus über den Platzhalter erreichbar. Ab
+# Phase 2 braucht die Gegenprobe eine Session.
+content="$(docker exec "${main}" /app/.venv/bin/python -c "${CONTENT_SCRIPT}")"
+expect_equal "public files contain no config values" "$(json_get leaks <<<"${content}")" "[]"
+expect_equal "config values are delivered via protected /api" \
+  "$(json_get api_delivers_names <<<"${content}")" "true"
+checked="$(json_get checked <<<"${content}")"
+expect_contains "content check covered index.html" "${checked}" '"/"'
+expect_contains "content check covered JavaScript" "${checked}" '.js"'
+expect_contains "content check covered CSS" "${checked}" '.css"'
 
 # --- 2. Rechte der Prozesse --------------------------------------------------
 procs="$(docker exec "${main}" python3 -c "${INSPECT_SCRIPT}")"
