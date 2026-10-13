@@ -478,6 +478,8 @@ def install_runtime(
     else:
         write_file_atomic(runtime_dir / _RUNTIME_CA, ca_pem, 0o644, web_gid)
     _write_info(runtime_dir, source, None, web_gid)
+    # Ablage aus Phase 2, ersetzt durch info.json.
+    (runtime_dir / "source.json").unlink(missing_ok=True)
 
 
 def record_refresh_failure(runtime_dir: Path, now: datetime, web_gid: int) -> None:
