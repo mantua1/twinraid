@@ -1,0 +1,89 @@
+# CI: Tests und Linter für Backend und Frontend, Image-Build mit Starttest.
+# Images werden hier nur gebaut, nicht veröffentlicht (das folgt in Phase 7).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (ruff, mypy, pytest)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          working-directory: backend
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --locked
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+      - run: uv run mypy
+      - run: uv run pytest
+        env:
+          TWINRAID_MODE: mock
+
+  frontend:
+    name: Frontend (ESLint, Prettier, tsc, Vitest, Build)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  scripts:
+    name: Shell scripts (shellcheck)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: shellcheck docker/*.sh backend/scripts/*.sh
+      - run: >-
+          shellcheck --shell=sh
+          docker/rootfs/etc/s6-overlay/scripts/twinraid-preflight
+          docker/rootfs/etc/s6-overlay/s6-rc.d/*/run
+          docker/rootfs/etc/s6-overlay/s6-rc.d/*/finish
+
+  container:
+    name: Container (build and start test)
+    runs-on: ubuntu-24.04
+    needs: [backend, frontend, scripts]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: docker build -f docker/Dockerfile -t twinraid:ci .
+      - run: docker/smoke-test.sh twinraid:ci
+        env:
+          CHECK_EACH_CAP: "1"

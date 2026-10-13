@@ -1,0 +1,52 @@
+# TwinRaid-Konfiguration – Beispiel.
+# Kopieren nach /mnt/user/appdata/twinraid/config/twinraid.yaml und anpassen.
+# Im Container wird die Datei read-only nach /config/twinraid.yaml gemountet.
+# Secrets (Passwort, API-Keys, SSH-Keys) gehören NICHT hierher (siehe Konzept 5.5).
+# Alle Werte hier sind Beispielwerte, keine echten Adressen.
+
+web:
+  port: 8443
+  allowed_networks:            # nur Clients aus diesen Netzen dürfen zugreifen
+    - 192.168.10.0/24          # Server-Netz
+    - 192.168.20.0/24          # Client-Netz
+  session_idle_minutes: 30
+  default_language: de         # de | en
+
+servers:
+  source:                      # Unraid Klein – hier läuft der Container
+    name: "Unraid Klein"
+    host: 192.168.10.10
+  target:                      # Unraid Groß
+    name: "Unraid Groß"
+    host: 192.168.10.11
+    mac: "AA:BB:CC:DD:EE:FF"
+    wol_broadcast: 192.168.10.255
+    boot_timeout_minutes: 5
+
+gaming_vm:
+  display_name: "Gaming-VM"
+  unraid_vm_name: "Windows 11 Gaming"
+  shutdown_timeout_minutes: 3  # danach wird "Erzwingen" angeboten
+
+sync:
+  shares:                      # identische Namen auf beiden Servern
+    - appdata
+    - dokumente
+    - medien
+  appdata_share: appdata
+  exclude:                     # wird nicht kopiert (relativ zu /mnt/user)
+    - appdata/twinraid
+  protect_on_target:           # wird auf Groß nie gelöscht
+    - appdata/_twinraid
+  max_deletions: 1000
+  stop_containers: true
+  never_stop:                  # werden für den Konsistenzlauf nie gestoppt
+    - twinraid
+  copy_templates: true
+  schedule:
+    enabled: true
+    timezone: "Europe/Berlin"  # IANA-Zeitzone
+    days: [sun]                # mon, tue, wed, thu, fri, sat, sun
+    time: "03:00"              # HH:MM, immer in Anführungszeichen
+    wake_target: true
+    shutdown_after: true       # nur wenn der Sync geweckt hat und die VM aus ist

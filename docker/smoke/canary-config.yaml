@@ -1,0 +1,49 @@
+# Konfiguration mit eindeutigen Testwerten (Konzept 5.3).
+# Der Container-Starttest und ein Backend-Test prüfen, dass keiner dieser Werte
+# in öffentlich ausgelieferten Dateien vorkommt. Die Werte sind frei erfunden.
+
+web:
+  port: 8443
+  allowed_networks:
+    - 10.77.31.0/24
+    - 10.77.32.0/24
+  session_idle_minutes: 30
+  default_language: de
+
+servers:
+  source:
+    name: "canary-source-name-7q"
+    host: 10.77.31.41
+  target:
+    name: "canary-target-name-7q"
+    host: 10.77.31.42
+    mac: "02:7A:C3:91:5E:4D"
+    wol_broadcast: 10.77.31.255
+    boot_timeout_minutes: 5
+
+gaming_vm:
+  display_name: "canary-vm-display-7q"
+  unraid_vm_name: "canary-vm-unraid-7q"
+  shutdown_timeout_minutes: 3
+
+sync:
+  shares:
+    - canaryapp7q
+    - canaryshare7q
+  appdata_share: canaryapp7q
+  exclude:
+    - canaryapp7q/canaryexclude7q
+  protect_on_target:
+    - canaryapp7q/canaryprotect7q
+  max_deletions: 1000
+  stop_containers: true
+  never_stop:
+    - canarycontainer7q
+  copy_templates: true
+  schedule:
+    enabled: true
+    timezone: "Europe/Berlin"
+    days: [sun]
+    time: "03:00"
+    wake_target: true
+    shutdown_after: true

@@ -1,0 +1,68 @@
+[project]
+name = "twinraid"
+version = "0.1.0"
+description = "Web UI to control two Unraid servers: wake-on-LAN, status, gaming VM and mirror sync."
+license = "MIT"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "fastapi==0.143.0",
+    "pydantic==2.14.1",
+    "pyyaml==6.0.3",
+    "uvicorn==0.54.0",
+]
+
+[project.scripts]
+twinraid-web = "twinraid.web.main:main"
+twinraid-worker = "twinraid.worker.main:main"
+twinraid-preflight = "twinraid.preflight:main"
+
+[build-system]
+requires = ["uv_build==0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx2==2.13.1",
+    "mypy==2.4.0",
+    "pytest==9.1.1",
+    "ruff==0.17.0",
+    "types-pyyaml==6.0.12.20260906",
+]
+
+[tool.uv]
+# Abhängigkeiten werden exakt gepinnt (CLAUDE.md, Regel 8).
+add-bounds = "exact"
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "B", "UP", "N", "SIM", "RUF", "C4", "PTH", "BLE",
+    "ANN",    # Typ-Annotationen überall
+    "S",      # Sicherheitsregeln (u. a. kein shell=True, kein yaml.load)
+    "ASYNC", "PT", "T20", "DTZ",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# In Tests sind assert-Anweisungen gewollt.
+"tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+mypy_path = "src"
+files = ["src", "tests"]
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+xfail_strict = true

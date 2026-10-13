@@ -1,0 +1,13 @@
+# Positivliste: Nur was der Build braucht, landet im Build-Kontext.
+*
+!backend/pyproject.toml
+!backend/uv.lock
+!backend/.python-version
+!backend/src
+!frontend
+!docker/rootfs
+frontend/node_modules
+frontend/dist
+frontend/coverage
+**/__pycache__
+**/*.pyc

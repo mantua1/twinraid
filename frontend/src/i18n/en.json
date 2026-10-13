@@ -1,0 +1,64 @@
+{
+  "app": {
+    "name": "TwinRaid",
+    "footer": "TwinRaid · Version {{version}}"
+  },
+  "mockBanner": {
+    "title": "Simulation mode",
+    "description": "No real servers are contacted. All status values and actions are simulated."
+  },
+  "errors": {
+    "connection": "No connection to the TwinRaid server.",
+    "status": "Status is currently unavailable."
+  },
+  "language": {
+    "label": "Language",
+    "de": "German",
+    "en": "English",
+    "short": {
+      "de": "DE",
+      "en": "EN"
+    }
+  },
+  "theme": {
+    "label": "Appearance",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "Match system"
+  },
+  "status": {
+    "online": "Online",
+    "offline": "Offline",
+    "starting": "Starting …",
+    "stopping": "Shutting down …",
+    "unknown": "Unknown"
+  },
+  "dashboard": {
+    "title": "Overview",
+    "loading": "Loading …"
+  },
+  "tiles": {
+    "source": {
+      "fallbackTitle": "Source server",
+      "description": "Always on and the source of the sync."
+    },
+    "target": {
+      "fallbackTitle": "Target server",
+      "description": "Runs on demand and is the sync target."
+    },
+    "vm": {
+      "fallbackTitle": "Gaming VM",
+      "description": "Virtual machine on the target server."
+    },
+    "sync": {
+      "title": "Sync",
+      "description": "Mirror from the source to the target server.",
+      "empty": "No sync run yet."
+    },
+    "history": {
+      "title": "History",
+      "description": "Recent actions and sync runs.",
+      "empty": "No entries yet."
+    }
+  }
+}

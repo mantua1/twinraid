@@ -1,6 +1,6 @@
 # TwinRaid – Projektkonzept
 
-> Arbeitstitel „TwinRaid“ · Version 0.2 · Stand 12.10.2026
+> Arbeitstitel „TwinRaid“ · Version 0.4 · Stand 13.10.2026
 > Dieses Dokument ist die verbindliche Grundlage für die Entwicklung. Änderungen am Konzept werden hier eingetragen, bevor sie umgesetzt werden.
 
 ---
@@ -83,13 +83,13 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 
 | Bereich | Wahl |
 |---|---|
-| Backend | Python 3.12+, FastAPI, Pydantic v2, Paketverwaltung mit `uv` |
+| Backend | Python 3.14 (lokal über `uv` verwaltet, im Container dasselbe Slim-Image), FastAPI, Pydantic v2, Paketverwaltung mit `uv` |
 | Frontend | React + TypeScript + Vite, Tailwind CSS, shadcn/ui, Dark/Light-Mode, mobiltauglich |
 | Sprachen der Oberfläche | Deutsch / Englisch umschaltbar (react-i18next) |
 | Live-Updates | Server-Sent Events (SSE) |
 | Persistenz | SQLite in `/data` (Job-Historie, Sessions, Audit-Log) |
-| Zeitsteuerung | APScheduler im Worker, Cron-Ausdruck aus der Konfiguration |
-| Prozessverwaltung | s6-overlay oder supervisord (Entscheidung in Phase 1) |
+| Zeitsteuerung | im Worker; Zeitplan aus Wochentagen, Uhrzeit und Zeitzone (siehe 4.8); die technische Umsetzung wird in Phase 6 festgelegt |
+| Prozessverwaltung | s6-overlay mit read-only Root (entschieden, siehe 5.4) |
 | Unraid-Steuerung | offizielle Unraid-GraphQL-API (in Unraid 7.3.3 enthalten), API-Keys mit minimalen Rechten |
 | Kopieren | `rsync` über SSH |
 | Tests | pytest (Backend), Vitest (Frontend); Mocks für alle externen Systeme |
@@ -183,9 +183,10 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 
 ### 4.8 Zeitsteuerung
 
-- Zeitplan als Cron-Ausdruck in der Konfiguration (z. B. sonntags 03:00), optional mit Wecken und Herunterfahren.
+- Zeitplan als Wochentage plus Uhrzeit in einer festen Zeitzone (z. B. sonntags 03:00, `Europe/Berlin`), optional mit Wecken und Herunterfahren. Ein Cron-Ausdruck wird bewusst nicht verwendet, weil er schwer lesbar ist und Bibliotheken den Wochentag unterschiedlich zählen.
+- Die Uhrzeit gilt als Ortszeit der angegebenen Zeitzone. Das Verhalten an den Tagen der Zeitumstellung wird in Phase 6 festgelegt.
 - Der manuelle Sync bleibt jederzeit möglich (außer während eines laufenden Syncs).
-- Der nächste geplante Lauf wird im Dashboard angezeigt.
+- Der nächste geplante Lauf wird im Dashboard und im Startlog mit Wochentag und Uhrzeit angezeigt (ab Phase 6).
 - Fehler lösen optional eine Unraid-Benachrichtigung über die API aus.
 
 ---
@@ -226,6 +227,11 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 - Security-Header: CSP, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`.
 - Audit-Log: jede Aktion mit Zeitstempel und Client-IP.
 - Ohne Login erreichbar sind nur die Login-Seite und `/health` (liefert nur „ok“).
+- **Geschützt per Default:** Jede Route ist automatisch geschützt. Öffentliche Routen müssen im Code ausdrücklich markiert werden. Öffentlich sind nur `/health`, später die Login-Route und die Auslieferung der Oberfläche selbst (`index.html`, JavaScript, CSS, Icon). Die Oberfläche ist öffentlich, weil sie die Login-Seite enthält. Sie enthält keine Daten; alle Daten kommen über geschützte Routen unter `/api`.
+- **Keine Konfigurationswerte in öffentlichen Dateien:** Die ausgelieferten Frontend-Dateien und alle anderen öffentlichen Routen enthalten keine Werte aus der Konfiguration, also keine IP-Adressen, Netze, MAC-Adressen, Hostnamen, Share-Namen, Pfade, Container-, VM- oder Servernamen. Solche Werte gibt es nur über geschützte Routen unter `/api`. Abgesichert durch einen Backend-Test und durch den Container-Starttest, der eine Konfiguration mit eindeutigen Testwerten verwendet und alle öffentlich ausgelieferten Dateien danach durchsucht.
+- Unbekannte Pfade werden wie geschützte Routen behandelt. Ohne Session gibt es also 401 statt 404.
+- Ein Test stellt sicher, dass es außer den markierten Routen keine ungeschützte Route gibt.
+- **Bis Phase 2:** An der Stelle der Login-Prüfung steht ein Platzhalter. Er lässt Anfragen nur im Mock-Modus durch (siehe 6.4).
 
 ### 5.4 Container-Härtung
 
@@ -235,6 +241,39 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 - Nicht `--privileged`, kein Docker-Socket.
 - Datenmounts read-only unter `/srv/worker` (siehe 3.2).
 - Schlankes Basis-Image mit gepinnter Version, regelmäßige Neubauten, Dependabot, optional Image-Scan (Trivy) in der CI.
+
+#### Prozessverwaltung mit s6-overlay (Entscheidung E5)
+
+- s6-overlay startet und überwacht beide Prozesse. Es ist für Container gebaut, sehr klein und braucht keinen zusätzlichen Interpreter, der als root läuft.
+- **Read-only Root:** `S6_READ_ONLY_ROOT=1`. `/run` ist ein `tmpfs` und darf nicht `noexec` sein, weil s6 dort seine Dienstverzeichnisse anlegt und ausführt. `/tmp` ist ebenfalls ein `tmpfs`.
+- **Startprüfung:** Ein einmaliger Dienst prüft vor dem Start der beiden Prozesse den Betriebsmodus (siehe 6.4) und die Konfiguration (siehe 6.3). Er läuft bereits als unprivilegierter Web-Benutzer. Schlägt er fehl, beendet sich der Container (`S6_BEHAVIOUR_IF_STAGE2_FAILS=2`).
+- **Rechte abgeben:** Beide Prozesse werden über `setpriv` gestartet, jeweils mit `no_new_privs`.
+  - Web-Prozess: UID und GID 10001, keine zusätzlichen Gruppen, keine Capabilities, leeres Bounding-Set.
+  - Worker: UID 0, GID 10001, keine zusätzlichen Gruppen, Bounding-Set nur `DAC_READ_SEARCH`, `umask 077`. Die GID 10001 dient nur dazu, dass der Socket der Gruppe des Web-Prozesses gehört. Wegen `umask 077` legt der Worker keine Dateien an, die diese Gruppe lesen kann.
+- **Unix-Socket:** `/run/twinraid/worker.sock`. Verzeichnis `0750`, Socket `0660`, Gruppe 10001. Der Worker prüft zusätzlich per `SO_PEERCRED`, dass der Aufrufer die UID des Web-Prozesses hat, und weist alle anderen ab.
+- **Capabilities:** Der Container startet mit `--cap-drop=ALL` und bekommt nur die folgenden Capabilities zurück. Ein Starttest prüft die Liste: Der Container startet, beide Prozesse laufen mit den erwarteten Rechten und der Container stoppt sauber. Die Prozesse von s6 selbst behalten diese Capabilities, führen aber keine Aktionen mit Außenwirkung aus.
+
+| Capability | wofür | wer behält sie nach dem Start | Starttest ohne sie |
+|---|---|---|---|
+| `SETUID` | Web-Prozess und Startprüfung auf UID 10001 umstellen | nur s6 | Container startet nicht |
+| `SETGID` | Gruppen von Web-Prozess, Startprüfung und Worker setzen | nur s6 | Container startet nicht |
+| `SETPCAP` | Bounding-Set von Web-Prozess und Worker verkleinern | nur s6 | Container startet nicht |
+| `KILL` | s6 darf dem Web-Prozess (andere UID) beim Stoppen Signale senden | nur s6 | Start klappt, Stoppen nur noch per SIGKILL |
+| `DAC_READ_SEARCH` | Worker liest Shares und Templates trotz fremder Dateirechte | Worker | in Phase 1 ohne Wirkung, ab Phase 5 nötig |
+
+Bestätigt durch den Starttest `docker/smoke-test.sh` (Phase 1). Mit `CHECK_EACH_CAP=1` lässt er jede Capability einzeln weg. Nicht nötig sind insbesondere `CHOWN`, `FOWNER` und `DAC_OVERRIDE`.
+
+Startoptionen für Docker, entsprechend später im Unraid-Template:
+
+```
+--read-only
+--tmpfs /run:rw,exec,nosuid,nodev,mode=0755,size=16m
+--tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m
+--cap-drop=ALL
+--cap-add=SETUID --cap-add=SETGID --cap-add=SETPCAP --cap-add=KILL --cap-add=DAC_READ_SEARCH
+--security-opt=no-new-privileges
+-e TWINRAID_MODE=…
+```
 
 ### 5.5 Secrets
 
@@ -333,14 +372,32 @@ sync:
   copy_templates: true
   schedule:
     enabled: true
-    cron: "0 3 * * 0"          # sonntags 03:00
+    timezone: "Europe/Berlin"  # IANA-Zeitzone
+    days: [sun]                # mon, tue, wed, thu, fri, sat, sun
+    time: "03:00"              # HH:MM, immer in Anführungszeichen
     wake_target: true
     shutdown_after: true       # nur wenn der Sync geweckt hat und die VM aus ist
 ```
 
 ### 6.3 Validierung
 
-Die Konfiguration wird beim Start mit Pydantic vollständig validiert: Pflichtfelder, IP- und MAC-Formate, Cron-Syntax, verbotene Shares (`system`, `domains`), Überschneidungen von `exclude` und `shares`. Ist die Konfiguration ungültig, startet der Container **nicht** und meldet im Log genau, was falsch ist. Die Weboberfläche zeigt die aktive Konfiguration nur lesend an.
+Die Konfiguration wird beim Start mit Pydantic vollständig validiert: Pflichtfelder, IP- und MAC-Formate, Zeitplan, verbotene Shares (`system`, `domains`), Überschneidungen von `exclude` und `shares`. Ist die Konfiguration ungültig, startet der Container **nicht** und meldet im Log genau, was falsch ist. Die Weboberfläche zeigt die aktive Konfiguration nur lesend an.
+
+Ergänzende Regeln:
+
+- **Laden:** YAML wird ausschließlich mit `yaml.safe_load` gelesen. Unbekannte Schlüssel sind ein Fehler, damit Tippfehler auffallen.
+- **Share-Namen** (`shares`, `appdata_share`): Prüfung über eine Positivliste erlaubter Zeichen. Erlaubt sind die Buchstaben `A–Z` und `a–z`, Ziffern, Punkt, Unterstrich und Bindestrich. Das erste Zeichen muss ein Buchstabe oder eine Ziffer sein, höchstens 64 Zeichen. Damit sind Schrägstrich, `..`, führendes Minus, Leerzeichen und Steuerzeichen ausgeschlossen. `system` und `domains` sind unabhängig von Groß- und Kleinschreibung verboten. Doppelte Einträge sind ein Fehler. `appdata_share` muss in `shares` enthalten sein.
+- **Pfade** (`exclude`, `protect_on_target`): relativ zu `/mnt/user`, also ohne führenden Schrägstrich. Nicht erlaubt sind `..`, `.` und leere Bestandteile, Bestandteile mit führendem Minus sowie Steuer- und unsichtbare Formatzeichen. Zusätzlich verboten sind die Platzhalterzeichen `*`, `?`, `[`, `]` und der Backslash, weil rsync sie in Filterregeln als Muster auswertet. Der erste Bestandteil muss eine konfigurierte Share sein. Eine ganze Share darf nicht ausgeschlossen werden; dafür wird sie aus `shares` entfernt.
+- **Container-Namen** in `never_stop`: nur die von Docker erlaubten Zeichen.
+- **Zeitplan** (`sync.schedule`): `days` enthält nur die Kürzel `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`, ohne Duplikate und mindestens einen Tag. `time` hat das Format `HH:MM` (`00:00` bis `23:59`) und steht in Anführungszeichen. Ohne Anführungszeichen liest YAML manche Uhrzeiten wie `13:30` als Zahl; das wird mit einem klaren Hinweis abgelehnt. `timezone` ist eine gültige IANA-Zeitzone, die im Container vorhanden ist (z. B. `Europe/Berlin`); Sondereinträge wie `localtime` sind nicht erlaubt.
+
+### 6.4 Betriebsmodus (`TWINRAID_MODE`)
+
+- Pflichtangabe als Umgebungsvariable des Containers: `mock` oder `real`. Es gibt **keinen Standardwert**.
+- Fehlt der Wert oder ist er ungültig, startet der Container nicht und meldet im Log klar, was fehlt und welche Werte erlaubt sind.
+- Entwicklungs-Skripte, Tests und CI setzen `mock` ausdrücklich.
+- **Mock-Modus:** Alle Integrationen mit Außenwirkung sind durch Simulationen ersetzt. Das Log warnt beim Start deutlich. Die Oberfläche zeigt dauerhaft ein auffälliges Banner „Simulationsmodus“.
+- Solange es keine echten Integrationen gibt, lehnt der Container auch `real` ab und startet nicht.
 
 ---
 
@@ -424,4 +481,17 @@ Jede Phase endet mit lauffähigem, getestetem Stand und einem Commit auf GitHub.
 | E2 | GitHub-Repo öffentlich oder privat? | **entschieden:** öffentlich, Image über `ghcr.io` (siehe 5.8) |
 | E3 | HTTPS-Variante | **entschieden:** selbstsigniert, eigenes Zertifikat optional mountbar (siehe 5.2) |
 | E4 | Projektname (Arbeitstitel „TwinRaid“) | offen |
-| E5 | Prozessverwaltung im Container (s6-overlay oder supervisord) | Phase 1 |
+| E5 | Prozessverwaltung im Container (s6-overlay oder supervisord) | **entschieden:** s6-overlay mit read-only Root und minimalen Capabilities (siehe 5.4) |
+
+---
+
+## 11. Entwicklungsumgebung
+
+- Entwicklungs-PC: Linux Mint 22.3 (Basis Ubuntu 24.04 „noble“).
+- Python 3.14, von `uv` verwaltet (`backend/.python-version`). Node.js 24 LTS über nvm.
+- **Docker im Rootless-Modus:** Docker-Kontext `rootless`, Socket `/run/user/1000/docker.sock`. Die Gruppe `docker` ist bewusst nicht eingerichtet. Docker-Befehle laufen ohne `sudo` gegen den Rootless-Daemon.
+- Folgen für lokale Container-Tests:
+  - root im Container entspricht dem eigenen Benutzer auf dem Host. Andere UIDs im Container, etwa 10001, werden auf Hilfs-UIDs des Hosts (subuid) abgebildet. Gemountete Dateien wie die Konfiguration müssen deshalb für alle lesbar sein (`o+r`).
+  - Capabilities gelten nur innerhalb des User-Namespace des Rootless-Daemons. Der Starttest mit `--cap-drop=ALL` prüft trotzdem dieselbe Liste wie auf Unraid. Die CI führt denselben Test zusätzlich mit normalem Docker (rootful) aus.
+  - Ports werden lokal nur an `127.0.0.1` gebunden.
+- Lokale Container-Tests laufen immer mit `TWINRAID_MODE=mock`.

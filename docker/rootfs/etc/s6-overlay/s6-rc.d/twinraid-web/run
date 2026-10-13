@@ -1,0 +1,5 @@
+#!/command/with-contenv sh
+# Web-Prozess: UID und GID 10001, keine Capabilities (Konzept 3.2 und 5.4).
+exec setpriv --reuid=10001 --regid=10001 --clear-groups \
+    --inh-caps=-all --bounding-set=-all --no-new-privs \
+    -- /app/.venv/bin/twinraid-web

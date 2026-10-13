@@ -1,0 +1,64 @@
+{
+  "app": {
+    "name": "TwinRaid",
+    "footer": "TwinRaid · Version {{version}}"
+  },
+  "mockBanner": {
+    "title": "Simulationsmodus",
+    "description": "Es werden keine echten Server angesprochen. Alle Statuswerte und Aktionen sind simuliert."
+  },
+  "errors": {
+    "connection": "Keine Verbindung zum TwinRaid-Server.",
+    "status": "Der Status ist gerade nicht verfügbar."
+  },
+  "language": {
+    "label": "Sprache",
+    "de": "Deutsch",
+    "en": "Englisch",
+    "short": {
+      "de": "DE",
+      "en": "EN"
+    }
+  },
+  "theme": {
+    "label": "Darstellung",
+    "light": "Hell",
+    "dark": "Dunkel",
+    "system": "Wie System"
+  },
+  "status": {
+    "online": "Online",
+    "offline": "Offline",
+    "starting": "Startet …",
+    "stopping": "Fährt herunter …",
+    "unknown": "Unbekannt"
+  },
+  "dashboard": {
+    "title": "Übersicht",
+    "loading": "Wird geladen …"
+  },
+  "tiles": {
+    "source": {
+      "fallbackTitle": "Quellserver",
+      "description": "Läuft immer und ist die Quelle des Syncs."
+    },
+    "target": {
+      "fallbackTitle": "Zielserver",
+      "description": "Läuft bei Bedarf und ist das Ziel des Syncs."
+    },
+    "vm": {
+      "fallbackTitle": "Gaming-VM",
+      "description": "Virtuelle Maschine auf dem Zielserver."
+    },
+    "sync": {
+      "title": "Sync",
+      "description": "Spiegelung vom Quell- zum Zielserver.",
+      "empty": "Noch kein Sync-Lauf."
+    },
+    "history": {
+      "title": "Verlauf",
+      "description": "Letzte Aktionen und Sync-Läufe.",
+      "empty": "Noch keine Einträge."
+    }
+  }
+}
