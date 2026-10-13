@@ -1,6 +1,6 @@
 # TwinRaid – Projektkonzept
 
-> Arbeitstitel „TwinRaid“ · Version 0.6 · Stand 13.10.2026
+> Arbeitstitel „TwinRaid“ · Version 0.7 · Stand 13.10.2026
 > Dieses Dokument ist die verbindliche Grundlage für die Entwicklung. Änderungen am Konzept werden hier eingetragen, bevor sie umgesetzt werden.
 
 ---
@@ -155,6 +155,8 @@ Destruktive oder störende Aktionen (Herunterfahren, Force-Stop, Sync mit vielen
 | Sync starten | gesperrt, wenn bereits ein Sync läuft; ist Groß offline, wird es automatisch geweckt |
 | Automatisches Herunterfahren nach Sync | nur wenn **der Sync den Server geweckt hat** UND die Gaming-VM nicht läuft UND währenddessen keine manuelle Aktion auf Groß stattfand |
 
+**Broadcast-Adresse für Wake-on-LAN (ab Phase 4):** `servers.target.wol_broadcast` wird optional. Fehlt der Wert, verwendet der Worker die Broadcast-Adresse des eigenen Netzes (aus IP und Netzmaske der Schnittstelle), sofern `servers.target.host` in diesem Netz liegt. Liegt Groß in einem anderen Netz, ist die Angabe Pflicht und der Start scheitert sonst mit klarer Meldung. So muss der Wert nicht doppelt gepflegt werden.
+
 Alle Aktionen laufen über eine zentrale Sperrlogik im Worker (eine Aktion pro Ressource gleichzeitig).
 
 ### 4.3 Sync-Ablauf
@@ -165,7 +167,7 @@ Alle Aktionen laufen über eine zentrale Sperrlogik im Worker (eine Aktion pro R
    - Bei manuellem Lauf: Anzeige der Zahl und Freigabe durch den Nutzer.
    - Bei geplantem Lauf: Abbruch mit Benachrichtigung.
 4. **Phase A – Hauptkopie bei laufenden Containern:** alle Shares inklusive appdata spiegeln (`rsync -aHAX --delete --numeric-ids …`). Hier fällt die meiste Datenmenge an.
-5. **Phase B – Konsistenzlauf:** laufende Container merken, stoppen (außer `never_stop`), appdata erneut spiegeln (nur noch das Delta, typischerweise Sekunden bis wenige Minuten), Container-Templates kopieren.
+5. **Phase B – Konsistenzlauf:** laufende Container merken, stoppen (außer `never_stop` und dem eigenen Container), appdata erneut spiegeln (nur noch das Delta, typischerweise Sekunden bis wenige Minuten), Container-Templates kopieren.
 6. **Container wieder starten:** genau die, die vorher liefen, auch bei einem Fehler in Phase B (`try/finally`).
 7. **Abschluss:** Notfall-Info auf Groß schreiben (siehe 4.6), Ergebnis in die Historie eintragen.
 8. **Optional:** Groß herunterfahren (Bedingungen siehe 4.2).
@@ -187,7 +189,8 @@ Alle Aktionen laufen über eine zentrale Sperrlogik im Worker (eine Aktion pro R
 - **Geschützte Zielpfade:** `protect_on_target` wird auf Groß nie gelöscht (rsync-Filter `protect`).
 - **Ausschlüsse:** `exclude` wird nicht kopiert (z. B. die eigene appdata von TwinRaid).
 - **Templates** werden **ohne** `--delete` kopiert. Eigene Templates auf Groß bleiben erhalten.
-- **Eigener Ordner von TwinRaid (ab Phase 5):** Der appdata-Ordner von TwinRaid mit Konfiguration, Secrets und CA-Schlüssel wird beim Sync **immer** ausgeschlossen, fest im Code und unabhängig von `exclude`. Grund: Der Worker kann diese Dateien dank `DAC_READ_SEARCH` lesen und würde sie sonst nach Groß kopieren. Den Ort auf dem Host ermittelt der Worker aus den Mounts von `/config` und `/data`; das genaue Verfahren wird in Phase 5 festgelegt. Liegt der Ordner in einer Share, die gesichert wird, warnt die Konfigurationsprüfung beim Start.
+- **Eigener Ordner von TwinRaid (ab Phase 5):** Der appdata-Ordner von TwinRaid mit Konfiguration, Secrets und CA-Schlüssel wird beim Sync **immer** ausgeschlossen, fest im Code und unabhängig von `exclude`. Grund: Der Worker kann diese Dateien dank `DAC_READ_SEARCH` lesen und würde sie sonst nach Groß kopieren. Den Ort auf dem Host ermittelt der Worker aus den Mounts von `/config` und `/data`; das genaue Verfahren wird in Phase 5 festgelegt. Liegt der Ordner in einer Share, die gesichert wird, warnt die Konfigurationsprüfung beim Start. Der Eintrag `appdata/twinraid` in `exclude` ist dann nicht mehr nötig.
+- **Eigener Container (ab Phase 5):** TwinRaid stoppt sich beim Konsistenzlauf nie selbst. Den eigenen Container erkennt der Worker automatisch (z. B. über die Container-ID in der Unraid-API); das Verfahren wird in Phase 5 festgelegt. `never_stop` gilt dann nur noch für andere Container, der Eintrag `twinraid` entfällt.
 
 ### 4.6 Notfall-Wiederherstellung
 
@@ -222,7 +225,15 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
   - Client-Netz → Container-IP nur TCP 8443 erlauben.
   - Optional: Container → Internet sperren. Er braucht zur Laufzeit kein Internet; Images lädt der Docker-Dienst des Hosts.
 - **In der App:** Erlaubte Netze kommen aus der Konfiguration. Anfragen von anderen Adressen werden vor jeder Verarbeitung mit 403 abgewiesen, auch für `/health` und die statischen Dateien. Maßgeblich ist die IP der TCP-Verbindung; IPv4-Adressen in IPv6-Schreibweise werden vorher umgewandelt. `X-Forwarded-For` wird ignoriert, außer ein Reverse-Proxy ist explizit als vertrauenswürdig konfiguriert (bisher nicht vorgesehen). Abweisungen stehen höchstens einmal pro Minute und IP im Container-Log.
-- **Host-Prüfung (ab Phase 2):** Der `Host`-Header muss eine der Adressen aus `web.tls.ip_addresses` oder `web.tls.hostnames` sein, sonst 400. Das verhindert DNS-Rebinding, bei dem eine fremde Webseite über einen eigenen Hostnamen auf den Container zugreift.
+- **Host-Prüfung (ab Phase 2):** Der `Host`-Header muss eine der verwendeten Adressen (siehe „Eigene Adresse“) oder einer der Namen aus `web.tls.hostnames` sein, sonst 400. Das verhindert DNS-Rebinding, bei dem eine fremde Webseite über einen eigenen Hostnamen auf den Container zugreift.
+- **Eigene Adresse (ab v0.3.1):** Die IP des Containers wird nur an einer Stelle festgelegt, im Unraid-Template (Netzwerk `br0`, „Fixed IP address“).
+  - `twinraid-init` erkennt beim Start die IPv4-Adressen der Netzwerkschnittstellen im Container. Nie verwendet werden Loopback (`127.0.0.0/8`), Link-Local (`169.254.0.0/16`), Multicast und `0.0.0.0`. IPv6 wird nicht erkannt; IPv6-Adressen nennt das Log nur, sie lassen sich über `web.tls.ip_addresses` ergänzen.
+  - Genau eine verwendbare Adresse: Sie gilt für Serverzertifikat (SAN), Namensbeschränkung der CA und Host-Prüfung.
+  - Keine oder mehrere verwendbare Adressen: Der Container startet nicht. Die Meldung nennt alle gefundenen Adressen mit Schnittstelle und die Lösung (im Template „Custom: br0“ mit „Fixed IP address“ wählen oder `web.tls.ip_addresses` setzen).
+  - Liegt die erkannte Adresse in `172.16.0.0/12` (typisch für Docker-interne Netze), warnt das Startlog deutlich, dass im Template vermutlich „Bridge“ statt „Custom: br0“ gewählt ist. Der Start wird nicht abgebrochen, weil Bridge-Netze mit gesetztem `web.tls.ip_addresses` erlaubt bleiben.
+  - Ist `web.tls.ip_addresses` gesetzt, gilt es statt der Erkennung (z. B. 127.0.0.1 für die lokale Entwicklung oder die Host-IP bei Bridge-Netzen).
+  - `twinraid-init` legt die verwendeten Adressen und ihre Herkunft (erkannt mit Schnittstelle, oder konfiguriert) in `/run/twinraid-tls/info.json` ab. Der Web-Prozess übernimmt sie von dort und erkennt nichts selbst; so gilt in allen Prozessen dieselbe Entscheidung. Die Admin-CLI verwendet dieselbe Erkennung.
+  - Startlog und Einstellungsseite zeigen die verwendete Adresse und ob sie erkannt oder konfiguriert ist. Die erkannte Adresse ist wie alle Konfigurationswerte nur über geschützte Routen erhältlich.
 - **Unraid Klein:** In den Docker-Einstellungen „Host access to custom networks“ aktivieren. Sonst erreicht der Container mit eigener IP seinen eigenen Host (API von Klein) nicht.
 
 ### 5.2 HTTPS
@@ -235,15 +246,16 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 
 - ECDSA P-256, Signatur SHA-256, Gültigkeit **10 Jahre**. Begründung: Jeder CA-Wechsel bedeutet, alle Geräte neu einzurichten. Ein gestohlener CA-Schlüssel taugt wegen der Namensbeschränkung nur für die eigenen Adressen von TwinRaid, und wer an den Schlüssel kommt, hat ohnehin root im Container. Eine kürzere Laufzeit brächte kaum Sicherheit, aber viel Aufwand.
 - `BasicConstraints CA:TRUE` mit `pathLenConstraint 0` (kritisch), `KeyUsage keyCertSign, cRLSign` (kritisch), `ExtendedKeyUsage serverAuth` als zusätzliche Begrenzung, Subject Key Identifier.
-- `NameConstraints` (kritisch): erlaubt nur die IP-Adressen aus `web.tls.ip_addresses` (IPv4 mit Maske /32, IPv6 mit /128) und die Namen aus `web.tls.hostnames`. Ein DNS-Name erlaubt nach RFC 5280 auch seine Unternamen. Ohne Hostnamen sind DNS-Namen nur unter `invalid` erlaubt (reserviert nach RFC 6761), weil nach RFC 5280 sonst jeder DNS-Name erlaubt wäre.
+- `NameConstraints` (kritisch): erlaubt nur die verwendeten IP-Adressen (erkannt oder aus `web.tls.ip_addresses`, siehe 5.1; IPv4 mit Maske /32, IPv6 mit /128) und die Namen aus `web.tls.hostnames`. Ein DNS-Name erlaubt nach RFC 5280 auch seine Unternamen. Ohne Hostnamen sind DNS-Namen nur unter `invalid` erlaubt (reserviert nach RFC 6761), weil nach RFC 5280 sonst jeder DNS-Name erlaubt wäre.
 - Name „TwinRaid CA <JJJJ-MM-TT>“ mit dem Erstellungsdatum, damit sich die CA in den Zertifikatslisten der Geräte wiederfinden lässt.
-- **Neu erzeugt** wird die CA nur, wenn sie fehlt, unbrauchbar oder abgelaufen ist, wenn ihre Namensbeschränkung nicht mehr zu `web.tls` passt, oder auf Befehl (`twinraid-admin renew-cert --new-ca`). Danach muss die neue CA auf allen Geräten installiert werden; Log und Dashboard sagen das deutlich. 90 Tage vor Ablauf warnt das Dashboard.
+- **Neu erzeugt** wird die CA nur, wenn sie fehlt, unbrauchbar oder abgelaufen ist, wenn ihre Namensbeschränkung nicht mehr zu den verwendeten Adressen und `web.tls.hostnames` passt (z. B. nach einer neuen IP im Template), oder auf Befehl (`twinraid-admin renew-cert --new-ca`). 90 Tage vor Ablauf warnt das Dashboard.
+- **CA-Wechsel unübersehbar (ab v0.3.1):** Wird eine bestehende CA ersetzt (jeder Grund außer der ersten Erzeugung), schreibt `twinraid-init` einen auffälligen mehrzeiligen Block ins Log und vermerkt den Wechsel (Zeitpunkt, Grund, Fingerabdruck der neuen CA) in `/data/tls/ca-change.json`. Das Dashboard zeigt einen Hinweis mit Datum und Grund und der Aufforderung, das neue CA-Zertifikat auf allen Geräten zu installieren. Er bleibt sichtbar, bis er in der Oberfläche per Klick bestätigt wird. Die Bestätigung gilt für genau diese CA (Fingerabdruck), steht in der Datenbank des Web-Prozesses und im Audit-Log. Der zugehörige Endpunkt nimmt keine Daten entgegen und erfordert wie jeder zustandsändernde Request das CSRF-Token.
 
 **Serverzertifikat**
 
 - ECDSA P-256, Signatur SHA-256, von der CA signiert, Gültigkeit 825 Tage, höchstens bis zum Ablauf der CA.
 - `BasicConstraints CA:FALSE` (kritisch), `KeyUsage digitalSignature` (kritisch), `ExtendedKeyUsage serverAuth`, Subject und Authority Key Identifier.
-- **Subject leer**, Subject Alternative Name aus `web.tls.ip_addresses` und `web.tls.hostnames`. Bei leerem Subject muss die SAN-Erweiterung nach RFC 5280 **kritisch** sein. Das leere Subject verhindert, dass ein Prüfprogramm einen Namen im Subject gegen die Namensbeschränkung prüft. Der Container-Starttest prüft beides.
+- **Subject leer**, Subject Alternative Name aus den verwendeten IP-Adressen und `web.tls.hostnames`. Bei leerem Subject muss die SAN-Erweiterung nach RFC 5280 **kritisch** sein. Das leere Subject verhindert, dass ein Prüfprogramm einen Namen im Subject gegen die Namensbeschränkung prüft. Der Container-Starttest prüft beides.
 - Der Web-Prozess liefert Serverzertifikat und CA-Zertifikat als Kette aus.
 
 **Erneuerung des Serverzertifikats**
@@ -350,6 +362,7 @@ Cross-Origin-Resource-Policy: same-origin
 - Tabelle in der SQLite-Datenbank des Web-Prozesses: Zeit (UTC), Client-IP, Aktion, Ergebnis. Aktion und Ergebnis stammen aus festen Listen; kein Feld übernimmt Text aus Requests.
 - Phase 2 protokolliert: Login erfolgreich, fehlgeschlagen, gesperrt oder ohne gesetztes Passwort; Beginn einer Sperre; Logout; abgelaufene Session; fehlgeschlagene CSRF- oder Origin-Prüfung; die CLI-Befehle `set-password`, `renew-cert` und `unlock`. Gleiche Abweisungen derselben IP werden höchstens einmal pro Minute eingetragen.
 - Ab Phase 3 zusätzlich die CLI-Befehle `set-api-key` und `trust-api-cert`.
+- Ab v0.3.1 zusätzlich die Bestätigung des Hinweises zum CA-Wechsel.
 - **Nie gespeichert oder geloggt:** Passwörter, Session-IDs, CSRF-Tokens, Cookies, Request-Inhalte.
 - Aufbewahrung 180 Tage und höchstens 50.000 Einträge; aufgeräumt wird beim Start und stündlich.
 - Die Kachel „Verlauf“ zeigt die letzten 50 Einträge über eine geschützte Route.
@@ -471,7 +484,7 @@ Das Repo ist öffentlich auf GitHub, das Container-Image wird öffentlich über 
 | Pfad | Besitzer | Rechte | Inhalt |
 |---|---|---|---|
 | `/data/secrets` | root | 0700 | Passwort-Hash; ab Phase 3 API-Key von Groß (`target-api-key`) und bestätigter Fingerabdruck seines Zertifikats (`target-api-cert.sha256`); ab Phase 4 SSH-Keys |
-| `/data/tls` | root | 0700 | CA (`ca.pem`, `ca-key.pem`) und Serverzertifikat (`server.pem`, `server-key.pem`) |
+| `/data/tls` | root | 0700 | CA (`ca.pem`, `ca-key.pem`), Serverzertifikat (`server.pem`, `server-key.pem`), Vermerk des letzten CA-Wechsels (`ca-change.json`) |
 | `/data/web` | root, Gruppe 10001 | 0770 | SQLite des Web-Prozesses (Datei `0600`, Besitzer 10001); Vermerk der letzten Erneuerungsanfrage `tls-renewal.json` |
 | `/data/worker` (ab Phase 4) | root | 0700 | Aktionslog des Workers; der Web-Prozess kann es weder lesen noch verändern |
 | `/run/twinraid-tls` | root, Gruppe 10001 | 0750 | Zertifikatskette, Serverschlüssel, CA-Zertifikat und `info.json` für den Web-Prozess, nur im RAM |
@@ -497,15 +510,15 @@ Shares und Templates werden erst gemountet, wenn der Sync sie braucht. Vorher ha
 # Secrets (Passwort, API-Keys, SSH-Keys) gehören NICHT hierher (siehe 5.5).
 
 web:
-  port: 8443
+  # port: 8443                 # optional, Standard 8443; nicht ändern
   allowed_networks:            # nur Clients aus diesen Netzen dürfen zugreifen
     - 192.168.10.0/24          # Server-Netz
     - 192.168.20.0/24          # Client-Netz
   session_idle_minutes: 10     # optional, Standard 10
   default_language: de         # de | en
   tls:
-    ip_addresses:              # feste IP des Containers, kommt ins Zertifikat
-      - 192.168.10.20
+    # ip_addresses:            # optional; ohne Angabe die IP aus dem Unraid-Template
+    #   - 192.168.10.20        #   („Fixed IP address“), automatisch erkannt
     hostnames: []              # optional, z. B. twinraid.home.arpa
 
 servers:
@@ -566,7 +579,8 @@ Ergänzende Regeln:
 - **Container-Namen** in `never_stop`: nur die von Docker erlaubten Zeichen.
 - **WebGUI** (`servers.<server>.webgui`, ab Phase 3): `scheme` ist `http` oder `https`; `port` ist optional (1 bis 65535, Standard 80 bzw. 443).
 - **Sitzung:** `web.session_idle_minutes` ist optional (1 bis 720, Standard 10).
-- **TLS** (`web.tls`): `ip_addresses` enthält mindestens eine IP-Adresse, keine Multicast- oder unspezifizierte Adresse, ohne Duplikate. `hostnames` ist optional; erlaubt sind DNS-Namen nach RFC 1123 ohne Platzhalter, in Kleinbuchstaben gespeichert, ohne Duplikate. Beide Listen bilden zusammen die erlaubten `Host`-Header und gehören zu den Werten, die nie öffentlich ausgeliefert werden.
+- **Port** (`web.port`): optional, Standard 8443.
+- **TLS** (`web.tls`): `ip_addresses` ist optional (ohne Angabe gilt die erkannte Adresse, siehe 5.1). Ist es gesetzt, enthält es mindestens eine IP-Adresse, keine Multicast- oder unspezifizierte Adresse, ohne Duplikate. `hostnames` ist optional; erlaubt sind DNS-Namen nach RFC 1123 ohne Platzhalter, in Kleinbuchstaben gespeichert, ohne Duplikate. Die verwendeten Adressen und die Hostnamen bilden zusammen die erlaubten `Host`-Header und gehören zu den Werten, die nie öffentlich ausgeliefert werden.
 - **Zeitplan** (`sync.schedule`): `days` enthält nur die Kürzel `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`, ohne Duplikate und mindestens einen Tag. `time` hat das Format `HH:MM` (`00:00` bis `23:59`) und steht in Anführungszeichen. Ohne Anführungszeichen liest YAML manche Uhrzeiten wie `13:30` als Zahl; das wird mit einem klaren Hinweis abgelehnt. `timezone` ist eine gültige IANA-Zeitzone, die im Container vorhanden ist (z. B. `Europe/Berlin`); Sondereinträge wie `localtime` sind nicht erlaubt.
 
 ### 6.4 Betriebsmodus (`TWINRAID_MODE`)
@@ -650,7 +664,7 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 - [ ] Klein: Container-Templates auf Pool-Pfade prüfen und auf `/mnt/user/…` umstellen
 - [ ] UniFi: feste IP für den Container, Firewall-Regel Client-Netz → Container-IP:8443
 - [ ] Klein: `/mnt/user/appdata/twinraid/data` gehört root und ist nur für root beschreibbar (siehe 5.9)
-- [ ] Konfiguration: `web.tls.ip_addresses` enthält die feste Container-IP
+- [ ] Feste IP nur im Template („Fixed IP address“); das Startlog zeigt `TLS address … (detected on …)` mit dieser IP
 - [ ] Container installieren, Konfiguration anlegen, Passwort setzen, bei `https` Zertifikat von Groß bestätigen (`trust-api-cert`), ab Phase 4 Hostkey von Groß bestätigen
 - [ ] Geräte: CA-Zertifikat auf Windows, Linux und Android für Chrome bzw. Edge und Firefox installieren (Test in Issue #3)
 
