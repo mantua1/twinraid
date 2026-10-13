@@ -17,6 +17,7 @@ UNKNOWN_STATUS = StatusSnapshot(
     target=ResourceState.UNKNOWN,
     vm=ResourceState.UNKNOWN,
     checked_at=None,
+    password_set=True,
 )
 
 

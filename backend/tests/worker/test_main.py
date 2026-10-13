@@ -35,3 +35,25 @@ def test_invalid_config_stops_worker(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     bad.write_text("web: {}\n")
     monkeypatch.setenv("TWINRAID_CONFIG", str(bad))
     assert main() == EXIT_STARTUP_ERROR
+
+
+def test_heartbeat_updates_file(tmp_path: Path) -> None:
+    import asyncio
+
+    from twinraid.worker.main import heartbeat
+
+    path = tmp_path / "worker.heartbeat"
+
+    async def run() -> list[float]:
+        task = asyncio.create_task(heartbeat(path, interval=0.05))
+        times: list[float] = []
+        for _ in range(3):
+            await asyncio.sleep(0.07)
+            times.append(path.stat().st_mtime_ns)
+        task.cancel()
+        return [float(t) for t in times]
+
+    times = asyncio.run(run())
+    assert times == sorted(times)
+    assert times[0] < times[-1]
+    assert (path.stat().st_mode & 0o777) == 0o600

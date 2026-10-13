@@ -22,6 +22,7 @@ from twinraid.shared.ipc import (
 
 CONCEPT_COMMANDS = {
     "get_status",
+    "verify_password",
     "wake_target",
     "shutdown_target",
     "vm_start",
@@ -52,8 +53,18 @@ def test_commands_have_no_free_parameters() -> None:
     union, _field = typing.get_args(ipc.Command)
     for model in typing.get_args(union):
         extra_fields = set(model.model_fields) - {"command"}
+        if model is ipc.VerifyPassword:
+            # Einzige Ausnahme laut Konzept 3.2: das zu prüfende Passwort.
+            assert extra_fields == {"password"}
+            continue
         # Erlaubt sind höchstens Job-IDs, die der Worker selbst vergibt.
         assert extra_fields <= {"job_id"}, model.__name__
+
+
+def test_password_never_appears_in_repr() -> None:
+    command = ipc.VerifyPassword(command="verify_password", password="geheim-123456")
+    assert "geheim" not in repr(command)
+    assert "geheim" not in str(command)
 
 
 @pytest.mark.parametrize("name", sorted(CONCEPT_COMMANDS))
@@ -61,6 +72,8 @@ def test_every_command_roundtrips(name: str) -> None:
     payload = f'{{"command": "{name}"'
     if name in {"sync_cancel", "sync_confirm_deletions"}:
         payload += f', "job_id": "{JOB_ID}"'
+    if name == "verify_password":
+        payload += ', "password": "irgendwas-langes"'
     command = decode_command(payload.encode() + b"}\n")
     assert command.command == name
     assert decode_command(encode_command(command)) == command

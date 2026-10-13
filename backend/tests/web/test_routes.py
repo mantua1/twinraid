@@ -37,6 +37,7 @@ def test_status_from_worker(tmp_path: Path) -> None:
         "target": "unknown",
         "vm": "unknown",
         "checked_at": None,
+        "password_set": True,
     }
 
 

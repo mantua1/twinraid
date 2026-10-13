@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx2
 import pytest
 
+from tests.support.passwords import password_check
 from tests.web.helpers import AllowAll, build_frontend, make_app
 from twinraid.integrations.mocks.status import MockStatusProvider
 from twinraid.shared.ipc import ErrorCode, SyncStart
@@ -22,7 +23,9 @@ pytestmark = pytest.mark.anyio
 @pytest.fixture
 async def worker_socket() -> AsyncIterator[Path]:
     base = Path(tempfile.mkdtemp(prefix="tr-"))
-    server = WorkerServer(base / "w.sock", os.getuid(), CommandHandler(MockStatusProvider()))
+    server = WorkerServer(
+        base / "w.sock", os.getuid(), CommandHandler(MockStatusProvider(), password_check(base))
+    )
     await server.start()
     try:
         yield server.path

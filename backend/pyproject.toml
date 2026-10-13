@@ -50,8 +50,8 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# In Tests sind assert-Anweisungen gewollt.
-"tests/**" = ["S101"]
+# In Tests sind assert-Anweisungen und feste Testpasswörter gewollt.
+"tests/**" = ["S101", "S105", "S106"]
 
 [tool.mypy]
 python_version = "3.14"

@@ -14,11 +14,17 @@ class ResourceState(StrEnum):
     UNKNOWN = "unknown"
 
 
-class StatusSnapshot(StrictModel):
-    """Momentaufnahme aller überwachten Ressourcen."""
+class ResourceStatus(StrictModel):
+    """Zustand der überwachten Ressourcen, geliefert von der Status-Integration."""
 
     source: ResourceState
     target: ResourceState
     vm: ResourceState
     # Zeitpunkt der letzten Prüfung; None, solange noch nie geprüft wurde.
     checked_at: datetime | None
+
+
+class StatusSnapshot(ResourceStatus):
+    """Antwort auf get_status: Ressourcen plus Zustand der Anmeldung."""
+
+    password_set: bool
