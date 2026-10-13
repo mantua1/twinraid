@@ -45,6 +45,8 @@ sync:
   copy_templates: true
   schedule:
     enabled: true
-    cron: "0 3 * * 0"          # sonntags 03:00
+    timezone: "Europe/Berlin"  # IANA-Zeitzone
+    days: [sun]                # mon, tue, wed, thu, fri, sat, sun
+    time: "03:00"              # HH:MM, immer in Anführungszeichen
     wake_target: true
     shutdown_after: true       # nur wenn der Sync geweckt hat und die VM aus ist

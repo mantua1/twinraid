@@ -6,6 +6,8 @@ Regeln bewusst streng und arbeiten mit Positivlisten, wo es möglich ist.
 
 import re
 import unicodedata
+import zoneinfo
+from functools import cache
 from ipaddress import IPv4Address, IPv6Address
 
 # Positivliste für Share-Namen: ASCII-Buchstaben, Ziffern, Punkt, Unterstrich,
@@ -118,3 +120,45 @@ def validate_host_address[A: (IPv4Address, IPv6Address)](value: A) -> A:
     if value.is_unspecified or value.is_loopback or value.is_multicast:
         raise ValueError(f"{value} is not a usable host address")
     return value
+
+
+_TIME_RE = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", re.ASCII)
+# Einträge der Zeitzonen-Datenbank, die keine echten IANA-Zeitzonen sind.
+_NON_IANA_ZONES = frozenset({"localtime", "Factory", "posixrules"})
+
+
+def reject_unquoted_time(value: object) -> object:
+    """YAML liest unquotierte Uhrzeiten wie 13:30 als Zahl (Sexagesimal). Klar darauf hinweisen."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        raise ValueError(
+            'time must be written in quotes, e.g. time: "13:30" '
+            "(without quotes YAML reads values like 13:30 as a number)"
+        )
+    return value
+
+
+def validate_time_of_day(value: str) -> str:
+    if _TIME_RE.fullmatch(value) is None:
+        raise ValueError(f"invalid time {value!r}: expected HH:MM between 00:00 and 23:59")
+    return value
+
+
+@cache
+def _available_time_zones() -> frozenset[str]:
+    return frozenset(zoneinfo.available_timezones()) - _NON_IANA_ZONES
+
+
+def validate_time_zone(value: str) -> str:
+    zones = _available_time_zones()
+    if not zones:
+        raise ValueError("no time zone database is available on this system")
+    if value not in zones:
+        raise ValueError(f"unknown time zone {value!r}: use an IANA name like 'Europe/Berlin'")
+    return value
+
+
+def reject_duplicate_days[T: str](days: list[T]) -> list[T]:
+    duplicates = sorted({day for day in days if days.count(day) > 1})
+    if duplicates:
+        raise ValueError(f"days contains duplicates: {', '.join(duplicates)}")
+    return days

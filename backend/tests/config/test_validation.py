@@ -95,10 +95,36 @@ INVALID_CASES: list[tuple[str, object, str]] = [
     ("sync.max_deletions", -1, "greater than or equal to 0"),
     ("sync.stop_containers", "yes", "valid boolean"),
     ("sync.schedule.enabled", 1, "valid boolean"),
-    # --- Cron ---
-    ("sync.schedule.cron", "0 3 * *", "invalid cron expression"),
-    ("sync.schedule.cron", "61 3 * * 0", "invalid cron expression"),
-    ("sync.schedule.cron", "sonntags um drei", "invalid cron expression"),
+    # --- Zeitplan: Wochentage ---
+    ("sync.schedule.days", [], "at least 1"),
+    ("sync.schedule.days", ["sun", "sun"], "days contains duplicates: sun"),
+    ("sync.schedule.days", ["sun", "mon", "sun", "mon"], "days contains duplicates: mon, sun"),
+    ("sync.schedule.days", ["sunday"], "'mon', 'tue'"),
+    ("sync.schedule.days", ["Sun"], "'mon', 'tue'"),
+    ("sync.schedule.days", ["so"], "'mon', 'tue'"),
+    ("sync.schedule.days", [0], "'mon', 'tue'"),
+    ("sync.schedule.days", "sun", "valid list"),
+    # --- Zeitplan: Uhrzeit ---
+    ("sync.schedule.time", "3:00", "expected HH:MM"),
+    ("sync.schedule.time", "24:00", "expected HH:MM"),
+    ("sync.schedule.time", "03:60", "expected HH:MM"),
+    ("sync.schedule.time", "03:00:00", "expected HH:MM"),
+    ("sync.schedule.time", "0300", "expected HH:MM"),
+    ("sync.schedule.time", " 03:00", "expected HH:MM"),
+    ("sync.schedule.time", "03:00\n", "expected HH:MM"),
+    # Vollbreiten-Ziffern: nur ASCII-Ziffern sind erlaubt.
+    ("sync.schedule.time", "\uff10\uff13:\uff10\uff10", "expected HH:MM"),
+    ("sync.schedule.time", 180, "must be written in quotes"),
+    ("sync.schedule.time", True, "valid string"),
+    # --- Zeitplan: Zeitzone ---
+    ("sync.schedule.timezone", "Europe/Berlinn", "unknown time zone"),
+    ("sync.schedule.timezone", "europe/berlin", "unknown time zone"),
+    ("sync.schedule.timezone", "", "unknown time zone"),
+    ("sync.schedule.timezone", "localtime", "unknown time zone"),
+    ("sync.schedule.timezone", "../../etc/passwd", "unknown time zone"),
+    ("sync.schedule.timezone", "MEZ", "unknown time zone"),
+    ("sync.schedule.timezone", 1, "valid string"),
+    ("sync.schedule.timezone", _DELETE, "sync.schedule.timezone: required key is missing"),
     # --- Web ---
     ("web.port", 0, "greater than or equal to 1"),
     ("web.port", 70000, "less than or equal to 65535"),
@@ -131,7 +157,7 @@ INVALID_CASES: list[tuple[str, object, str]] = [
     ("gaming_vm.shutdown_timeout_minutes", 61, "less than or equal to 60"),
     # --- Unbekannte und fehlende Schlüssel ---
     ("web.prot", 8443, "web.prot: unknown key"),
-    ("sync.schedule.crn", "0 3 * * 0", "unknown key"),
+    ("sync.schedule.cron", "0 3 * * 0", "sync.schedule.cron: unknown key"),
     ("extra", 1, "extra: unknown key"),
     ("sync.max_deletions", _DELETE, "sync.max_deletions: required key is missing"),
     ("servers.target.mac", _DELETE, "servers.target.mac: required key is missing"),
@@ -181,6 +207,42 @@ def test_empty_lists_are_allowed(tmp_path: Path) -> None:
     data["sync"]["never_stop"] = []
     config = _load(tmp_path, data)
     assert config.sync.exclude == []
+
+
+def test_schedule_from_example() -> None:
+    schedule = load_config(EXAMPLE_CONFIG).sync.schedule
+    assert schedule.timezone == "Europe/Berlin"
+    assert schedule.days == ["sun"]
+    assert schedule.time == "03:00"
+
+
+@pytest.mark.parametrize(
+    ("days", "time", "timezone"),
+    [
+        (["mon", "tue", "wed", "thu", "fri", "sat", "sun"], "00:00", "UTC"),
+        (["sat", "wed"], "23:59", "Europe/Vienna"),
+        (["fri"], "12:30", "America/New_York"),
+    ],
+)
+def test_valid_schedules(tmp_path: Path, days: list[str], time: str, timezone: str) -> None:
+    data = _example()
+    data["sync"]["schedule"].update(days=days, time=time, timezone=timezone)
+    schedule = _load(tmp_path, data).sync.schedule
+    assert (schedule.days, schedule.time, schedule.timezone) == (days, time, timezone)
+
+
+def test_unquoted_time_in_yaml_gives_helpful_message(tmp_path: Path) -> None:
+    # YAML liest 13:30 ohne Anführungszeichen als Zahl 810 (Sexagesimal).
+    content = EXAMPLE_CONFIG.read_text(encoding="utf-8").replace('time: "03:00"', "time: 13:30")
+    assert "time: 13:30" in content
+    path = tmp_path / "config.yaml"
+    path.write_text(content, encoding="utf-8")
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    assert excinfo.value.problems == [
+        'sync.schedule.time: time must be written in quotes, e.g. time: "13:30" '
+        "(without quotes YAML reads values like 13:30 as a number)"
+    ]
 
 
 def test_config_is_immutable() -> None:

@@ -3,16 +3,27 @@
 from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network
 from typing import Annotated, Literal, Self
 
-from apscheduler.triggers.cron import CronTrigger
-from pydantic import AfterValidator, Field, StrictBool, StrictInt, StrictStr, model_validator
+from pydantic import (
+    AfterValidator,
+    BeforeValidator,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    model_validator,
+)
 
 from twinraid.config.validators import (
     normalize_mac,
+    reject_duplicate_days,
+    reject_unquoted_time,
     validate_container_name,
     validate_display_text,
     validate_host_address,
     validate_relative_path,
     validate_share_name,
+    validate_time_of_day,
+    validate_time_zone,
     validate_vm_name,
 )
 from twinraid.shared.base import StrictModel
@@ -27,21 +38,12 @@ HostAddress = Annotated[IPv4Address | IPv6Address, AfterValidator(validate_host_
 Minutes = Annotated[StrictInt, Field(ge=1, le=60)]
 
 
-def _validate_cron(expression: str) -> str:
-    """Prüft nur die Syntax (fünf Felder).
-
-    Achtung für Phase 6: APScheduler 3.x zählt den Wochentag in from_crontab()
-    ab Montag (0 = Montag), Standard-Cron ab Sonntag (0 = Sonntag). Die
-    Zeitsteuerung muss das umrechnen, sonst läuft "0 3 * * 0" montags.
-    """
-    try:
-        CronTrigger.from_crontab(expression, timezone="UTC")
-    except ValueError as exc:
-        raise ValueError(f"invalid cron expression {expression!r}: {exc}") from None
-    return expression
-
-
-CronExpression = Annotated[StrictStr, AfterValidator(_validate_cron)]
+Weekday = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+Weekdays = Annotated[list[Weekday], Field(min_length=1), AfterValidator(reject_duplicate_days)]
+TimeOfDay = Annotated[
+    StrictStr, BeforeValidator(reject_unquoted_time), AfterValidator(validate_time_of_day)
+]
+TimeZoneName = Annotated[StrictStr, AfterValidator(validate_time_zone)]
 
 
 class WebConfig(StrictModel):
@@ -82,8 +84,12 @@ class GamingVmConfig(StrictModel):
 
 
 class ScheduleConfig(StrictModel):
+    """Zeitplan für den Sync (Konzept 4.8). Die Uhrzeit gilt in der angegebenen Zeitzone."""
+
     enabled: StrictBool
-    cron: CronExpression
+    timezone: TimeZoneName
+    days: Weekdays
+    time: TimeOfDay
     wake_target: StrictBool
     shutdown_after: StrictBool
 

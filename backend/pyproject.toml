@@ -5,7 +5,6 @@ description = "Web UI to control two Unraid servers: wake-on-LAN, status, gaming
 license = "MIT"
 requires-python = ">=3.14,<3.15"
 dependencies = [
-    "apscheduler==3.11.3",
     "fastapi==0.143.0",
     "pydantic==2.14.1",
     "pyyaml==6.0.3",
@@ -67,9 +66,3 @@ warn_required_dynamic_aliases = true
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 xfail_strict = true
-
-# APScheduler 3.x liefert keine Typinformationen (kein py.typed). Der einzige
-# Aufruf ist in config/models.py in einer typisierten Hilfsfunktion gekapselt.
-[[tool.mypy.overrides]]
-module = ["apscheduler.*"]
-ignore_missing_imports = true
