@@ -1,0 +1,7 @@
+#!/command/with-contenv sh
+# Startdienst: Datenablage prüfen und TLS einrichten (Konzept 5.2, 5.4, 5.9).
+# root mit GID 10001; Bounding-Set nur DAC_READ_SEARCH, um einen eigenen
+# Schlüssel unter /config/tls lesen zu können. Schlägt er fehl, stoppt der Container.
+exec setpriv --reuid=0 --regid=10001 --clear-groups \
+    --inh-caps=-all --bounding-set=-all,+dac_read_search --no-new-privs \
+    -- /app/.venv/bin/twinraid-init

@@ -68,10 +68,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: shellcheck docker/*.sh backend/scripts/*.sh
+      - run: shellcheck -x docker/*.sh backend/scripts/*.sh
       - run: >-
           shellcheck --shell=sh
           docker/rootfs/etc/s6-overlay/scripts/twinraid-preflight
+          docker/rootfs/etc/s6-overlay/scripts/twinraid-init
           docker/rootfs/etc/s6-overlay/s6-rc.d/*/run
           docker/rootfs/etc/s6-overlay/s6-rc.d/*/finish
 
