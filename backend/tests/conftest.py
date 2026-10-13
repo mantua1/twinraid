@@ -1,6 +1,8 @@
 """Gemeinsame Test-Fixtures."""
 
+import logging
 import socket
+from collections.abc import Iterator
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 
@@ -55,6 +57,24 @@ def _no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(socket.socket, "connect", connect)
     monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+
+
+@pytest.fixture(autouse=True)
+def _restore_logging() -> Iterator[None]:
+    """Entfernt nach jedem Test die Logging-Ausgabe, die main() eingerichtet hat.
+
+    configure_logging() hängt einen StreamHandler auf die Ausgabe des laufenden
+    Tests an. Pytest schließt diese Ausgabe danach; spätere Tests schrieben sonst in
+    eine geschlossene Datei ("Logging error"). Die eigenen Handler von pytest sind
+    Unterklassen und bleiben unberührt.
+    """
+    root = logging.getLogger()
+    before, level = set(root.handlers), root.level
+    yield
+    for handler in list(root.handlers):
+        if type(handler) is logging.StreamHandler and handler not in before:
+            root.removeHandler(handler)
+    root.setLevel(level)
 
 
 @pytest.fixture

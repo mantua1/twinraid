@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sqlite3
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
@@ -17,12 +18,12 @@ from tests.web.helpers import (
     make_client,
     unknown_status,
 )
-from twinraid.web.events import EventTimings, StatusHub, event_stream
+from twinraid.web import events
+from twinraid.web.events import EventTimings, SessionCheck, StatusHub, event_stream
 from twinraid.web.sessions import Lookup, Session
 
 MINUTE = 60.0
-# Etwas langsamere Abfragen, damit jeder Status einzeln ankommt, und genug Zeit für
-# lange simulierte Abläufe. Die simulierte Zeit läuft nur bei Statusabfragen weiter.
+# Genug Zeit für lange simulierte Abläufe (siehe SessionTimeline).
 SLOW = EventTimings(
     poll_seconds=0.02, session_check_seconds=1.0, keepalive_seconds=1.0, max_stream_seconds=20.0
 )
@@ -39,6 +40,11 @@ def _events(body: str) -> list[tuple[str, object]]:
 
 def _names(body: str) -> list[str]:
     return [name for name, _ in _events(body)]
+
+
+def _audit(tmp_path: Path) -> list[tuple[str, str]]:
+    with sqlite3.connect(tmp_path / "web.sqlite") as db:
+        return [(str(a), str(r)) for a, r in db.execute("SELECT action, result FROM audit_log")]
 
 
 def _last_seen(tmp_path: Path) -> float | None:
@@ -91,55 +97,104 @@ def test_opening_the_stream_does_not_extend_the_session(tmp_path: Path) -> None:
     assert _last_seen(tmp_path) == logged_in
 
 
-def test_stream_ends_when_the_session_expires(tmp_path: Path) -> None:
-    worker, clock, client = _setup(tmp_path, SLOW)
-    # Jede Statusabfrage lässt 4 Minuten vergehen; ohne Job endet die Session nach 10.
-    worker.on_status = lambda _call: clock.advance(4 * MINUTE)
+class SessionTimeline:
+    """Simulierte Zeit, die bei jeder Sitzungsprüfung des Datenstroms vorrückt.
+
+    Die Zeit läuft hier nicht bei den Statusabfragen weiter: Ist der Datenstrom
+    langsamer als die Abfragen, bekommt er nur den neuesten Stand. Zwei Abfragen
+    lägen dann ohne Prüfung dazwischen, und die simulierte Zeit spränge doppelt.
+    In echter Zeit gibt es diesen Sprung nicht. So bleibt der Test unabhängig davon,
+    wie schnell der Rechner ist.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, clock: FakeClock) -> None:
+        self.clock = clock
+        self.started = clock.now
+        self.step = 0.0
+        # (Zeitpunkt, touch, force, Session noch gültig) je Prüfung.
+        self.checks: list[tuple[float, bool, bool, bool]] = []
+        original = events._still_valid
+
+        async def advancing(
+            check: SessionCheck, touch: bool, force: bool, on_expired: Callable[[], Awaitable[None]]
+        ) -> bool:
+            clock.advance(self.step)
+            valid = await original(check, touch, force, on_expired)
+            self.checks.append((clock.now - self.started, touch, force, valid))
+            return valid
+
+        monkeypatch.setattr(events, "_still_valid", advancing)
+
+    def elapsed(self) -> float:
+        return self.clock.now - self.started
+
+    def touches(self) -> list[float]:
+        return [at for at, touch, _force, valid in self.checks if touch and valid]
+
+    def forced(self) -> list[float]:
+        return [at for at, _touch, force, valid in self.checks if force and valid]
+
+
+def test_stream_ends_when_the_session_expires(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _worker, clock, client = _setup(tmp_path, SLOW)
+    timeline = SessionTimeline(monkeypatch, clock)
+    timeline.step = 4 * MINUTE
     names = _names(client.get("/api/events").text)
     assert names[-1] == "session_ended"
+    # Ohne Job keine Verlängerung: Ablauf bei der ersten Prüfung nach 10 Minuten.
+    assert timeline.touches() == []
+    assert timeline.elapsed() == 12 * MINUTE
     assert _last_seen(tmp_path) is None
     assert client.get("/api/status").status_code == 401
+    assert ("session", "expired") in _audit(tmp_path)
 
 
-def test_running_job_keeps_an_open_dashboard_logged_in(tmp_path: Path) -> None:
+def test_running_job_keeps_an_open_dashboard_logged_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     worker, clock, client = _setup(tmp_path, SLOW)
-    started = clock.now
-    job_end: list[float] = []
+    timeline = SessionTimeline(monkeypatch, clock)
+    timeline.step = 4 * MINUTE
 
-    def tick(call: int) -> None:
-        clock.advance(4 * MINUTE)
-        # Abfragen 1 bis 8: Kopierjob läuft (32 Minuten, also weit über 10 Minuten).
-        worker.job_running = call <= 8
-        if call == 9:
-            job_end.append(clock.now)
+    def job(_call: int) -> None:
+        # Der Kopierjob läuft in den ersten 32 Minuten, also weit über 10 Minuten.
+        worker.job_running = timeline.elapsed() < 32 * MINUTE
 
-    worker.on_status = tick
-    events = _events(client.get("/api/events").text)
-    assert events[-1][0] == "session_ended"
-    statuses = [data for name, data in events if name == "status"]
-    assert sum(1 for s in statuses if isinstance(s, dict) and s["job_running"]) == 8
-    assert job_end == [started + 36 * MINUTE]
-    # Nach dem Ende des Jobs beginnen die 10 Minuten neu: Ablauf erst danach.
-    assert clock.now - job_end[0] >= 10 * MINUTE
+    worker.on_status = job
+    events_seen = _events(client.get("/api/events").text)
+    assert events_seen[-1][0] == "session_ended"
+    assert any(isinstance(d, dict) and d["job_running"] for n, d in events_seen if n == "status")
+    # Am Ende des Jobs wird die Aktivität einmal sofort gesetzt ...
+    assert len(timeline.forced()) == 1
+    job_end = timeline.forced()[0]
+    assert job_end >= 32 * MINUTE
+    # ... vorher hielt das offene Dashboard die Session, danach zählen die 10 Minuten neu.
+    assert timeline.touches()[0] == 4 * MINUTE
+    assert 10 * MINUTE < timeline.elapsed() - job_end <= 14 * MINUTE
 
 
-def test_job_end_restarts_the_idle_time(tmp_path: Path) -> None:
+def test_job_end_restarts_the_idle_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     short = EventTimings(
         poll_seconds=0.02, session_check_seconds=1.0, keepalive_seconds=1.0, max_stream_seconds=0.5
     )
     worker, clock, client = _setup(tmp_path, short)
-    logged_in = clock.now
+    timeline = SessionTimeline(monkeypatch, clock)
+    timeline.step = 3 * MINUTE
 
-    def tick(call: int) -> None:
-        # Drei Abfragen à 3 Minuten, die ersten beiden mit laufendem Job; danach steht die Zeit.
-        if call <= 3:
-            clock.advance(3 * MINUTE)
-        worker.job_running = call <= 2
+    def job(_call: int) -> None:
+        # Job läuft 6 Minuten; nach seinem Ende steht die Zeit still.
+        worker.job_running = timeline.elapsed() < 6 * MINUTE
+        if timeline.forced():
+            timeline.step = 0.0
 
-    worker.on_status = tick
+    worker.on_status = job
     client.get("/api/events")
-    # Die letzte Aktivität steht auf dem Ende des Jobs (9 Minuten nach dem Login).
-    assert _last_seen(tmp_path) == logged_in + 9 * MINUTE
+    # Die letzte Aktivität steht genau auf dem Ende des Jobs, die Session gilt weiter.
+    assert len(timeline.forced()) == 1
+    assert _last_seen(tmp_path) == timeline.started + timeline.forced()[0]
+    assert client.get("/api/status").status_code == 200
 
 
 def test_job_without_open_dashboard_does_not_keep_the_session(tmp_path: Path) -> None:
@@ -149,24 +204,30 @@ def test_job_without_open_dashboard_does_not_keep_the_session(tmp_path: Path) ->
     assert client.get("/api/status").status_code == 401
 
 
-def test_maximum_lifetime_applies_during_a_job(tmp_path: Path) -> None:
+def test_maximum_lifetime_applies_during_a_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     worker, clock, client = _setup(tmp_path, SLOW)
+    timeline = SessionTimeline(monkeypatch, clock)
+    timeline.step = 9 * MINUTE
     worker.job_running = True
-    started = clock.now
-    worker.on_status = lambda _call: clock.advance(9 * MINUTE)
     names = _names(client.get("/api/events").text)
     assert names[-1] == "session_ended"
-    lifetime = clock.now - started
-    assert 12 * 60 * MINUTE <= lifetime < 12 * 60 * MINUTE + 10 * MINUTE
+    # Bis zur Höchstdauer verlängert der Job die Session bei jeder Prüfung ...
+    assert len(timeline.touches()) == 12 * 60 // 9 - 1
+    # ... danach endet sie trotz laufendem Job.
+    assert 12 * 60 * MINUTE <= timeline.elapsed() < 12 * 60 * MINUTE + 9 * MINUTE
 
 
-def test_ending_a_session_sends_no_command_to_the_worker(tmp_path: Path) -> None:
+def test_ending_a_session_sends_no_command_to_the_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Logout oder Ablauf beenden nie den Kopierjob: Der Worker bekommt nur Abfragen."""
     worker, clock, client = _setup(tmp_path, SLOW)
+    timeline = SessionTimeline(monkeypatch, clock)
+    timeline.step = 20 * MINUTE
     worker.job_running = True
-    worker.on_status = lambda _call: clock.advance(20 * MINUTE)
     assert _names(client.get("/api/events").text)[-1] == "session_ended"
-    worker.on_status = None
     csrf = login(client)
     assert client.post("/api/auth/logout", headers={"X-CSRF-Token": csrf}).status_code == 200
     assert set(worker.calls) == {"get_status", "verify_password"}
