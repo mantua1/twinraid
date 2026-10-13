@@ -232,3 +232,11 @@ async def test_stream_touches_only_while_a_job_runs() -> None:
     assert (True, False) in checks[:end]
     assert set(checks[end + 1 :]) <= {(False, False)}
     assert checks.count((True, True)) == 1
+
+
+def test_number_of_streams_is_limited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("twinraid.web.app.MAX_STREAMS", 0)
+    _worker, _clock, client = _setup(tmp_path)
+    response = client.get("/api/events")
+    assert response.status_code == 503
+    assert response.json() == {"detail": "too_many_streams"}
