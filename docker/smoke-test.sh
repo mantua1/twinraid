@@ -21,6 +21,8 @@ WORKDIR="$(mktemp -d)"
 
 # Muss mit docker/run-local.sh und Konzept 5.4 übereinstimmen.
 CAPS=(SETUID SETGID SETPCAP KILL DAC_READ_SEARCH)
+# Die Kommas gehören zu den tmpfs-Optionen, nicht zur Array-Syntax.
+# shellcheck disable=SC2054
 HARDENING=(
   --read-only
   --tmpfs /run:rw,exec,nosuid,nodev,mode=0755,size=16m
@@ -32,6 +34,22 @@ HARDENING=(
 failures=0
 pass() { echo "ok    $*"; }
 fail() { echo "FAIL  $*" >&2; failures=$((failures + 1)); }
+expect_equal() {
+  local label="$1" actual="$2" expected="$3"
+  if [[ "${actual}" == "${expected}" ]]; then
+    pass "${label}"
+  else
+    fail "${label}: expected '${expected}', got '${actual}'"
+  fi
+}
+expect_contains() {
+  local label="$1" haystack="$2" needle="$3"
+  if [[ "${haystack}" == *"${needle}"* ]]; then
+    pass "${label}"
+  else
+    fail "${label}: '${needle}' not found in '${haystack}'"
+  fi
+}
 
 cleanup() {
   local ids
@@ -94,20 +112,17 @@ else
   exit 1
 fi
 
-status="$(curl -s "http://127.0.0.1:${PORT}/api/status")"
-[[ "${status}" == *'"source":"unknown"'* ]] && pass "/api/status answers via worker" || fail "/api/status: ${status}"
-[[ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/")" == "200" ]] \
-  && pass "frontend is served" || fail "frontend not served"
-docker logs "${main}" 2>&1 | grep -q "SIMULATION MODE ACTIVE" \
-  && pass "log warns about simulation mode" || fail "no simulation warning in log"
+expect_contains "/api/status answers via worker" \
+  "$(curl -s "http://127.0.0.1:${PORT}/api/status")" '"source":"unknown"'
+expect_equal "frontend is served" \
+  "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/")" "200"
+expect_contains "log warns about simulation mode" "$(docker logs "${main}" 2>&1)" "SIMULATION MODE ACTIVE"
 
 # --- 2. Rechte der Prozesse --------------------------------------------------
 procs="$(docker exec "${main}" python3 -c "${INSPECT_SCRIPT}")"
 check() {
-  local proc="$1" key="$2" expected="$3" actual
-  actual="$(field "${proc}" "${key}" <<<"${procs}")"
-  [[ "${actual}" == "${expected}" ]] && pass "${proc} ${key}=${expected}" \
-    || fail "${proc} ${key}: expected ${expected}, got ${actual}"
+  local proc="$1" key="$2" expected="$3"
+  expect_equal "${proc} ${key}=${expected}" "$(field "${proc}" "${key}" <<<"${procs}")" "${expected}"
 }
 check twinraid-worker Uid 0
 check twinraid-worker Gid 10001
@@ -125,10 +140,9 @@ check twinraid-web NoNewPrivs 1
 
 # --- 3. Dateirechte und Dateisystem -----------------------------------------
 perm() { docker exec "${main}" stat -c '%a %u:%g' "$1"; }
-[[ "$(perm /srv/worker)" == "700 0:0" ]] && pass "/srv/worker is 0700 root" || fail "/srv/worker: $(perm /srv/worker)"
-[[ "$(perm /run/twinraid)" == "750 0:10001" ]] && pass "socket dir is 0750 root:10001" || fail "socket dir: $(perm /run/twinraid)"
-[[ "$(perm /run/twinraid/worker.sock)" == "660 0:10001" ]] && pass "socket is 0660 root:10001" \
-  || fail "socket: $(perm /run/twinraid/worker.sock)"
+expect_equal "/srv/worker is 0700 root" "$(perm /srv/worker)" "700 0:0"
+expect_equal "socket dir is 0750 root:10001" "$(perm /run/twinraid)" "750 0:10001"
+expect_equal "socket is 0660 root:10001" "$(perm /run/twinraid/worker.sock)" "660 0:10001"
 if docker exec -u 10001:10001 "${main}" ls /srv/worker >/dev/null 2>&1; then
   fail "web user can read /srv/worker"
 else
@@ -142,9 +156,8 @@ fi
 
 # --- 4. Worker-Socket weist fremde UIDs ab -----------------------------------
 probe='import socket;s=socket.socket(socket.AF_UNIX);s.connect("/run/twinraid/worker.sock");s.sendall(b"{\"command\":\"get_status\"}\n");print(s.recv(200).decode())'
-answer="$(docker exec -u 10002:10001 "${main}" python3 -c "${probe}" 2>&1 || true)"
-[[ "${answer}" == *'"error":"forbidden"'* ]] && pass "worker rejects foreign UID (SO_PEERCRED)" \
-  || fail "foreign UID not rejected: ${answer}"
+expect_contains "worker rejects foreign UID (SO_PEERCRED)" \
+  "$(docker exec -u 10002:10001 "${main}" python3 -c "${probe}" 2>&1 || true)" '"error":"forbidden"'
 if docker exec -u 10002:10002 "${main}" python3 -c "${probe}" >/dev/null 2>&1; then
   fail "socket reachable without group"
 else
@@ -185,6 +198,8 @@ refuse "TWINRAID_MODE missing" "TWINRAID_MODE is not set" "${CONFIG}"
 refuse "TWINRAID_MODE invalid" "invalid value" "${CONFIG}" -e TWINRAID_MODE=produktion
 refuse "TWINRAID_MODE=real (not yet supported)" "not available in this version" "${CONFIG}" -e TWINRAID_MODE=real
 refuse "forbidden share in config" "must never be synced" "${bad_config}" -e TWINRAID_MODE=mock
+# Startfehler des Workers: Container hält an, statt den Dienst endlos neu zu starten.
+refuse "worker startup error (web UID 0)" "must not be 0" "${CONFIG}" -e TWINRAID_MODE=mock -e TWINRAID_WEB_UID=0
 
 # --- 7. Optional: Jede Capability ist nötig ----------------------------------
 if [[ "${CHECK_EACH_CAP:-0}" == "1" ]]; then

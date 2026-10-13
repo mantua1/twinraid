@@ -4,17 +4,15 @@
 #   docker build -f docker/Dockerfile -t twinraid:dev .
 #
 # Basis-Images sind per Digest gepinnt, s6-overlay per Prüfsumme.
-# Dependabot hält die Digests aktuell.
+# Die FROM-Zeilen stehen bewusst ohne ARG, damit Dependabot sie aktualisieren
+# kann. Das Python-Image kommt dreimal vor und muss überall gleich sein.
 
-ARG PYTHON_IMAGE=python:3.14-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
-ARG NODE_IMAGE=node:24-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168
 ARG S6_OVERLAY_VERSION=3.2.3.2
 
-FROM ${UV_IMAGE} AS uv
+FROM ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 AS uv
 
 # --- Stufe 1: Frontend bauen -------------------------------------------------
-FROM ${NODE_IMAGE} AS frontend
+FROM node:24-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS frontend
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
 RUN npm ci --ignore-scripts --no-audit
@@ -22,7 +20,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # --- Stufe 2: Python-Umgebung bauen ------------------------------------------
-FROM ${PYTHON_IMAGE} AS backend
+FROM python:3.14-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS backend
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -35,7 +33,7 @@ COPY backend/src ./src
 RUN uv sync --locked --no-dev --no-editable
 
 # --- Stufe 3: s6-overlay prüfen und entpacken --------------------------------
-FROM ${PYTHON_IMAGE} AS s6
+FROM python:3.14-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS s6
 ARG S6_OVERLAY_VERSION
 RUN apt-get update \
     && apt-get install -y --no-install-recommends xz-utils \
@@ -49,7 +47,7 @@ RUN mkdir /s6root \
     && tar -C /s6root -Jxpf /tmp/s6-overlay-x86_64.tar.xz
 
 # --- Stufe 4: Laufzeit-Image -------------------------------------------------
-FROM ${PYTHON_IMAGE}
+FROM python:3.14-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 
 COPY --from=s6 /s6root/ /
 

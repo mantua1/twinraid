@@ -11,7 +11,8 @@ REPO_DIR="$(cd "${BACKEND_DIR}/.." && pwd)"
 export TWINRAID_MODE=mock
 export TWINRAID_CONFIG="${TWINRAID_CONFIG:-${REPO_DIR}/config.example.yaml}"
 export TWINRAID_WORKER_SOCKET="${REPO_DIR}/.run/worker.sock"
-export TWINRAID_WEB_UID="$(id -u)"
+TWINRAID_WEB_UID="$(id -u)"
+export TWINRAID_WEB_UID
 export TWINRAID_FRONTEND_DIR="${REPO_DIR}/frontend/dist"
 export TWINRAID_BIND_HOST=127.0.0.1
 
