@@ -78,7 +78,7 @@ expect_not_contains() {
 }
 
 cleanup() {
-  local ids volumes
+  local ids volumes networks
   ids="$(docker ps -aq --filter "name=${PREFIX}")"
   if [[ -n "${ids}" ]]; then
     # shellcheck disable=SC2086
@@ -88,6 +88,11 @@ cleanup() {
   if [[ -n "${volumes}" ]]; then
     # shellcheck disable=SC2086
     docker volume rm ${volumes} >/dev/null
+  fi
+  networks="$(docker network ls -q --filter "name=${PREFIX}")"
+  if [[ -n "${networks}" ]]; then
+    # shellcheck disable=SC2086
+    docker network rm ${networks} >/dev/null
   fi
   rm -r "${WORKDIR}"
 }
@@ -105,7 +110,10 @@ start() {
   done
   # NO_VOLUME=1: /data kommt aus den übergebenen Argumenten (z. B. ein tmpfs).
   [[ "${NO_VOLUME:-0}" == "1" ]] && data_args=()
-  docker run -d --name "${name}" "${HARDENING[@]}" "${cap_args[@]}" \
+  # CREATE_ONLY=1: nur anlegen, nicht starten (z. B. um vorher Netze anzuschließen).
+  local run=(run -d)
+  [[ "${CREATE_ONLY:-0}" == "1" ]] && run=(create)
+  docker "${run[@]}" --name "${name}" "${HARDENING[@]}" "${cap_args[@]}" \
     -v "${config}:/config/twinraid.yaml:ro" "${data_args[@]}" "$@" "${IMAGE}" >/dev/null
 }
 
@@ -198,6 +206,9 @@ first_fp="$(served_fingerprint)"
 expect_equal "server fingerprint in the log matches the served certificate" "${logged_fp}" "${first_fp}"
 ca_fp="$(python3 -c 'import hashlib,ssl,sys; print(hashlib.sha256(ssl.PEM_cert_to_DER_cert(open(sys.argv[1]).read())).digest().hex(":").upper())' "${CERT}")"
 expect_contains "CA fingerprint is in the log" "${logs}" "TLS CA SHA-256 fingerprint: ${ca_fp}"
+expect_contains "log names the configured addresses" "${logs}" \
+  "TLS address: 10.77.31.50, 127.0.0.1 (configured in web.tls.ip_addresses)"
+expect_not_contains "configured addresses cause no bridge warning" "${logs}" "WRONG NETWORK TYPE"
 health="starting"
 for _ in $(seq 1 30); do
   health="$(docker inspect -f '{{.State.Health.Status}}' "${main}")"
@@ -484,13 +495,20 @@ chmod 0644 "${bad_config}"
 refuse() {
   local label="$1" expected="$2" config="$3"
   shift 3
-  local name="${PREFIX}-refuse-$((RANDOM))" logs code problems=()
+  local name="${PREFIX}-refuse-$((RANDOM))"
   if [[ -n "${DATA_OWNER:-}" ]]; then
     prepare_data_volume "${name}-data" "${DATA_OWNER}" "${DATA_MODE}"
     DATA_MOUNT_OPTS=",volume-nocopy" start "${name}" "" "${config}" "$@"
   else
     start "${name}" "" "${config}" "$@"
   fi
+  check_refusal "${name}" "${label}" "${expected}"
+  docker rm -f "${name}" >/dev/null
+}
+
+# Bewertet einen gestarteten Container, der aus genau einem Grund nicht starten soll.
+check_refusal() {
+  local name="$1" label="$2" expected="$3" logs code problems=()
   wait_for_exit "${name}" || problems+=("still running after 30 s")
   code="$(exit_code "${name}")"
   # Das Log erst vollständig einlesen und dann durchsuchen. Mit pipefail scheitert
@@ -507,7 +525,6 @@ refuse() {
     fail "did not refuse as expected: ${label} (exit code ${code}): $(printf '%s; ' "${problems[@]}")"
     printf '%s\n' "${logs}" | sed 's/^/      | /'
   fi
-  docker rm -f "${name}" >/dev/null
 }
 
 # Legt ein Volume für /data mit Besitzer und Rechten an, wie sie auf dem Host stehen
@@ -559,6 +576,74 @@ DATA_OWNER=0:0 DATA_MODE=0777 refuse "/data owned by root but writable by others
 DATA_OWNER=0:0 DATA_MODE=0775 refuse "/data owned by root but writable by its group" \
   "[init] twinraid.init: /data is writable by group or others (mode 0775)" \
   "${CONFIG}" -e TWINRAID_MODE=mock
+
+# --- 15a. Eigene Adresse: Erkennung und sicheres Scheitern (Konzept 5.1) ------------------------
+# Konfiguration ohne web.tls.ip_addresses: Die IP kommt wie auf Unraid aus dem Netzwerk.
+detect_config="${WORKDIR}/detect.yaml"
+python3 - "${CANARY_CONFIG}" "${detect_config}" <<'PY'
+import sys
+
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines(keepends=True)
+start = lines.index("    ip_addresses:\n")
+end = lines.index("    hostnames:\n")
+open(sys.argv[2], "w", encoding="utf-8").writelines(lines[:start] + lines[end:])
+PY
+chmod 0644 "${detect_config}"
+expect_not_contains "detection config has no ip_addresses" "$(cat "${detect_config}")" "ip_addresses"
+
+# Bridge-Netz von Docker: Eine Adresse wird erkannt, das Log warnt vor dem falschen Netztyp.
+detect="${PREFIX}-detect"
+DETECT_PORT=$((PORT + 3))
+start "${detect}" "" "${detect_config}" -e TWINRAID_MODE=mock -p "127.0.0.1:${DETECT_PORT}:8443"
+detected_ip=""
+for _ in $(seq 1 40); do
+  detected_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${detect}")"
+  if [[ -n "${detected_ip}" ]] && [[ "$(curl -sk --max-time 2 \
+    --connect-to "${detected_ip}:8443:127.0.0.1:${DETECT_PORT}" "https://${detected_ip}:8443/health" || true)" == "ok" ]]; then
+    break
+  fi
+  running "${detect}" || break
+  sleep 1
+done
+via_detected=(--connect-to "${detected_ip}:8443:127.0.0.1:${DETECT_PORT}")
+if running "${detect}"; then
+  pass "container starts with the detected address ${detected_ip}"
+  detect_logs="$(docker logs "${detect}" 2>&1)"
+  expect_contains "log names the detected address" "${detect_logs}" "TLS address: ${detected_ip} (detected on eth0)"
+  expect_contains "log warns about a bridge network" "${detect_logs}" "PROBABLY THE WRONG NETWORK TYPE"
+  detect_ca="${WORKDIR}/detect-ca.pem"
+  docker exec "${detect}" cat /run/twinraid-tls/ca.pem >"${detect_ca}"
+  expect_equal "HTTPS to the detected address with only the CA" \
+    "$(curl -s --max-time 5 --cacert "${detect_ca}" "${via_detected[@]}" "https://${detected_ip}:8443/health" || true)" "ok"
+  expect_equal "other Host header is rejected" \
+    "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:${DETECT_PORT}/health")" "400"
+  detect_public="$(curl -s --cacert "${detect_ca}" "${via_detected[@]}" \
+    "https://${detected_ip}:8443/" "https://${detected_ip}:8443/api/auth/state")"
+  expect_not_contains "public pages do not contain the detected address" "${detect_public}" "${detected_ip}"
+  detect_cert="$(docker exec "${detect}" "${PY}" -c "${CERT_SCRIPT}")"
+  expect_equal "certificate is issued for the detected address" "$(json_get ips <<<"${detect_cert}")" "[\"${detected_ip}\"]"
+  expect_equal "CA allows only the detected address" "$(json_get permitted <<<"${detect_cert}")" \
+    "[\"${detected_ip}/32\", \"canary-host-7q.home.arpa\"]"
+else
+  fail "container with address detection did not start"
+  docker logs "${detect}" 2>&1 | tail -20
+fi
+docker rm -f "${detect}" >/dev/null
+
+# Kein Netz: nur Loopback, also keine verwendbare Adresse.
+refuse "no usable address (--network none)" \
+  "[init] twinraid.init: No usable IPv4 address found for TwinRaid (found: 127.0.0.1 on lo)" \
+  "${detect_config}" -e TWINRAID_MODE=mock --network none
+# Zwei Netze: mehrere verwendbare Adressen, TwinRaid weiß nicht, welche gilt.
+docker network create "${PREFIX}-net-a" >/dev/null
+docker network create "${PREFIX}-net-b" >/dev/null
+two="${PREFIX}-refuse-two-networks"
+CREATE_ONLY=1 start "${two}" "" "${detect_config}" -e TWINRAID_MODE=mock --network "${PREFIX}-net-a"
+docker network connect "${PREFIX}-net-b" "${two}"
+docker start "${two}" >/dev/null
+check_refusal "${two}" "several usable addresses (two networks)" \
+  "[init] twinraid.init: Several usable IPv4 addresses found"
+docker rm -f "${two}" >/dev/null
 
 # --- 16. Modus real nur lesend (Konzept 6.4) ----------------------------------------------------
 # Server-Adressen aus TEST-NET-1 (RFC 5737): Sie werden nie geroutet, es wird also
