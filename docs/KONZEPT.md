@@ -389,6 +389,7 @@ Das Repo ist öffentlich auf GitHub, das Container-Image wird öffentlich über 
 | `/data/secrets` | root | 0700 | Passwort-Hash, ab Phase 4 API- und SSH-Keys |
 | `/data/tls` | root | 0700 | selbstsigniertes Zertifikat und Schlüssel |
 | `/data/web` | root, Gruppe 10001 | 0770 | SQLite des Web-Prozesses (Datei `0600`, Besitzer 10001) |
+| `/data/worker` (ab Phase 4) | root | 0700 | Aktionslog des Workers; der Web-Prozess kann es weder lesen noch verändern |
 | `/run/twinraid-tls` | root, Gruppe 10001 | 0750 | aktives Zertifikat und Schlüssel für den Web-Prozess, nur im RAM |
 
 ## 6. Konfiguration
@@ -536,7 +537,7 @@ Jede Phase endet mit lauffähigem, getestetem Stand und einem Commit auf GitHub.
 | 1 | Grundgerüst: Backend- und Frontend-Skelett, Dockerfile mit beiden Prozessen, Config laden und validieren, Mock-Modus, DE/EN, Dark/Light, CI | Container startet lokal im Mock-Modus, Dashboard (leer) sichtbar, CI grün |
 | 2 | Sicherheit: HTTPS, Admin-CLI, Login, Sessions, CSRF, Netzfilter, Rate-Limit, Security-Header, Audit-Log | Ohne Login ist nichts erreichbar; jede Schutzmaßnahme hat einen Test |
 | 3 | Status: Server-Checks, VM-Status, Live-Updates per SSE | Dashboard zeigt Status im Mock-Modus korrekt und live |
-| 4 | Aktionen: WoL, VM Start/Stop/Force, Shutdown Groß, Sperrlogik, Auto-Wecken; erster Test gegen echte Server | Alle Buttons funktionieren auf den echten Servern; Rechte der API-Keys sind geprüft |
+| 4 | Aktionen: WoL, VM Start/Stop/Force, Shutdown Groß, Sperrlogik, Auto-Wecken, eigenes Aktionslog des Workers (siehe 5.3); erster Test gegen echte Server | Alle Buttons funktionieren auf den echten Servern; Rechte der API-Keys sind geprüft; jede Aktion steht im Aktionslog des Workers |
 | 5 | Sync: Dry-Run, rsync, Fortschritt/Restzeit, Container stoppen/starten, Templates, Schutzmechanismen, Historie | Erst Sync einer Test-Share, danach vollständiger Sync erfolgreich |
 | 6 | Zeitsteuerung, Auto-Wecken/-Herunterfahren, Benachrichtigungen, Notfall-Info auf Groß | Ein geplanter Lauf läuft unbeaufsichtigt durch |
 | 7 | Unraid-Template, Einrichtungsanleitung, Image-Build per GitHub Actions, unabhängiges Security-Review | Installation auf Unraid nach Anleitung möglich; Review-Befunde behoben |
