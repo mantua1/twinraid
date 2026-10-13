@@ -20,6 +20,7 @@ from twinraid.web.security import UNSAFE_METHODS
 from twinraid.web.sessions import Session
 
 _PUBLIC_ATTRIBUTE = "__twinraid_public__"
+_PASSIVE_ATTRIBUTE = "__twinraid_passive__"
 CSRF_HEADER = "x-csrf-token"
 SESSION_STATE_KEY = "twinraid_session"
 
@@ -30,14 +31,30 @@ def public[T](target: T) -> T:
     return target
 
 
-def is_public_route(route: BaseRoute) -> bool:
+def passive[T](target: T) -> T:
+    """Markiert eine geschützte Route, deren Aufruf die Session nicht verlängert.
+
+    Für den Live-Datenstrom: Ein offenes Dashboard zählt nicht als Aktivität,
+    auch nicht beim automatischen Neuverbinden (Konzept 5.3).
+    """
+    setattr(target, _PASSIVE_ATTRIBUTE, True)
+    return target
+
+
+def _route_target(route: BaseRoute) -> object:
     if isinstance(route, Route):
-        target: object = route.endpoint
-    elif isinstance(route, Mount):
-        target = route.app
-    else:
-        return False
-    return getattr(target, _PUBLIC_ATTRIBUTE, False) is True
+        return route.endpoint
+    if isinstance(route, Mount):
+        return route.app
+    return None
+
+
+def is_public_route(route: BaseRoute) -> bool:
+    return getattr(_route_target(route), _PUBLIC_ATTRIBUTE, False) is True
+
+
+def is_passive_route(route: BaseRoute) -> bool:
+    return getattr(_route_target(route), _PASSIVE_ATTRIBUTE, False) is True
 
 
 def find_route(router: Router, scope: Scope) -> BaseRoute | None:
@@ -53,7 +70,9 @@ def find_route(router: Router, scope: Scope) -> BaseRoute | None:
 
 
 class Authenticator(Protocol):
-    async def authenticate(self, connection: HTTPConnection) -> Session | None: ...
+    async def authenticate(
+        self, connection: HTTPConnection, touch: bool = True
+    ) -> Session | None: ...
 
 
 def session_of(connection: HTTPConnection) -> Session | None:
@@ -84,7 +103,8 @@ class AuthMiddleware:
             await self._app(scope, receive, send)
             return
         connection = HTTPConnection(scope)
-        session = await self._authenticator.authenticate(connection)
+        touch = route is None or not is_passive_route(route)
+        session = await self._authenticator.authenticate(connection, touch=touch)
         if session is None:
             await self._reject(scope, receive, send)
             return

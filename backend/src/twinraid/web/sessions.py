@@ -62,10 +62,19 @@ class SessionStore:
             )
         return token, session
 
-    def lookup(self, token: str | None) -> Lookup:
+    def lookup(self, token: str | None, touch: bool = True) -> Lookup:
+        """Session zum Cookie. touch=False: zählt nicht als Aktivität (Live-Datenstrom)."""
         if token is None or _TOKEN_RE.fullmatch(token) is None:
             return Lookup(None)
-        id_hash = _hash(token)
+        return self.check(_hash(token), touch=touch)
+
+    def check(self, id_hash: str, touch: bool = False, force: bool = False) -> Lookup:
+        """Prüft eine Session; löscht sie, wenn sie abgelaufen ist.
+
+        touch: letzte Aktivität setzen (höchstens alle 30 Sekunden).
+        force: letzte Aktivität sofort setzen, z. B. am Ende eines Kopierjobs (Konzept 5.3).
+        Die maximale Lebensdauer gilt immer.
+        """
         with self._db.connect() as connection:
             row = connection.execute(
                 "SELECT csrf_token, created_at, last_seen FROM sessions WHERE id_hash = ?",
@@ -78,7 +87,7 @@ class SessionStore:
             if now >= session.expires_at(self.idle_seconds):
                 connection.execute("DELETE FROM sessions WHERE id_hash = ?", (id_hash,))
                 return Lookup(None, expired=True)
-            if now - session.last_seen >= TOUCH_INTERVAL_SECONDS:
+            if force or (touch and now - session.last_seen >= TOUCH_INTERVAL_SECONDS):
                 connection.execute(
                     "UPDATE sessions SET last_seen = ? WHERE id_hash = ?", (now, id_hash)
                 )

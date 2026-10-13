@@ -9,6 +9,8 @@ from cryptography import x509
 from fastapi.testclient import TestClient
 
 from tests.web.helpers import FakeClock, FakeWorker, build_frontend, login, make_app, make_client
+from twinraid import __version__
+from twinraid.shared.mode import RunMode
 from twinraid.shared.tls import certificate_info, install_runtime, record_refresh_failure
 
 
@@ -29,11 +31,21 @@ def test_info_contains_mode_and_names(tmp_path: Path) -> None:
     response = _client(tmp_path).get("/api/info")
     assert response.status_code == 200
     assert response.json() == {
-        "version": "0.1.0",
+        "version": __version__,
         "mode": "mock",
         "default_language": "de",
         "names": {"source": "Unraid Klein", "target": "Unraid Groß", "vm": "Gaming-VM"},
+        "read_only": False,
+        "target_connection_encrypted": False,
     }
+
+
+def test_info_in_real_mode_is_read_only(tmp_path: Path) -> None:
+    client = make_client(make_app(tmp_path, mode=RunMode.REAL))
+    login(client)
+    info = client.get("/api/info").json()
+    assert info["mode"] == "real"
+    assert info["read_only"] is True
 
 
 def test_status_from_worker(tmp_path: Path) -> None:

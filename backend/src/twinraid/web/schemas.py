@@ -20,6 +20,10 @@ class AppInfo(StrictModel):
     mode: RunMode
     default_language: Literal["de", "en"]
     names: DisplayNames
+    # Modus real ohne freigegebene Aktionen: Banner „Nur Statusanzeige“ (Konzept 6.4).
+    read_only: bool
+    # False bei webgui.scheme http: Hinweis auf unverschlüsselte Verbindung (Konzept 3.5).
+    target_connection_encrypted: bool
 
 
 class AuthState(StrictModel):

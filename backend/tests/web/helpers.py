@@ -2,6 +2,7 @@
 
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -15,7 +16,14 @@ from twinraid.shared.passwords import VerifyOutcome
 from twinraid.shared.status import UNKNOWN, StatusSnapshot
 from twinraid.web.app import WebApp, WebSettings, create_app
 from twinraid.web.db import WebDatabase
+from twinraid.web.events import EventTimings
 from twinraid.web.worker_client import WorkerApi, WorkerUnavailableError
+
+# Kurze Zeiten für Tests. Ein Datenstrom endet spätestens nach einer halben Sekunde,
+# damit kein Test an einer offenen Verbindung hängen bleibt.
+TEST_EVENT_TIMINGS = EventTimings(
+    poll_seconds=0.01, session_check_seconds=0.005, keepalive_seconds=0.05, max_stream_seconds=0.5
+)
 
 # Passend zu config.example.yaml: Adresse aus web.tls, Client aus dem Client-Netz.
 BASE_URL = "https://192.168.10.20:8443"
@@ -41,18 +49,31 @@ class FakeWorker:
         self.password = password
         self.job_running = False
         self.status: StatusSnapshot | None = None
+        # Wird vor jeder Statusabfrage aufgerufen, z. B. um eine Uhr weiterzustellen.
+        self.on_status: Callable[[int], None] | None = None
+        self.calls: list[str] = []
+        # True: Jede Abfrage hat einen neuen Prüfzeitpunkt, wie beim echten Worker.
+        self.stamp_checks = False
         self.verify_calls = 0
         self.status_calls = 0
 
     async def get_status(self) -> StatusSnapshot:
+        self.calls.append("get_status")
         self.status_calls += 1
+        if self.on_status is not None:
+            self.on_status(self.status_calls)
         if not self.available:
             raise WorkerUnavailableError("down")
         if self.status is not None:
             return self.status
-        return unknown_status(self.password is not None, self.job_running)
+        status = unknown_status(self.password is not None, self.job_running)
+        if self.stamp_checks:
+            checked = datetime.fromtimestamp(self.status_calls, UTC)
+            status = status.model_copy(update={"checked_at": checked})
+        return status
 
     async def verify_password(self, password: str) -> VerifyOutcome:
+        self.calls.append("verify_password")
         self.verify_calls += 1
         if not self.available:
             raise WorkerUnavailableError("down")
@@ -87,6 +108,8 @@ def make_app(
     config_path: Path = EXAMPLE_CONFIG,
     frontend_dir: Path | None = None,
     clock: Callable[[], float] | None = None,
+    event_timings: EventTimings = TEST_EVENT_TIMINGS,
+    mode: RunMode = RunMode.MOCK,
 ) -> WebApp:
     config = load_config(config_path)
     database = WebDatabase(tmp_path / "web.sqlite")
@@ -95,13 +118,19 @@ def make_app(
     if not (runtime_tls / "cert.pem").exists():
         install_test_runtime(runtime_tls, config.web.tls)
     settings = WebSettings(
-        mode=RunMode.MOCK,
+        mode=mode,
         config=config,
         frontend_dir=frontend_dir if frontend_dir is not None else build_frontend(tmp_path),
         runtime_tls_dir=runtime_tls,
         renewal_marker=tmp_path / "tls-renewal.json",
     )
-    return create_app(settings, worker or FakeWorker(), database, clock=clock or time.time)
+    return create_app(
+        settings,
+        worker or FakeWorker(),
+        database,
+        clock=clock or time.time,
+        event_timings=event_timings,
+    )
 
 
 def make_client(
