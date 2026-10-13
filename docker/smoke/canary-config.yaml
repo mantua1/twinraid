@@ -9,7 +9,7 @@ web:
     - 10.77.32.0/24
     # Docker-Bridge: Anfragen vom Host über die Portweiterleitung kommen von dort.
     - 172.16.0.0/12
-  session_idle_minutes: 30
+  session_idle_minutes: 10
   default_language: de
   tls:
     ip_addresses:
@@ -23,9 +23,14 @@ servers:
   source:
     name: "canary-source-name-7q"
     host: 10.77.31.41
+    webgui:
+      scheme: http
   target:
     name: "canary-target-name-7q"
     host: 10.77.31.42
+    webgui:
+      scheme: https
+      port: 4443
     mac: "02:7A:C3:91:5E:4D"
     wol_broadcast: 10.77.31.255
     boot_timeout_minutes: 5

@@ -100,10 +100,17 @@ COMMAND_NAMES: frozenset[str] = frozenset(
 )
 
 
+# Befehle mit Außenwirkung. Im Modus real sind sie gesperrt, bis die jeweilige
+# Phase sie freigibt (Konzept 6.4).
+ACTION_COMMANDS: frozenset[str] = COMMAND_NAMES - {"get_status", "verify_password"}
+
+
 class ErrorCode(StrEnum):
     INVALID_REQUEST = "invalid_request"
     FORBIDDEN = "forbidden"
     NOT_IMPLEMENTED = "not_implemented"
+    # Im Modus real noch gesperrt („noch nicht verfügbar“).
+    NOT_AVAILABLE = "not_available"
     INTERNAL_ERROR = "internal_error"
 
 

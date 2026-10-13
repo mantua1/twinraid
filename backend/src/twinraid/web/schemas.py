@@ -20,6 +20,10 @@ class AppInfo(StrictModel):
     mode: RunMode
     default_language: Literal["de", "en"]
     names: DisplayNames
+    # Modus real ohne freigegebene Aktionen: Banner „Nur Statusanzeige“ (Konzept 6.4).
+    read_only: bool
+    # False bei webgui.scheme http: Hinweis auf unverschlüsselte Verbindung (Konzept 3.5).
+    target_connection_encrypted: bool
 
 
 class AuthState(StrictModel):
@@ -53,9 +57,23 @@ class AuditList(StrictModel):
     entries: list[AuditEntryOut]
 
 
-class TlsInfo(StrictModel):
-    source: Literal["self-signed", "custom"]
+class CertificateDetails(StrictModel):
     fingerprint_sha256: str
     not_after: datetime
     days_left: int
+    # Server: 30 Tage vor Ablauf (dann ist die Erneuerung gescheitert); CA: 90 Tage.
     expires_soon: bool
+
+
+class CaDetails(CertificateDetails):
+    name: str
+    # SHA-1 nur zum Vergleich mit der Anzeige von Windows.
+    fingerprint_sha1: str
+
+
+class TlsInfo(StrictModel):
+    source: Literal["ca", "custom"]
+    server: CertificateDetails
+    # None bei eigenem Zertifikat: dann gibt es keine CA zum Download.
+    ca: CaDetails | None
+    renewal_failed: bool

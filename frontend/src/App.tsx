@@ -6,6 +6,7 @@ import type { RunMode } from "@/api/types";
 import { AppHeader, type View } from "@/components/AppHeader";
 import { ErrorNotice } from "@/components/ErrorNotice";
 import { MockBanner } from "@/components/MockBanner";
+import { ReadOnlyBanner } from "@/components/ReadOnlyBanner";
 import { useDashboardData } from "@/hooks/useDashboardData";
 import i18n, { storedLanguage } from "@/i18n";
 import { Dashboard } from "@/pages/Dashboard";
@@ -39,12 +40,14 @@ function AuthenticatedApp({
 
   return (
     <>
+      {data.info?.read_only === true && <ReadOnlyBanner />}
       <AppHeader navigation={{ view, onNavigate: setView, onLogout }} />
       <main className="flex-1">
         {view === "dashboard" ? (
           <Dashboard data={data} />
         ) : (
           <SettingsPage
+            info={data.info}
             tls={data.tls}
             onBack={() => {
               setView("dashboard");

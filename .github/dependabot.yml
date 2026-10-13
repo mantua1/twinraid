@@ -19,6 +19,11 @@ updates:
       # Typen folgen der Node-Hauptversion; die wechselt nur bewusst (.nvmrc, engines).
       - dependency-name: "@types/node"
         update-types: ["version-update:semver-major"]
+      # TypeScript-Hauptversion nur bewusst und erst, wenn typescript-eslint sie
+      # unterstützt (8.71 verlangt typescript <6.1.0). Sonst erzwingt Dependabot das
+      # Update mit --force, löst typescript-eslint neu auf und scheitert.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "github-actions"
     directory: "/"

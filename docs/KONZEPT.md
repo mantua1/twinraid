@@ -1,6 +1,6 @@
 # TwinRaid – Projektkonzept
 
-> Arbeitstitel „TwinRaid“ · Version 0.5 · Stand 13.10.2026
+> Arbeitstitel „TwinRaid“ · Version 0.6 · Stand 13.10.2026
 > Dieses Dokument ist die verbindliche Grundlage für die Entwicklung. Änderungen am Konzept werden hier eingetragen, bevor sie umgesetzt werden.
 
 ---
@@ -96,19 +96,32 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 | Kopieren | `rsync` über SSH |
 | Tests | pytest (Backend), Vitest (Frontend); Mocks für alle externen Systeme |
 | Qualität | ruff, mypy (strict), ESLint, Prettier; CI über GitHub Actions |
+| Veröffentlichung | Image auf `ghcr.io`, gebaut und veröffentlicht nur von GitHub Actions, mit Herkunftsnachweis (siehe 5.8) |
 
 ### 3.4 Schnittstellen zu Unraid
 
 | Aufgabe | Weg | Rechte |
 |---|---|---|
-| Server online/offline | TCP-Check auf SSH- bzw. WebGUI-Port | keine |
+| Server online/offline | TCP-Check auf den WebGUI-Port aus `servers.<server>.webgui` | keine |
 | Wake-on-LAN | UDP-Magic-Packet an die Broadcast-Adresse des Server-Netzes | keine |
-| Gaming-VM Status/Start/Stop/Force-Stop | Unraid-API auf Groß | API-Key nur mit VM-Rechten |
+| Gaming-VM Status | Unraid-API auf Groß (siehe 3.5) | API-Key nur mit `VMS:READ_ANY` (ab Phase 3) |
+| Gaming-VM Start/Stop/Force-Stop | Unraid-API auf Groß | zusätzlich `VMS:UPDATE_ANY` (ab Phase 4) |
 | Container stoppen/starten (Konsistenz beim Sync) | Unraid-API auf Klein | API-Key nur mit Docker-Rechten |
 | Daten kopieren | rsync über SSH nach Groß | SSH-Key „sync“, per Wrapper auf erlaubte Zielpfade beschränkt |
 | Groß herunterfahren | SSH (oder Unraid-API, falls sie eine Shutdown-Funktion bietet, wird in Phase 4 geprüft) | SSH-Key „power“, darf ausschließlich den Shutdown-Befehl ausführen |
 
 **Kein Docker-Socket. Kein Root-Shell-Zugang auf irgendeinem Server.**
+
+### 3.5 Verbindung zur Unraid-API (ab Phase 3)
+
+- **Adresse:** `<scheme>://<host>:<port>/graphql` mit den Werten aus `servers.<server>.host` und `servers.<server>.webgui`. Der Worker sendet eine GraphQL-Abfrage per POST mit dem Key im Header `x-api-key`. Für den VM-Status genügt `vms { domains { name state } }`.
+- **Grenzen:** Zeitlimit 5 Sekunden, Antwort höchstens 256 KiB, Weiterleitungen werden nicht verfolgt.
+- **`scheme: http`** (Unraid-Einstellung „SSL/TLS verwenden: Nein“): Der API-Key geht im Klartext durch das Server-Netz. Startlog (im Modus `real`) und Einstellungsseite zeigen deshalb deutlich: „Verbindung zu Unraid Groß unverschlüsselt, API-Key wird im Klartext übertragen“.
+- **`scheme: https`** (Unraid-Einstellung „Ja“): Unraid nutzt dann ein selbstsigniertes Zertifikat, eine Prüfung über eine Zertifikatskette ist nicht möglich. TwinRaid vergleicht stattdessen den SHA-256-Fingerabdruck des Zertifikats mit einem bestätigten Wert (Vertrauen beim ersten Kontakt wie bei SSH). Bestätigt wird mit `twinraid-admin trust-api-cert target`: Der Befehl zeigt den Fingerabdruck, den Groß gerade ausliefert, zum Vergleich mit der Anzeige im Browser. Der Key wird erst gesendet, nachdem der Fingerabdruck geprüft ist.
+- **Zertifikat geändert:** Erneuert Unraid sein Zertifikat, meldet TwinRaid „Zertifikat geändert“ und sendet den Key nicht mehr. Nach Prüfung im Browser wird der neue Fingerabdruck mit `twinraid-admin trust-api-cert target` bestätigt.
+- **Umstellung von http auf https** ohne Codeänderung: in Unraid „Ja“ wählen, in `twinraid.yaml` `scheme: https` (Port 443) eintragen, Container neu starten, `twinraid-admin trust-api-cert target` ausführen. Die Anleitung steht in `docs/EINRICHTUNG.md`.
+- Die Einstellung „Strikt“ (Zertifikat für myunraid.net) wird nicht unterstützt; sie bräuchte DNS-Auflösung über das Internet.
+- **Ursachen bei Fehlern** (siehe 4.1): Server offline (TCP-Check scheitert), API nicht erreichbar, Unraid leitet auf HTTPS um, kein API-Key gesetzt, API-Key ungültig (Antwort 401 bzw. „UNAUTHENTICATED“), keine Leserechte (403 bzw. „FORBIDDEN“), Fingerabdruck nicht bestätigt, Zertifikat geändert, VM nicht gefunden, sonstiger API-Fehler.
 
 ---
 
@@ -124,7 +137,12 @@ Kacheln:
 4. **Sync:** letzter Lauf (Ergebnis, Dauer, Datenmenge), nächster geplanter Lauf, Button „Jetzt synchronisieren“, Live-Fortschritt während eines Laufs.
 5. **Verlauf:** Liste der letzten Aktionen und Sync-Läufe (Audit-Log).
 
-Statuswerte: `Online`, `Offline`, `Startet …`, `Fährt herunter …`, `Unbekannt`. Der Worker prüft alle 10 Sekunden; die Oberfläche bekommt Änderungen per SSE.
+Statuswerte: `Online`, `Offline`, `Startet …`, `Fährt herunter …`, `Unbekannt`. Zu jedem Status kann eine **Ursache** aus einer festen Liste kommen (z. B. „Server offline“, „API nicht erreichbar“, „API-Key ungültig“, „Zertifikat geändert“, „VM pausiert“; siehe 3.5). So ist bei einem Fehler klar unterscheidbar, ob der Server aus ist, die API nicht antwortet oder der Key nicht passt.
+
+- **Prüfung:** Der Worker prüft alle 10 Sekunden. Klein und Groß per TCP-Check gleichzeitig, die VM über die API nur, wenn Groß online ist. Ist Groß offline, gilt die VM als aus mit der Ursache „Server offline“. `get_status` liefert sofort den zuletzt geprüften Stand.
+- **VM-Zustände** (libvirt über die Unraid-API): `RUNNING` und `IDLE` → Online; `PAUSED` → Online, Ursache „pausiert“; `PMSUSPENDED` → Online, Ursache „im Ruhezustand“; `SHUTDOWN` → Fährt herunter …; `SHUTOFF` → Offline; `CRASHED` → Offline, Ursache „abgestürzt“; `NOSTATE` und Unbekanntes → Unbekannt.
+- **Live-Updates:** Die Oberfläche öffnet einen SSE-Datenstrom (`GET /api/events`, geschützt). Ein einziger Abfrage-Task im Web-Prozess fragt den Worker alle 2 Sekunden mit dem vorhandenen Befehl `get_status` und schickt Änderungen an alle offenen Datenströme. Es gibt dafür keinen neuen Worker-Befehl. Höchstens 32 Datenströme gleichzeitig.
+- **Kopierjob:** Der Status enthält das Feld `job_running` („Kopierjob läuft“). Ab Phase 5 kommt es vom echten Sync. Bis dahin ist es im Modus `real` immer aus und im Simulationsmodus mit `twinraid-admin mock-job on|off` schaltbar. Es steuert die Ausnahme vom Inaktivitäts-Timeout (siehe 5.3).
 
 Destruktive oder störende Aktionen (Herunterfahren, Force-Stop, Sync mit vielen Löschungen) erfordern einen Bestätigungsdialog.
 
@@ -169,6 +187,7 @@ Alle Aktionen laufen über eine zentrale Sperrlogik im Worker (eine Aktion pro R
 - **Geschützte Zielpfade:** `protect_on_target` wird auf Groß nie gelöscht (rsync-Filter `protect`).
 - **Ausschlüsse:** `exclude` wird nicht kopiert (z. B. die eigene appdata von TwinRaid).
 - **Templates** werden **ohne** `--delete` kopiert. Eigene Templates auf Groß bleiben erhalten.
+- **Eigener Ordner von TwinRaid (ab Phase 5):** Der appdata-Ordner von TwinRaid mit Konfiguration, Secrets und CA-Schlüssel wird beim Sync **immer** ausgeschlossen, fest im Code und unabhängig von `exclude`. Grund: Der Worker kann diese Dateien dank `DAC_READ_SEARCH` lesen und würde sie sonst nach Groß kopieren. Den Ort auf dem Host ermittelt der Worker aus den Mounts von `/config` und `/data`; das genaue Verfahren wird in Phase 5 festgelegt. Liegt der Ordner in einer Share, die gesichert wird, warnt die Konfigurationsprüfung beim Start.
 
 ### 4.6 Notfall-Wiederherstellung
 
@@ -208,31 +227,65 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 
 ### 5.2 HTTPS
 
-- **Entschieden: nur HTTPS mit selbstsigniertem Zertifikat.** Beim ersten Start erzeugt der Container das Zertifikat (in `/data/tls`) und schreibt den Fingerabdruck ins Container-Log, damit man ihn mit der Browser-Anzeige vergleichen kann.
+- **Entschieden: nur HTTPS mit einer kleinen eigenen CA** (ab Phase 3, Entscheidung E3). TwinRaid erzeugt beim ersten Start eine Zertifizierungsstelle (CA), deren Namensbeschränkung nur die eigenen Adressen zulässt, und signiert damit ein separates Serverzertifikat. Auf den Geräten wird einmalig nur das CA-Zertifikat installiert. Danach erscheint keine Warnung mehr, auch nicht, wenn sich das Serverzertifikat erneuert.
+- **Warum keine einfache Selbstsignierung mehr** (Phase 2, Recherche in Issue #3): Android installiert nur Zertifikate mit `CA:TRUE` als vertrauenswürdig (Android-Quellcode, CertInstaller), Firefox importiert ebenfalls nur solche als Zertifizierungsstelle. Ein CA-Zertifikat direkt als Serverzertifikat lehnt Firefox ab. Deshalb gibt es zwei Zertifikate.
 - **Zielgeräte:** Windows, Linux und Android, jeweils mit Chrome bzw. Edge und Firefox. iOS und macOS werden nicht eingesetzt.
-- **Eigenschaften des Zertifikats:**
-  - Gültigkeit höchstens 825 Tage.
-  - Subject Alternative Name mit der Container-IP und optional einem Hostnamen aus der Config.
-  - Extended Key Usage `serverAuth`.
-  - Kein CA-Zertifikat. Es kann nur sich selbst bestätigen; wird es auf einem Gerät als vertrauenswürdig installiert, entsteht kein Risiko für andere Webseiten.
-- **Beständigkeit:** Das Zertifikat bleibt über Neustarts und Image-Updates gleich. Neu erzeugt wird es nur bei Ablauf oder auf Befehl (`twinraid-admin renew-cert`).
-- **Ablaufwarnung:** Das Dashboard warnt 30 Tage vor Ablauf. Die automatische Erneuerung erfolgt beim Ablauf und erfordert einmalig eine neue Bestätigung bzw. Installation auf den Geräten.
-- **Download:** Das Zertifikat (nur der öffentliche Teil) ist nach dem Login unter „Einstellungen“ herunterladbar, um es auf Geräten als vertrauenswürdig zu installieren. Die Anleitung für Windows, Linux und Android mit Chrome bzw. Edge und Firefox folgt in `docs/EINRICHTUNG.md` (Phase 7), auf Grundlage der Testergebnisse aus Issue #3.
-- **Optional:** ein eigenes Zertifikat unter `/config/tls` mounten (z. B. später Let's Encrypt über DNS-Challenge). Dafür ist keine Codeänderung nötig.
 
-Umsetzung (Phase 2):
+**CA-Zertifikat**
 
-- **Erzeugung:** Der Startdienst `twinraid-init` (siehe 5.4) erzeugt Schlüssel und Zertifikat als root in `/data/tls` (Verzeichnis `0700`, Schlüssel `0600`). Schlüssel: ECDSA P-256, Signatur SHA-256. Gültigkeit genau 825 Tage, `BasicConstraints CA:FALSE`, `KeyUsage digitalSignature`, `ExtendedKeyUsage serverAuth`, SAN aus `web.tls.ip_addresses` und `web.tls.hostnames`.
-- **Neu erzeugt** wird es beim Start, wenn es fehlt, abgelaufen ist oder die SAN nicht mehr zur Konfiguration passen, sowie mit `twinraid-admin renew-cert`.
-- **Eigenes Zertifikat:** Liegen `/config/tls/cert.pem` und `/config/tls/key.pem` vor, haben sie Vorrang. Der Startdienst prüft, dass beide lesbar sind, zusammenpassen und das Zertifikat nicht abgelaufen ist. Sonst startet der Container nicht. Auf dem Host darf der Schlüssel root gehören und `0600` haben.
-- **Zugriff des Web-Prozesses:** Der Startdienst kopiert das aktive Paar nach `/run/twinraid-tls` (nur im RAM; Verzeichnis `0750`, Schlüssel `0640`, jeweils Gruppe 10001). Der Web-Prozess liest nur dort. Der TLS-Schlüssel ist das einzige Secret, das er hält, weil er TLS selbst abwickelt. An `/data/secrets` und `/data/tls` kommt er nicht heran.
-- **Fingerabdruck:** SHA-256 des aktiven Zertifikats steht bei jedem Start im Log und ist mit `twinraid-admin show-cert-fingerprint` abrufbar.
+- ECDSA P-256, Signatur SHA-256, Gültigkeit **10 Jahre**. Begründung: Jeder CA-Wechsel bedeutet, alle Geräte neu einzurichten. Ein gestohlener CA-Schlüssel taugt wegen der Namensbeschränkung nur für die eigenen Adressen von TwinRaid, und wer an den Schlüssel kommt, hat ohnehin root im Container. Eine kürzere Laufzeit brächte kaum Sicherheit, aber viel Aufwand.
+- `BasicConstraints CA:TRUE` mit `pathLenConstraint 0` (kritisch), `KeyUsage keyCertSign, cRLSign` (kritisch), `ExtendedKeyUsage serverAuth` als zusätzliche Begrenzung, Subject Key Identifier.
+- `NameConstraints` (kritisch): erlaubt nur die IP-Adressen aus `web.tls.ip_addresses` (IPv4 mit Maske /32, IPv6 mit /128) und die Namen aus `web.tls.hostnames`. Ein DNS-Name erlaubt nach RFC 5280 auch seine Unternamen. Ohne Hostnamen sind DNS-Namen nur unter `invalid` erlaubt (reserviert nach RFC 6761), weil nach RFC 5280 sonst jeder DNS-Name erlaubt wäre.
+- Name „TwinRaid CA <JJJJ-MM-TT>“ mit dem Erstellungsdatum, damit sich die CA in den Zertifikatslisten der Geräte wiederfinden lässt.
+- **Neu erzeugt** wird die CA nur, wenn sie fehlt, unbrauchbar oder abgelaufen ist, wenn ihre Namensbeschränkung nicht mehr zu `web.tls` passt, oder auf Befehl (`twinraid-admin renew-cert --new-ca`). Danach muss die neue CA auf allen Geräten installiert werden; Log und Dashboard sagen das deutlich. 90 Tage vor Ablauf warnt das Dashboard.
+
+**Serverzertifikat**
+
+- ECDSA P-256, Signatur SHA-256, von der CA signiert, Gültigkeit 825 Tage, höchstens bis zum Ablauf der CA.
+- `BasicConstraints CA:FALSE` (kritisch), `KeyUsage digitalSignature` (kritisch), `ExtendedKeyUsage serverAuth`, Subject und Authority Key Identifier.
+- **Subject leer**, Subject Alternative Name aus `web.tls.ip_addresses` und `web.tls.hostnames`. Bei leerem Subject muss die SAN-Erweiterung nach RFC 5280 **kritisch** sein. Das leere Subject verhindert, dass ein Prüfprogramm einen Namen im Subject gegen die Namensbeschränkung prüft. Der Container-Starttest prüft beides.
+- Der Web-Prozess liefert Serverzertifikat und CA-Zertifikat als Kette aus.
+
+**Erneuerung des Serverzertifikats**
+
+- Erneuert wird, wenn weniger als 60 Tage übrig sind, wenn die SAN nicht mehr zu `web.tls` passen, wenn das Zertifikat nicht von der aktuellen CA stammt oder auf Befehl (`twinraid-admin renew-cert`). Die Geräte merken davon nichts.
+- Beim Container-Start erledigt das `twinraid-init`.
+- Im laufenden Betrieb prüft der Web-Prozess stündlich die Restlaufzeit. Ist eine Erneuerung fällig, vermerkt er den Zeitpunkt in `/data/web/tls-renewal.json` und beendet sich geordnet. s6 startet ihn neu; das Startskript des Web-Dienstes führt vorher als root die Erneuerung aus (`twinraid-init --refresh-tls`, gleiche Rechte wie `twinraid-init`). So liegt der CA-Schlüssel nie in einem dauerhaft laufenden Prozess. Sessions bleiben erhalten, offene Live-Datenströme verbinden sich neu.
+- **Keine Neustart-Schleife:** Der Web-Prozess beendet sich höchstens einmal in 24 Stunden für eine Erneuerung. Der Vermerk liegt in `/data/web`, weil nur der Web-Prozess dort schreiben darf und die Entscheidung trifft; er übersteht Neustarts. Scheitert die Erneuerung, läuft das bisherige Zertifikat weiter, das Log nennt den Grund und das Dashboard zeigt die Warnung „automatische Erneuerung fehlgeschlagen“. Ab 30 Tagen vor Ablauf warnt das Dashboard in jedem Fall.
+
+**Ablage und Rechte**
+
+- CA, Serverzertifikat und beide Schlüssel liegen in `/data/tls` (root, `0700`, Dateien `0600`). Den CA-Schlüssel benutzen nur `twinraid-init` und `twinraid-admin renew-cert`.
+- Der Startdienst stellt dem Web-Prozess unter `/run/twinraid-tls` bereit (nur im RAM; Verzeichnis `0750`, Gruppe 10001): die Kette aus Server- und CA-Zertifikat (`cert.pem`), den Serverschlüssel (`key.pem`, `0640`), das CA-Zertifikat (`ca.pem`) und `info.json` (Herkunft, Ergebnis der letzten Erneuerung). Der Serverschlüssel ist das einzige Secret, das der Web-Prozess hält, weil er TLS selbst abwickelt. An `/data/secrets` und `/data/tls` kommt er nicht heran.
+
+**Übergang vom selbstsignierten Zertifikat aus Phase 2**
+
+- Beim ersten Start mit Phase 3 erkennt `twinraid-init` das alte Paar (`/data/tls/cert.pem` und `key.pem`), erzeugt CA und Serverzertifikat, löscht das alte Paar und schreibt einen Hinweis ins Log.
+- Auf den Geräten wird die alte Ausnahme bzw. das alte installierte Zertifikat entfernt und einmalig die CA installiert (siehe `docs/EINRICHTUNG.md`).
+
+**Eigenes Zertifikat**
+
+- Liegen `/config/tls/cert.pem` und `/config/tls/key.pem` vor, haben sie Vorrang, z. B. später Let's Encrypt über DNS-Challenge. Der Startdienst prüft, dass beide lesbar sind, zusammenpassen und das Zertifikat nicht abgelaufen ist; sonst startet der Container nicht. Auf dem Host darf der Schlüssel root gehören und `0600` haben.
+- CA und Serverzertifikat werden trotzdem gepflegt, damit ein Wechsel zurück ohne Neueinrichtung der Geräte möglich ist. Der CA-Download entfällt in dieser Zeit mit einem Hinweis; die automatische Erneuerung betrifft das eigene Zertifikat nicht.
+
+**Anzeige und Download**
+
+- Startlog und `twinraid-admin show-cert-fingerprint`: SHA-256-Fingerabdrücke von CA und Serverzertifikat, für die CA zusätzlich SHA-1, weil Windows bei der Installation nur diesen anzeigt.
+- Einstellungen (nach dem Login): CA-Zertifikat herunterladen als `twinraid-ca.crt` im DER-Format, das Android sicher erkennt. Es wird als normaler Download ausgeliefert, damit Android-Browser nicht selbst versuchen, es zu installieren. Dazu die Fingerabdrücke und die Gültigkeit von CA und Serverzertifikat.
+- Dashboard: Warnung 90 Tage vor Ablauf der CA und 30 Tage vor Ablauf des Serverzertifikats.
+
+**Protokoll**
+
 - **Nur HTTPS** auf `web.port`, TLS 1.2 und 1.3, keine schwachen Cipher. Es gibt keinen HTTP-Port; HTTP-Anfragen an den Port scheitern am TLS-Handshake.
-- **Kein HSTS:** Browser ignorieren HSTS bei IP-Adressen. Bei einem Hostnamen würde HSTS nach einer Zertifikatserneuerung die Warnung unüberspringbar machen und den Nutzer aussperren. Ohne HTTP-Port bringt HSTS keinen Gewinn.
-- **Grenze bei Android (recherchiert):** Android installiert nur Zertifikate mit `CA:TRUE` als vertrauenswürdige Zertifizierungsstelle. Ein Zertifikat ohne CA-Eigenschaft gilt dort als Benutzerzertifikat und wird ohne privaten Schlüssel abgelehnt (Android-Quellcode, CertInstaller). Mit dem jetzigen Zertifikat ist auf Android also keine dauerhafte Vertrauensstellung möglich, nur das Bestätigen der Warnung. Chrome auf Android lädt dagegen vom Nutzer installierte Zertifizierungsstellen als Vertrauensanker (Chromium-Quellcode). Laut Chrome-Unternehmensrichtlinien erzwingt Chrome Namensbeschränkungen in lokal installierten Vertrauensankern; ob das auf Android ebenso gilt, wird im Test geprüft.
-- **Auch Firefox** importiert nur Zertifikate mit `CA:TRUE` als Zertifizierungsstelle; für das jetzige Zertifikat bleibt dort eine dauerhaft gespeicherte Ausnahme.
-- **Mögliche Alternative (noch nicht umgesetzt):** eine kleine eigene CA mit Namensbeschränkung auf die eigene IP und die eigenen Hostnamen, die ein separates Serverzertifikat signiert. Auf den Geräten wird nur die CA installiert. Ein CA-Zertifikat direkt als Serverzertifikat scheidet aus, weil Firefox das ablehnt. Tests, Recherche und Entwurf stehen in Issue #3; umgesetzt wird erst nach Entscheidung und Konzeptänderung.
+- **Kein HSTS:** Browser ignorieren HSTS bei IP-Adressen. Bei einem Hostnamen würde HSTS nach einem CA-Wechsel die Warnung unüberspringbar machen und den Nutzer aussperren. Ohne HTTP-Port bringt HSTS keinen Gewinn.
 - Alle Ressourcen (Schriften, Skripte, Icons) sind im Image enthalten; es werden keine externen CDNs geladen. Das ermöglicht eine strikte Content-Security-Policy.
+
+**Geräte** (Anleitung in `docs/EINRICHTUNG.md`, Test in Issue #3)
+
+- Windows: CA in „Vertrauenswürdige Stammzertifizierungsstellen“ des Benutzers. Edge und Chrome nutzen diesen Speicher, Firefox übernimmt selbst installierte CAs ab Version 120 automatisch.
+- Linux: Chrome über seine Zertifikatsverwaltung, Firefox über den eigenen Import als Zertifizierungsstelle.
+- Android: Installation als CA-Zertifikat in den Systemeinstellungen; Chrome und Firefox (ab Version 120) übernehmen sie. Android zeigt danach dauerhaft einen Hinweis, dass das Netzwerk überwacht werden könnte.
+- Chrome erzwingt Namensbeschränkungen in lokal installierten Vertrauensankern (Chrome-Unternehmensrichtlinien). Für Firefox und Android wird das im Test geprüft.
 
 ### 5.3 Login und Sessions
 
@@ -255,7 +308,12 @@ Umsetzung (Phase 2):
 
 - Serverseitig in der SQLite-Datenbank des Web-Prozesses (`/data/web`). Die Session-ID hat 256 Bit Zufall und wird in der Datenbank nur als SHA-256-Hash gespeichert.
 - Cookie `__Host-twinraid_session` mit `HttpOnly`, `Secure`, `SameSite=Strict`, `Path=/`, ohne `Domain`.
-- Inaktivitäts-Timeout `web.session_idle_minutes` (Standard 30 Minuten), maximale Lebensdauer fest 12 Stunden.
+- Inaktivitäts-Timeout `web.session_idle_minutes` (Standard **10 Minuten**), maximale Lebensdauer fest 12 Stunden.
+- **Live-Datenstrom (SSE) und Inaktivität:** Ein offener Datenstrom (`GET /api/events`) zählt nicht als Aktivität. Auch sein Aufbau und automatische Neuverbindungen verlängern die Session nicht. Alle 15 Sekunden prüft er, ob seine Session noch gilt, und beendet sich sonst; die Oberfläche zeigt dann den Login.
+- **Ausnahme während eines Kopierjobs:** Solange `job_running` gesetzt ist (siehe 4.1), wird eine Session nicht wegen Inaktivität beendet, aber nur, wenn für sie ein Dashboard tatsächlich geöffnet ist, also ein Datenstrom dieser Session läuft. Der Datenstrom setzt dazu alle 15 Sekunden die letzte Aktivität. Sessions ohne offenes Dashboard laufen normal ab.
+- **Nach dem Ende des Jobs** setzt der Datenstrom die letzte Aktivität einmal auf das Ende des Jobs. Die 10 Minuten beginnen dann neu, damit das Ergebnis noch sichtbar ist.
+- Die maximale Lebensdauer von 12 Stunden gilt immer, auch während eines Jobs.
+- Ein Logout oder Ablauf der Session beendet nie den Kopierjob. Der Web-Prozess sendet beim Ende einer Session keinen Befehl an den Worker; ein Test sichert das ab.
 - Jeder Login erzeugt eine neue Session-ID; ein mitgebrachtes Cookie wird verworfen. Logout löscht die Session in der Datenbank und das Cookie. `twinraid-admin set-password` beendet alle Sessions.
 
 **CSRF und Herkunft**
@@ -291,6 +349,7 @@ Cross-Origin-Resource-Policy: same-origin
 
 - Tabelle in der SQLite-Datenbank des Web-Prozesses: Zeit (UTC), Client-IP, Aktion, Ergebnis. Aktion und Ergebnis stammen aus festen Listen; kein Feld übernimmt Text aus Requests.
 - Phase 2 protokolliert: Login erfolgreich, fehlgeschlagen, gesperrt oder ohne gesetztes Passwort; Beginn einer Sperre; Logout; abgelaufene Session; fehlgeschlagene CSRF- oder Origin-Prüfung; die CLI-Befehle `set-password`, `renew-cert` und `unlock`. Gleiche Abweisungen derselben IP werden höchstens einmal pro Minute eingetragen.
+- Ab Phase 3 zusätzlich die CLI-Befehle `set-api-key` und `trust-api-cert`.
 - **Nie gespeichert oder geloggt:** Passwörter, Session-IDs, CSRF-Tokens, Cookies, Request-Inhalte.
 - Aufbewahrung 180 Tage und höchstens 50.000 Einträge; aufgeräumt wird beim Start und stündlich.
 - Die Kachel „Verlauf“ zeigt die letzten 50 Einträge über eine geschützte Route.
@@ -310,8 +369,8 @@ Cross-Origin-Resource-Policy: same-origin
 - s6-overlay startet und überwacht beide Prozesse. Es ist für Container gebaut, sehr klein und braucht keinen zusätzlichen Interpreter, der als root läuft.
 - **Read-only Root:** `S6_READ_ONLY_ROOT=1`. `/run` ist ein `tmpfs` und darf nicht `noexec` sein, weil s6 dort seine Dienstverzeichnisse anlegt und ausführt. `/tmp` ist ebenfalls ein `tmpfs`.
 - **Startprüfung:** Ein einmaliger Dienst prüft vor dem Start der beiden Prozesse den Betriebsmodus (siehe 6.4) und die Konfiguration (siehe 6.3). Er läuft bereits als unprivilegierter Web-Benutzer. Schlägt er fehl, beendet sich der Container (`S6_BEHAVIOUR_IF_STAGE2_FAILS=2`).
-- **Startdienst `twinraid-init` (ab Phase 2):** Läuft nach der Startprüfung als root mit GID 10001, Bounding-Set nur `DAC_READ_SEARCH` (zum Lesen eines eigenen Schlüssels unter `/config/tls`). Er prüft und korrigiert die Datenablage (siehe 5.9) und richtet TLS ein (siehe 5.2). Schlägt er fehl, startet der Container nicht.
-- **Healthcheck (ab Phase 2):** Der Docker-Healthcheck läuft als Web-Benutzer ohne Capabilities und sendet keine HTTP-Anfrage. Er baut nur eine TLS-Verbindung zu `127.0.0.1:<web.port>` auf und vergleicht das ausgelieferte Zertifikat mit `/run/twinraid-tls`. Der Netzfilter arbeitet auf HTTP-Ebene und wird dadurch nicht berührt; es gibt keine Ausnahme für Loopback. Zusätzlich prüft er, dass der Worker seinen Herzschlag (`/run/twinraid/worker.heartbeat`, alle 10 Sekunden) aktualisiert.
+- **Startdienst `twinraid-init` (ab Phase 2):** Läuft nach der Startprüfung als root mit GID 10001, Bounding-Set nur `DAC_READ_SEARCH` (zum Lesen eines eigenen Schlüssels unter `/config/tls`). Er prüft und korrigiert die Datenablage (siehe 5.9) und richtet TLS ein (siehe 5.2). Schlägt er fehl, startet der Container nicht. Ab Phase 3 ruft auch das Startskript des Web-Dienstes vor jedem Start des Web-Prozesses `twinraid-init --refresh-tls` mit denselben Rechten auf, um ein fälliges Serverzertifikat zu erneuern. Scheitert das, startet der Web-Prozess mit dem bisherigen Zertifikat.
+- **Healthcheck (ab Phase 2):** Der Docker-Healthcheck läuft als Web-Benutzer ohne Capabilities und sendet keine HTTP-Anfrage. Er baut nur eine TLS-Verbindung zu `127.0.0.1:<web.port>` auf und vergleicht das ausgelieferte Serverzertifikat mit dem ersten Zertifikat in `/run/twinraid-tls/cert.pem`. Der Netzfilter arbeitet auf HTTP-Ebene und wird dadurch nicht berührt; es gibt keine Ausnahme für Loopback. Zusätzlich prüft er, dass der Worker seinen Herzschlag (`/run/twinraid/worker.heartbeat`, alle 10 Sekunden) aktualisiert.
 - **Rechte abgeben:** Beide Prozesse werden über `setpriv` gestartet, jeweils mit `no_new_privs`.
   - Web-Prozess: UID und GID 10001, keine zusätzlichen Gruppen, keine Capabilities, leeres Bounding-Set.
   - Worker: UID 0, GID 10001, keine zusätzlichen Gruppen, Bounding-Set nur `DAC_READ_SEARCH`, `umask 077`. Die GID 10001 dient nur dazu, dass der Socket der Gruppe des Web-Prozesses gehört. Wegen `umask 077` legt der Worker keine Dateien an, die diese Gruppe lesen kann.
@@ -345,25 +404,29 @@ Startoptionen für Docker, entsprechend später im Unraid-Template:
 - Gespeichert in `/data/secrets` (Rechte `0700`, root). Nur der Worker hat Zugriff.
 - Angelegt über die Admin-CLI im Container (aufrufbar über die Container-Konsole in Unraid, also nur für Unraid-Admins):
   - `twinraid-admin set-password`: fragt das Passwort zweimal ohne Anzeige ab, nie als Argument (Shell-Historie). Für Skripte und Tests gibt es `--stdin`. Beendet alle Sessions.
-  - `twinraid-admin renew-cert`, `twinraid-admin show-cert-fingerprint`, `twinraid-admin unlock` (Phase 2, siehe 5.2 und 5.3).
+  - `twinraid-admin show-cert-fingerprint`, `twinraid-admin unlock` (Phase 2, siehe 5.2 und 5.3).
+  - `twinraid-admin renew-cert` erneuert das Serverzertifikat (Geräte merken nichts); `renew-cert --new-ca` erzeugt eine neue CA, die auf allen Geräten neu installiert werden muss (Phase 3, siehe 5.2).
+  - `twinraid-admin set-api-key target` (Phase 3): fragt den API-Key von Groß ohne Anzeige ab (für Skripte `--stdin`), prüft das Format wie Unraid (nur `A–Z`, `a–z`, Ziffern, `-` und `_`, höchstens 512 Zeichen) und speichert ihn. Bei `scheme: https` ohne bestätigten Fingerabdruck folgt die Bestätigung wie bei `trust-api-cert`. Im Modus `real` macht der Befehl danach eine Testabfrage und meldet verständlich, was passt und was nicht. `set-api-key source` folgt in Phase 5.
+  - `twinraid-admin trust-api-cert target` (Phase 3): zeigt den SHA-256-Fingerabdruck des Zertifikats, das Groß gerade ausliefert, und speichert ihn nach Bestätigung (siehe 3.5). Für Skripte kann der erwartete Fingerabdruck mit `--fingerprint` übergeben werden; er muss genau übereinstimmen. Nur im Modus `real` und nur bei `scheme: https`.
+  - `twinraid-admin mock-job on|off` (Phase 3, nur im Simulationsmodus): schaltet das Feld `job_running` der Simulation, um die Sitzungsregel aus 5.3 auszuprobieren.
   - `twinraid-admin init-ssh-keys`: erzeugt ed25519-Keys „sync“ und „power“ und gibt die fertigen `authorized_keys`-Zeilen inklusive Einschränkungen aus.
-  - `twinraid-admin set-api-key source|target`
   - `twinraid-admin trust-host-key target`: zeigt den SSH-Fingerabdruck von Groß zur Bestätigung an. Danach gilt strikte Hostkey-Prüfung.
 - Secrets stehen niemals in der YAML-Datei, in Git, in Logs oder im Frontend.
-- Die Befehle für SSH- und API-Keys folgen in Phase 4.
+- Die Befehle für SSH-Keys folgen in Phase 4, `set-api-key source` in Phase 5.
+- Der Worker liest API-Key und Fingerabdruck bei jeder Prüfung neu; nach `set-api-key` oder `trust-api-cert` ist kein Neustart nötig.
 - Die CLI läuft als root. Zugriffe auf die Datenbank des Web-Prozesses erledigt sie in einem Kindprozess als Web-Benutzer, weil root ohne `DAC_OVERRIDE` dort nicht schreiben darf. Der Container braucht dafür keine zusätzliche Capability.
 
 ### 5.6 Rechte auf den Unraid-Servern (Least Privilege)
 
 - **API-Key Klein:** nur Docker-Steuerung (Container stoppen/starten, lesen).
-- **API-Key Groß:** nur VM-Steuerung (VMs starten/stoppen, lesen).
+- **API-Key Groß:** Ab Phase 3 ein Key **ohne Rolle** mit der einzigen Berechtigung `VMS:READ_ANY` (in der Unraid-Oberfläche: Ressource „VMS“, Aktion „Read (any)“). Die Rolle „Viewer“ ist zu breit: Sie darf laut Quellcode der Unraid-API alle Bereiche außer API-Keys lesen. Ab Phase 4 kommt `VMS:UPDATE_ANY` für Start und Stopp hinzu.
 - **Rechte werden getestet:** In älteren API-Versionen gab es einen Fehler, durch den ein nur lesender Key Container und VMs starten und stoppen konnte (GitHub-Issue unraid/api #1723). In Phase 4 wird geprüft, dass ein Key ohne die nötigen Rechte tatsächlich abgewiesen wird.
 - **SSH-Key „sync“ auf Groß:**
   `from="<Container-IP>",command="/bin/bash /boot/config/twinraid/guard.sh sync",no-pty,no-port-forwarding,no-agent-forwarding,no-X11-forwarding ssh-ed25519 …`
   `guard.sh` erlaubt ausschließlich rsync im Server-Modus mit Ziel in den konfigurierten Shares bzw. im Template-Ordner.
 - **SSH-Key „power“ auf Groß:** gleiche Einschränkungen, erlaubt nur den sauberen Shutdown-Befehl.
 - Die Wrapper-Skripte liegen im Repo unter `host-scripts/` und werden auf Groß nach `/boot/config/twinraid/` kopiert.
-- Die Unraid-API wird per HTTPS angesprochen, falls in Unraid aktiviert. Sonst läuft sie per HTTP nur innerhalb des Server-Netzes (bekanntes Restrisiko, dokumentiert).
+- Die Unraid-API wird per HTTPS mit bestätigtem Fingerabdruck angesprochen, falls in Unraid aktiviert. Sonst läuft sie per HTTP nur innerhalb des Server-Netzes (bekanntes Restrisiko, deutlich angezeigt, siehe 3.5).
 
 ### 5.7 Regeln für den Code
 
@@ -380,6 +443,24 @@ Das Repo ist öffentlich auf GitHub, das Container-Image wird öffentlich über 
 - Ab Phase 1: Branch-Schutz für `main`, Änderungen nur mit grüner CI.
 - Images werden ausschließlich von GitHub Actions gebaut und veröffentlicht, nicht vom lokalen PC.
 
+**Image-Veröffentlichung (ab Phase 3)**
+
+- **Versionen** nach SemVer `MAJOR.MINOR.PATCH`. Bis 1.0 entspricht MINOR der Phase (0.3.x ist Phase 3). Die Version steht in `backend/pyproject.toml`, `backend/src/twinraid/__init__.py` und `frontend/package.json`; ein Test prüft, dass alle drei gleich sind.
+- **Tags:**
+
+| Auslöser | Image-Tags |
+|---|---|
+| Git-Tag `v0.3.0` | `0.3.0`, `0.3`, `latest` (ab 1.0 zusätzlich `1`) |
+| Git-Tag mit Vorabversion, z. B. `v0.3.0-rc.1` | nur `0.3.0-rc.1` |
+| Push auf `main` | `edge`, `sha-<7 Zeichen>` |
+
+- **Unraid:** Das Template nutzt `ghcr.io/mantua1/twinraid:latest`. Unraid vergleicht den Digest hinter diesem Tag mit dem installierten Image und meldet „Update verfügbar“ also nur bei echten Releases. `:edge` dient zum Testen des aktuellen Stands von `main`, `:0.3` oder `:0.3.0` zum Festhalten einer Version.
+- **Nur aus `main` oder über Versions-Tags:** Pull Requests bauen und testen nur, ohne Anmeldung an der Registry und ohne Schreibrechte. Ein Versions-Tag wird nur veröffentlicht, wenn sein Commit in `main` liegt und die Version im Tag mit der Version im Code übereinstimmt.
+- **Dasselbe Image:** Veröffentlicht wird genau das Image, das im selben Workflow-Lauf den Container-Starttest bestanden hat. Der Veröffentlichungs-Job ist der einzige mit Schreibrechten (`packages`, `id-token`, `attestations`).
+- **Nur `linux/amd64`**, weil Unraid darauf läuft. Das Image ist ein einfaches Manifest ohne zusätzliche BuildKit-Attestierungen.
+- **Herkunftsnachweis:** `actions/attest` erzeugt eine SLSA-Build-Provenance, signiert über Sigstore, und legt sie an der Registry ab. Prüfbar mit `gh attestation verify oci://ghcr.io/mantua1/twinraid:<version> --owner mantua1`.
+- **Öffentlich abrufbar:** Nach dem Push prüft der Workflow ohne Anmeldung, dass das Image abrufbar ist und den erwarteten Digest hat. Neue Pakete sind auf ghcr.io zunächst privat; beim ersten Release schlägt diese Prüfung deshalb fehl, bis das Paket in GitHub auf öffentlich gestellt ist (Anleitung im README).
+
 ---
 
 ### 5.9 Datenablage unter `/data` (ab Phase 2)
@@ -389,11 +470,12 @@ Das Repo ist öffentlich auf GitHub, das Container-Image wird öffentlich über 
 
 | Pfad | Besitzer | Rechte | Inhalt |
 |---|---|---|---|
-| `/data/secrets` | root | 0700 | Passwort-Hash, ab Phase 4 API- und SSH-Keys |
-| `/data/tls` | root | 0700 | selbstsigniertes Zertifikat und Schlüssel |
-| `/data/web` | root, Gruppe 10001 | 0770 | SQLite des Web-Prozesses (Datei `0600`, Besitzer 10001) |
+| `/data/secrets` | root | 0700 | Passwort-Hash; ab Phase 3 API-Key von Groß (`target-api-key`) und bestätigter Fingerabdruck seines Zertifikats (`target-api-cert.sha256`); ab Phase 4 SSH-Keys |
+| `/data/tls` | root | 0700 | CA (`ca.pem`, `ca-key.pem`) und Serverzertifikat (`server.pem`, `server-key.pem`) |
+| `/data/web` | root, Gruppe 10001 | 0770 | SQLite des Web-Prozesses (Datei `0600`, Besitzer 10001); Vermerk der letzten Erneuerungsanfrage `tls-renewal.json` |
 | `/data/worker` (ab Phase 4) | root | 0700 | Aktionslog des Workers; der Web-Prozess kann es weder lesen noch verändern |
-| `/run/twinraid-tls` | root, Gruppe 10001 | 0750 | aktives Zertifikat und Schlüssel für den Web-Prozess, nur im RAM |
+| `/run/twinraid-tls` | root, Gruppe 10001 | 0750 | Zertifikatskette, Serverschlüssel, CA-Zertifikat und `info.json` für den Web-Prozess, nur im RAM |
+| `/run/twinraid` | root, Gruppe 10001 | 0750 | Worker-Socket, Herzschlag; im Simulationsmodus der Schalter `mock-job-running` |
 
 ## 6. Konfiguration
 
@@ -403,8 +485,10 @@ Das Repo ist öffentlich auf GitHub, das Container-Image wird öffentlich über 
 |---|---|---|---|
 | `/mnt/user/appdata/twinraid/config` | `/config` | ro | `twinraid.yaml`, optional `tls/` |
 | `/mnt/user/appdata/twinraid/data` | `/data` | rw | SQLite, Secrets, generiertes Zertifikat |
-| `/mnt/user` | `/srv/worker/source` | ro | Quell-Shares |
-| `/boot/config/plugins/dockerMan/templates-user` | `/srv/worker/templates` | ro | Container-Templates |
+| `/mnt/user` | `/srv/worker/source` | ro | Quell-Shares (erst ab Phase 5) |
+| `/boot/config/plugins/dockerMan/templates-user` | `/srv/worker/templates` | ro | Container-Templates (erst ab Phase 5) |
+
+Shares und Templates werden erst gemountet, wenn der Sync sie braucht. Vorher hat TwinRaid keinen Zugriff darauf.
 
 ### 6.2 Beispiel `twinraid.yaml`
 
@@ -417,7 +501,7 @@ web:
   allowed_networks:            # nur Clients aus diesen Netzen dürfen zugreifen
     - 192.168.10.0/24          # Server-Netz
     - 192.168.20.0/24          # Client-Netz
-  session_idle_minutes: 30
+  session_idle_minutes: 10     # optional, Standard 10
   default_language: de         # de | en
   tls:
     ip_addresses:              # feste IP des Containers, kommt ins Zertifikat
@@ -428,9 +512,15 @@ servers:
   source:                      # Unraid Klein – hier läuft der Container
     name: "Unraid Klein"
     host: 192.168.10.10
+    webgui:                    # wie „SSL/TLS verwenden“ in Unraid: Nein → http, Ja → https
+      scheme: http
+      port: 80                 # optional, Standard 80 bei http, 443 bei https
   target:                      # Unraid Groß
     name: "Unraid Groß"
     host: 192.168.10.11
+    webgui:
+      scheme: http
+      port: 80
     mac: "AA:BB:CC:DD:EE:FF"
     wol_broadcast: 192.168.10.255
     boot_timeout_minutes: 5
@@ -474,6 +564,8 @@ Ergänzende Regeln:
 - **Share-Namen** (`shares`, `appdata_share`): Prüfung über eine Positivliste erlaubter Zeichen. Erlaubt sind die Buchstaben `A–Z` und `a–z`, Ziffern, Punkt, Unterstrich und Bindestrich. Das erste Zeichen muss ein Buchstabe oder eine Ziffer sein, höchstens 64 Zeichen. Damit sind Schrägstrich, `..`, führendes Minus, Leerzeichen und Steuerzeichen ausgeschlossen. `system` und `domains` sind unabhängig von Groß- und Kleinschreibung verboten. Doppelte Einträge sind ein Fehler. `appdata_share` muss in `shares` enthalten sein.
 - **Pfade** (`exclude`, `protect_on_target`): relativ zu `/mnt/user`, also ohne führenden Schrägstrich. Nicht erlaubt sind `..`, `.` und leere Bestandteile, Bestandteile mit führendem Minus sowie Steuer- und unsichtbare Formatzeichen. Zusätzlich verboten sind die Platzhalterzeichen `*`, `?`, `[`, `]` und der Backslash, weil rsync sie in Filterregeln als Muster auswertet. Der erste Bestandteil muss eine konfigurierte Share sein. Eine ganze Share darf nicht ausgeschlossen werden; dafür wird sie aus `shares` entfernt.
 - **Container-Namen** in `never_stop`: nur die von Docker erlaubten Zeichen.
+- **WebGUI** (`servers.<server>.webgui`, ab Phase 3): `scheme` ist `http` oder `https`; `port` ist optional (1 bis 65535, Standard 80 bzw. 443).
+- **Sitzung:** `web.session_idle_minutes` ist optional (1 bis 720, Standard 10).
 - **TLS** (`web.tls`): `ip_addresses` enthält mindestens eine IP-Adresse, keine Multicast- oder unspezifizierte Adresse, ohne Duplikate. `hostnames` ist optional; erlaubt sind DNS-Namen nach RFC 1123 ohne Platzhalter, in Kleinbuchstaben gespeichert, ohne Duplikate. Beide Listen bilden zusammen die erlaubten `Host`-Header und gehören zu den Werten, die nie öffentlich ausgeliefert werden.
 - **Zeitplan** (`sync.schedule`): `days` enthält nur die Kürzel `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`, ohne Duplikate und mindestens einen Tag. `time` hat das Format `HH:MM` (`00:00` bis `23:59`) und steht in Anführungszeichen. Ohne Anführungszeichen liest YAML manche Uhrzeiten wie `13:30` als Zahl; das wird mit einem klaren Hinweis abgelehnt. `timezone` ist eine gültige IANA-Zeitzone, die im Container vorhanden ist (z. B. `Europe/Berlin`); Sondereinträge wie `localtime` sind nicht erlaubt.
 
@@ -482,8 +574,8 @@ Ergänzende Regeln:
 - Pflichtangabe als Umgebungsvariable des Containers: `mock` oder `real`. Es gibt **keinen Standardwert**.
 - Fehlt der Wert oder ist er ungültig, startet der Container nicht und meldet im Log klar, was fehlt und welche Werte erlaubt sind.
 - Entwicklungs-Skripte, Tests und CI setzen `mock` ausdrücklich.
-- **Mock-Modus:** Alle Integrationen mit Außenwirkung sind durch Simulationen ersetzt. Das Log warnt beim Start deutlich. Die Oberfläche zeigt dauerhaft ein auffälliges Banner „Simulationsmodus“.
-- Solange es keine echten Integrationen gibt, lehnt der Container auch `real` ab und startet nicht.
+- **Mock-Modus:** Alle Integrationen mit Außenwirkung sind durch Simulationen ersetzt. Das Log warnt beim Start deutlich. Die Oberfläche zeigt dauerhaft ein auffälliges Banner „Simulationsmodus“. Die Statussimulation durchläuft einen festen Ablauf, der jeden Zustand und jede Ursache einmal zeigt; `job_running` wird mit `twinraid-admin mock-job on|off` geschaltet.
+- **Modus `real` (ab Phase 3, nur lesend):** Erlaubt sind nur Status-Abfragen, also die TCP-Checks beider Server und der VM-Status über die Unraid-API. Alle Aktionsbefehle (`wake_target`, `shutdown_target`, `vm_start`, `vm_stop`, `vm_force_stop`, `sync_start`, `sync_cancel`, `sync_confirm_deletions`) lehnt der Worker im Modus `real` vor jeder Verarbeitung mit dem Fehlercode `not_available` ab, bis Phase 4 bzw. 5 sie freigibt. Die Oberfläche zeigt im Modus `real` das Banner „Nur Statusanzeige“.
 
 ---
 
@@ -495,7 +587,7 @@ twinraid/
 ├── README.md
 ├── docs/
 │   ├── KONZEPT.md             # dieses Dokument
-│   ├── EINRICHTUNG.md         # Installation auf Unraid und Zertifikat auf Windows/Linux/Android (Phase 7)
+│   ├── EINRICHTUNG.md         # Installation auf Unraid und CA auf Windows/Linux/Android (ab Phase 3)
 │   └── WIEDERHERSTELLUNG.md   # Notfall-Anleitung (Phase 6)
 ├── backend/
 │   ├── pyproject.toml
@@ -519,12 +611,12 @@ twinraid/
 ├── docker/
 │   ├── Dockerfile             # Multi-Stage: Frontend bauen → Backend-Image
 │   ├── rootfs/                # Init-/Prozess-Konfiguration
-│   └── unraid-template.xml
+│   └── unraid-template.xml    # Unraid-Template (ab Phase 3)
 ├── host-scripts/
 │   └── guard.sh               # SSH-Wrapper für Unraid Groß
 ├── config.example.yaml
 └── .github/
-    ├── workflows/             # CI: Tests, Lint, Image-Build
+    ├── workflows/             # CI: Tests, Lint, Image-Build, Veröffentlichung auf ghcr.io
     └── dependabot.yml
 ```
 
@@ -532,33 +624,35 @@ twinraid/
 
 ## 8. Phasenplan
 
-Jede Phase endet mit lauffähigem, getestetem Stand und einem Commit auf GitHub. Bis einschließlich Phase 3 wird ausschließlich gegen Mocks entwickelt. Echte Server werden erst angesprochen, wenn der Nutzer es ausdrücklich freigibt.
+Jede Phase endet mit lauffähigem, getestetem Stand und einem Commit auf GitHub. Entwickelt und getestet wird immer gegen Mocks. Ab Phase 3 darf der Modus `real` den Status lesen; echte Server werden erst angesprochen, wenn der Nutzer es ausdrücklich freigibt.
 
 | Phase | Inhalt | Fertig, wenn … |
 |---|---|---|
 | 0 | GitHub-Repo, VS Code, Claude Code, `CLAUDE.md`, Konzept | Repo existiert mit Doku, erster Commit ist gepusht |
 | 1 | Grundgerüst: Backend- und Frontend-Skelett, Dockerfile mit beiden Prozessen, Config laden und validieren, Mock-Modus, DE/EN, Dark/Light, CI | Container startet lokal im Mock-Modus, Dashboard (leer) sichtbar, CI grün |
 | 2 | Sicherheit: HTTPS, Admin-CLI, Login, Sessions, CSRF, Netzfilter, Rate-Limit, Security-Header, Audit-Log | Ohne Login ist nichts erreichbar; jede Schutzmaßnahme hat einen Test |
-| 3 | Status: Server-Checks, VM-Status, Live-Updates per SSE | Dashboard zeigt Status im Mock-Modus korrekt und live |
-| 4 | Aktionen: WoL, VM Start/Stop/Force, Shutdown Groß, Sperrlogik, Auto-Wecken, eigenes Aktionslog des Workers (siehe 5.3); erster Test gegen echte Server | Alle Buttons funktionieren auf den echten Servern; Rechte der API-Keys sind geprüft; jede Aktion steht im Aktionslog des Workers |
+| 3 | Status: Server-Checks, VM-Status, Live-Updates per SSE; eigene CA mit automatischer Erneuerung des Serverzertifikats; Image-Veröffentlichung auf ghcr.io mit Herkunftsnachweis (aus Phase 7 vorgezogen); Modus `real` nur lesend mit `set-api-key target` und `trust-api-cert target`; erste Fassung von `docs/EINRICHTUNG.md` und Unraid-Template | Dashboard zeigt Status im Mock-Modus korrekt und live; Release v0.3.0 ist ohne Login von ghcr.io abrufbar und sein Herkunftsnachweis prüfbar |
+| 4 | Aktionen: WoL, VM Start/Stop/Force, Shutdown Groß, Sperrlogik, Auto-Wecken, eigenes Aktionslog des Workers (siehe 5.3); erste Aktionen gegen echte Server | Alle Buttons funktionieren auf den echten Servern; Rechte der API-Keys sind geprüft; jede Aktion steht im Aktionslog des Workers |
 | 5 | Sync: Dry-Run, rsync, Fortschritt/Restzeit, Container stoppen/starten, Templates, Schutzmechanismen, Historie | Erst Sync einer Test-Share, danach vollständiger Sync erfolgreich |
 | 6 | Zeitsteuerung, Auto-Wecken/-Herunterfahren, Benachrichtigungen, Notfall-Info auf Groß | Ein geplanter Lauf läuft unbeaufsichtigt durch |
-| 7 | Unraid-Template, Einrichtungsanleitung, Image-Build per GitHub Actions, unabhängiges Security-Review | Installation auf Unraid nach Anleitung möglich; Review-Befunde behoben |
+| 7 | Unraid-Template und Einrichtungsanleitung fertigstellen, unabhängiges Security-Review | Installation auf Unraid nach Anleitung möglich; Review-Befunde behoben |
 
 ---
 
-## 9. Einrichtung auf Unraid (Checkliste, wird in Phase 7 ausgearbeitet)
+## 9. Einrichtung auf Unraid (Checkliste)
+
+Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung ab Phase 3, fertig in Phase 7).
 
 - [ ] Groß: Wake-on-LAN im BIOS und für die Netzwerkkarte aktivieren (ggf. per `ethtool` im Unraid-Startskript)
 - [ ] Groß: SSH aktivieren; `guard.sh` nach `/boot/config/twinraid/` kopieren; `authorized_keys`-Zeilen aus `twinraid-admin init-ssh-keys` eintragen
-- [ ] Beide: API-Keys mit minimalen Rechten anlegen (siehe 5.6)
+- [ ] Groß: API-Key ohne Rolle mit `VMS:READ_ANY` anlegen und mit `twinraid-admin set-api-key target` hinterlegen (ab Phase 4 zusätzlich `VMS:UPDATE_ANY`, ab Phase 5 Key für Klein, siehe 5.6)
 - [ ] Klein: „Host access to custom networks“ in den Docker-Einstellungen aktivieren
 - [ ] Klein: Container-Templates auf Pool-Pfade prüfen und auf `/mnt/user/…` umstellen
 - [ ] UniFi: feste IP für den Container, Firewall-Regel Client-Netz → Container-IP:8443
 - [ ] Klein: `/mnt/user/appdata/twinraid/data` gehört root und ist nur für root beschreibbar (siehe 5.9)
 - [ ] Konfiguration: `web.tls.ip_addresses` enthält die feste Container-IP
-- [ ] Container installieren, Konfiguration anlegen, Passwort setzen, Hostkey von Groß bestätigen
-- [ ] Geräte: Zertifikat auf Windows, Linux und Android für Chrome bzw. Edge und Firefox als vertrauenswürdig einrichten (Ergebnis aus Issue #3)
+- [ ] Container installieren, Konfiguration anlegen, Passwort setzen, bei `https` Zertifikat von Groß bestätigen (`trust-api-cert`), ab Phase 4 Hostkey von Groß bestätigen
+- [ ] Geräte: CA-Zertifikat auf Windows, Linux und Android für Chrome bzw. Edge und Firefox installieren (Test in Issue #3)
 
 ---
 
@@ -568,9 +662,10 @@ Jede Phase endet mit lauffähigem, getestetem Stand und einem Commit auf GitHub.
 |---|---|---|
 | E1 | Laufen auf Groß eigene Container mit Daten in `appdata` oder mit eigenen Templates? | **entschieden:** nein, Container auf Groß sind aus; geschützt wird nur `appdata/_twinraid` |
 | E2 | GitHub-Repo öffentlich oder privat? | **entschieden:** öffentlich, Image über `ghcr.io` (siehe 5.8) |
-| E3 | HTTPS-Variante | **entschieden:** selbstsigniert, eigenes Zertifikat optional mountbar (siehe 5.2) |
+| E3 | HTTPS-Variante | **entschieden:** eigene kleine CA mit Namensbeschränkung und separatem Serverzertifikat (ab Phase 3, vorher selbstsigniert), eigenes Zertifikat optional mountbar (siehe 5.2) |
 | E4 | Projektname (Arbeitstitel „TwinRaid“) | offen |
 | E5 | Prozessverwaltung im Container (s6-overlay oder supervisord) | **entschieden:** s6-overlay mit read-only Root und minimalen Capabilities (siehe 5.4) |
+| E6 | Versionen und Image-Tags | **entschieden:** SemVer, `latest` nur für Releases, `edge` für `main` (siehe 5.8) |
 
 ---
 

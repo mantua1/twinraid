@@ -7,7 +7,7 @@ web:
   allowed_networks:
     - 127.0.0.0/8              # Start ohne Container
     - 172.16.0.0/12            # Docker-Bridge beim Start im Container
-  session_idle_minutes: 30
+  session_idle_minutes: 10
   default_language: de
   tls:
     ip_addresses:
@@ -19,9 +19,13 @@ servers:
   source:
     name: "Unraid Klein"
     host: 192.168.10.10
+    webgui:
+      scheme: http
   target:
     name: "Unraid Groß"
     host: 192.168.10.11
+    webgui:
+      scheme: http
     mac: "AA:BB:CC:DD:EE:FF"
     wol_broadcast: 192.168.10.255
     boot_timeout_minutes: 5

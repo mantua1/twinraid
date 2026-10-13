@@ -10,7 +10,8 @@
   "errors": {
     "connection": "No connection to the TwinRaid server.",
     "status": "Status is currently unavailable.",
-    "sessionExpired": "The session has expired. Please sign in again."
+    "sessionExpired": "The session has expired. Please sign in again.",
+    "liveConnection": "The live connection is interrupted. TwinRaid is reconnecting …"
   },
   "language": {
     "label": "Language",
@@ -32,11 +33,28 @@
     "offline": "Offline",
     "starting": "Starting …",
     "stopping": "Shutting down …",
-    "unknown": "Unknown"
+    "unknown": "Unknown",
+    "reasons": {
+      "unreachable": "Not reachable",
+      "target_offline": "Server offline",
+      "api_unreachable": "API not reachable",
+      "api_redirected": "Unraid redirects to HTTPS – set webgui.scheme to https in twinraid.yaml",
+      "api_key_missing": "No API key set (twinraid-admin set-api-key target)",
+      "api_key_invalid": "API key invalid",
+      "api_forbidden": "API key may not read VMs",
+      "api_cert_untrusted": "Unraid certificate not confirmed yet (twinraid-admin trust-api-cert target)",
+      "api_cert_changed": "Certificate changed – check the new fingerprint and confirm it with twinraid-admin trust-api-cert target",
+      "api_error": "Unexpected answer from the Unraid API",
+      "vm_not_found": "VM not found",
+      "vm_paused": "Paused",
+      "vm_suspended": "Suspended",
+      "vm_crashed": "Crashed"
+    }
   },
   "dashboard": {
     "title": "Overview",
-    "loading": "Loading …"
+    "loading": "Loading …",
+    "checkedAt": "Last checked: {{time}}"
   },
   "tiles": {
     "source": {
@@ -54,7 +72,8 @@
     "sync": {
       "title": "Sync",
       "description": "Mirror from the source to the target server.",
-      "empty": "No sync run yet."
+      "empty": "No sync run yet.",
+      "running": "A copy job is running."
     },
     "history": {
       "title": "History",
@@ -93,23 +112,39 @@
     "back": "Back to overview",
     "certificate": {
       "title": "TLS certificate",
-      "description": "This certificate encrypts the connection. Once it is installed as trusted on a device, the warning no longer appears there.",
+      "description": "The connection is encrypted with a certificate from TwinRaid's own CA. Once the CA certificate is installed on a device, the warning no longer appears there.",
       "source": "Source",
       "sources": {
-        "self-signed": "Self-signed",
+        "ca": "TwinRaid CA",
         "custom": "Custom certificate"
       },
       "fingerprint": "SHA-256 fingerprint",
-      "compare": "The fingerprint must match the one shown by the browser and in the container log.",
+      "compare": "Must match the browser and the container log.",
       "validUntil": "Valid until",
       "daysLeft_one": "{{count}} day left",
       "daysLeft_other": "{{count}} days left",
-      "download": "Download certificate",
-      "unavailable": "Certificate details are not available right now."
+      "unavailable": "Certificate details are not available right now.",
+      "ca": {
+        "title": "CA certificate",
+        "install": "Install it once on every device as a trusted certificate authority. The guide for Windows, Linux and Android is in docs/EINRICHTUNG.md.",
+        "name": "Name",
+        "sha1": "SHA-1 fingerprint",
+        "sha1Hint": "Windows shows only this value during installation.",
+        "download": "Download CA certificate"
+      },
+      "server": {
+        "title": "Server certificate",
+        "renewal": "Renewed automatically 60 days before it expires. Devices notice nothing."
+      },
+      "customHint": "A custom certificate from /config/tls is active, so there is no CA certificate to download."
+    },
+    "connection": {
+      "title": "Connection to {{name}}",
+      "description": "How TwinRaid talks to the Unraid API (webgui in twinraid.yaml).",
+      "encrypted": "Encrypted with HTTPS; the certificate is checked against the confirmed fingerprint.",
+      "unencrypted": "Connection to {{name}} unencrypted, the API key is sent in plain text."
     }
   },
-  "certificateWarning_one": "The TLS certificate expires in {{count}} day. A new one is then created automatically and must be confirmed again on your devices.",
-  "certificateWarning_other": "The TLS certificate expires in {{count}} days. A new one is then created automatically and must be confirmed again on your devices.",
   "audit": {
     "actions": {
       "login": "Sign-in",
@@ -119,7 +154,9 @@
       "origin_check": "Origin check",
       "cli_set_password": "Password set (CLI)",
       "cli_renew_cert": "Certificate renewed (CLI)",
-      "cli_unlock": "Locks cleared (CLI)"
+      "cli_unlock": "Locks cleared (CLI)",
+      "cli_set_api_key": "API key set (CLI)",
+      "cli_trust_api_cert": "Unraid certificate confirmed (CLI)"
     },
     "results": {
       "success": "successful",
@@ -134,5 +171,16 @@
     "unknown": "unknown",
     "from": "from {{ip}}",
     "local": "in the container"
+  },
+  "readOnlyBanner": {
+    "title": "Status only",
+    "description": "In this version the servers are only queried. Actions such as wake, starting the VM or sync are not available yet."
+  },
+  "certificate": {
+    "renewalFailed": "The automatic renewal of the TLS server certificate failed. Please check the container log.",
+    "serverExpires_one": "The TLS server certificate expires in {{count}} day. Please check the container log.",
+    "serverExpires_other": "The TLS server certificate expires in {{count}} days. Please check the container log.",
+    "caExpires_one": "The TwinRaid CA expires in {{count}} day. Create a new one with twinraid-admin renew-cert --new-ca and install it on all devices.",
+    "caExpires_other": "The TwinRaid CA expires in {{count}} days. Create a new one with twinraid-admin renew-cert --new-ca and install it on all devices."
   }
 }

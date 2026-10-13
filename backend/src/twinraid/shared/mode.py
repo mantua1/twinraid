@@ -15,9 +15,11 @@ class RunMode(StrEnum):
     REAL = "real"
 
 
-# Modi, die diese Version tatsächlich unterstützt. "real" kommt erst, wenn es
-# echte Integrationen gibt (Phase 4).
-SUPPORTED_MODES: frozenset[RunMode] = frozenset({RunMode.MOCK})
+# Modi, die diese Version tatsächlich unterstützt. "real" ist seit Phase 3 nur
+# lesend zugelassen: Status ja, Aktionen nein (Konzept 6.4).
+SUPPORTED_MODES: frozenset[RunMode] = frozenset({RunMode.MOCK, RunMode.REAL})
+# Im Modus real lehnt der Worker Aktionen ab, bis Phase 4 bzw. 5 sie freigibt.
+REAL_ACTIONS_ENABLED = False
 
 _ALLOWED_TEXT = ", ".join(f"'{mode.value}'" for mode in RunMode)
 _MAX_ECHO_LENGTH = 32

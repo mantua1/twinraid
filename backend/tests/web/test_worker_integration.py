@@ -9,13 +9,12 @@ from pathlib import Path
 import httpx2
 import pytest
 
-from tests.support.passwords import TEST_PASSWORD, password_check
+from tests.support.passwords import TEST_PASSWORD
+from tests.support.worker import make_handler
 from tests.web.helpers import BASE_URL, CLIENT_IP, make_app
-from twinraid.integrations.mocks.status import MockStatusProvider
 from twinraid.shared.ipc import ErrorCode, SyncStart
 from twinraid.shared.passwords import VerifyOutcome
 from twinraid.web.worker_client import WorkerClient, WorkerCommandError, WorkerUnavailableError
-from twinraid.worker.handler import CommandHandler
 from twinraid.worker.server import WorkerServer
 
 pytestmark = pytest.mark.anyio
@@ -24,7 +23,7 @@ pytestmark = pytest.mark.anyio
 @pytest.fixture
 async def worker_socket() -> AsyncIterator[Path]:
     base = Path(tempfile.mkdtemp(prefix="tr-"))
-    handler = CommandHandler(MockStatusProvider(), password_check(base))
+    handler = make_handler(base)
     server = WorkerServer(base / "w.sock", os.getuid(), handler)
     await server.start()
     try:
@@ -47,7 +46,8 @@ async def test_login_and_status_through_real_socket(worker_socket: Path, tmp_pat
         assert ok.status_code == 200
         response = await client.get("/api/status")
     assert response.status_code == 200
-    assert response.json()["vm"] == "unknown"
+    assert response.json()["vm"] == {"state": "unknown", "reason": None}
+    assert response.json()["job_running"] is False
     assert response.json()["password_set"] is True
 
 

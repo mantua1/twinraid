@@ -21,11 +21,6 @@ def test_missing_mode_stops_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     assert main() == EXIT_STARTUP_ERROR
 
 
-def test_real_mode_stops_worker(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TWINRAID_MODE", "real")
-    assert main() == EXIT_STARTUP_ERROR
-
-
 def test_missing_web_uid_stops_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TWINRAID_WEB_UID")
     assert main() == EXIT_STARTUP_ERROR

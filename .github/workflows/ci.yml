@@ -1,10 +1,15 @@
-# CI: Tests und Linter für Backend und Frontend, Image-Build mit Starttest.
-# Images werden hier nur gebaut, nicht veröffentlicht (das folgt in Phase 7).
+# CI: Tests und Linter für Backend und Frontend, Image-Build mit Starttest und
+# Veröffentlichung auf ghcr.io (Konzept 5.8).
+#
+# Veröffentlicht wird nur bei einem Push auf main oder einem Versions-Tag v*,
+# nie aus Pull Requests. Nur der Job "publish" hat Schreibrechte. Er lädt genau
+# das Image hoch, das im Job "container" den Starttest bestanden hat.
 name: CI
 
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 permissions:
@@ -84,7 +89,105 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: docker build -f docker/Dockerfile -t twinraid:ci .
+      - name: Read version
+        id: version
+        run: >-
+          echo "version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' backend/src/twinraid/__init__.py)"
+          >> "${GITHUB_OUTPUT}"
+      # Nur amd64 (Unraid). Ohne BuildKit-Attestierungen: ein einfaches Manifest;
+      # der Herkunftsnachweis kommt im Job "publish" über actions/attest.
+      - name: Build image
+        run: >-
+          docker build --platform linux/amd64 --provenance=false --sbom=false
+          --label "org.opencontainers.image.version=${VERSION}"
+          --label "org.opencontainers.image.revision=${GITHUB_SHA}"
+          -f docker/Dockerfile -t twinraid:ci .
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
       - run: docker/smoke-test.sh twinraid:ci
         env:
           CHECK_EACH_CAP: "1"
+      - name: Save image for publishing
+        if: github.event_name == 'push'
+        run: docker save twinraid:ci | gzip -1 > twinraid-image.tar.gz
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: github.event_name == 'push'
+        with:
+          name: twinraid-image
+          path: twinraid-image.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: Publish image (ghcr.io)
+    runs-on: ubuntu-24.04
+    needs: [container]
+    if: >-
+      github.event_name == 'push'
+      && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Version tags must point into main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::The tag ${GITHUB_REF_NAME} does not point to a commit in main."
+            exit 1
+          fi
+      - name: Compute image name and tags
+        id: meta
+        run: |
+          version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' backend/src/twinraid/__init__.py)"
+          docker/release-tags.sh "${GITHUB_REF}" "${GITHUB_SHA}" "${version}" > tags.txt
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "${GITHUB_OUTPUT}"
+          echo "first_tag=$(head -n1 tags.txt)" >> "${GITHUB_OUTPUT}"
+          echo "Tags:" && cat tags.txt
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: twinraid-image
+      - run: gunzip -c twinraid-image.tar.gz | docker load
+      - name: Log in to ghcr.io
+        run: echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the tested image
+        id: push
+        run: |
+          digest=""
+          while read -r tag; do
+            docker tag twinraid:ci "${IMAGE}:${tag}"
+            docker push "${IMAGE}:${tag}" | tee push.log
+            pushed="$(grep -o 'digest: sha256:[0-9a-f]\{64\}' push.log | cut -d' ' -f2)"
+            if [[ -n "${digest}" && "${pushed}" != "${digest}" ]]; then
+              echo "::error::Tags point to different digests (${digest}, ${pushed})."
+              exit 1
+            fi
+            digest="${pushed}"
+          done < tags.txt
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.meta.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Image must be pullable without login
+        run: |
+          docker logout ghcr.io
+          docker/check-public-image.sh "${IMAGE}" "${FIRST_TAG}" "${DIGEST}"
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          FIRST_TAG: ${{ steps.meta.outputs.first_tag }}
+          DIGEST: ${{ steps.push.outputs.digest }}

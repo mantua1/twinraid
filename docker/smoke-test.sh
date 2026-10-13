@@ -3,10 +3,12 @@
 #
 # Prüft unter anderem: Start mit read-only Root und --cap-drop=ALL plus nur den
 # nötigen Capabilities, Rechte der Prozesse und Dateien, nur HTTPS (HTTP wird
-# abgewiesen), Zertifikat und Fingerabdruck, Healthcheck, Login mit Session und
-# CSRF, Sperre nach Fehlversuchen samt "unlock", keine /api-Route ohne Login,
-# keine Konfigurationswerte in öffentlichen Dateien, Netzfilter, Host-Prüfung,
-# Security-Header, Neustart, "renew-cert" und den Startabbruch bei Fehlern.
+# abgewiesen), CA und Serverzertifikat samt Fingerabdrücken (die CA ist der
+# einzige Vertrauensanker), Healthcheck, Login mit Session und CSRF, Live-Datenstrom,
+# simulierten Kopierjob, Sperre nach Fehlversuchen samt "unlock", keine
+# /api-Route ohne Login, keine Konfigurationswerte in öffentlichen Dateien,
+# Netzfilter, Host-Prüfung, Security-Header, Neustart, "renew-cert" mit und ohne
+# neue CA, den Modus real nur lesend und den Startabbruch bei Fehlern.
 #
 # Aufruf aus dem Repo-Hauptordner:
 #   docker/smoke-test.sh [IMAGE]          Standard-Image: twinraid:dev
@@ -29,7 +31,8 @@ ORIGIN="Origin: ${BASE}"
 JSON="Content-Type: application/json"
 PREFIX="twinraid-smoke-$$"
 WORKDIR="$(mktemp -d)"
-CERT="${WORKDIR}/cert.pem"
+# Nur das CA-Zertifikat dient als Vertrauensanker, wie später auf den Geräten.
+CERT="${WORKDIR}/ca.pem"
 JAR="${WORKDIR}/cookies.txt"
 PASSWORD="smoke-test-password-42"
 WRONG_PASSWORD="smoke-wrong-password-17"
@@ -95,7 +98,8 @@ trap cleanup EXIT
 start() {
   local name="$1" skip="$2" config="$3" cap
   shift 3
-  local cap_args=() data_args=(--mount "type=volume,src=${name}-data,dst=/data")
+  # DATA_MOUNT_OPTS: zusätzliche Mount-Optionen für /data, z. B. ",volume-nocopy".
+  local cap_args=() data_args=(--mount "type=volume,src=${name}-data,dst=/data${DATA_MOUNT_OPTS:-}")
   for cap in "${CAPS[@]}"; do
     [[ "${cap}" == "${skip}" ]] || cap_args+=("--cap-add=${cap}")
   done
@@ -162,23 +166,38 @@ else
   docker logs "${main}" 2>&1 | tail -40
   exit 1
 fi
-docker exec "${main}" cat /run/twinraid-tls/cert.pem >"${CERT}"
+docker exec "${main}" cat /run/twinraid-tls/ca.pem >"${CERT}"
 expect_contains "log warns about simulation mode" "$(docker logs "${main}" 2>&1)" "SIMULATION MODE ACTIVE"
 
-# --- 2. Nur HTTPS, Zertifikat und Healthcheck ----------------------------------------
-expect_equal "HTTPS works with the certificate as the only trust anchor" \
+# --- 2. Nur HTTPS, CA, Serverzertifikat und Healthcheck ------------------------------------
+expect_equal "HTTPS works with only the CA as trust anchor (name constraints accepted)" \
   "$(https_get "${BASE}/health")" "ok"
 expect_equal "plain HTTP gets no answer" "$(curl -s --max-time 5 "http://127.0.0.1:${PORT}/health" || true)" ""
 cert_info="$(docker exec "${main}" "${PY}" -c "${CERT_SCRIPT}")"
-expect_equal "certificate is not a CA" "$(json_get ca <<<"${cert_info}")" "false"
-expect_equal "certificate has EKU serverAuth" "$(json_get server_auth <<<"${cert_info}")" "true"
-expect_equal "certificate is valid for exactly 825 days" "$(json_get validity_days <<<"${cert_info}")" "825.0"
-expect_equal "certificate uses ECDSA P-256" "$(json_str curve <<<"${cert_info}")" "secp256r1"
-expect_equal "certificate SAN contains the configured IPs" "$(json_get ips <<<"${cert_info}")" '["10.77.31.50", "127.0.0.1"]'
-expect_equal "certificate SAN contains the configured hostname" "$(json_get dns <<<"${cert_info}")" '["canary-host-7q.home.arpa"]'
-logged_fp="$(docker logs "${main}" 2>&1 | grep -o 'SHA-256 fingerprint: [0-9A-F:]*' | tail -1 | cut -d' ' -f3)"
+expect_equal "chain is server plus CA" "$(json_get chain_length <<<"${cert_info}")" "2"
+expect_equal "chain ends with the CA" "$(json_get chain_ends_with_ca <<<"${cert_info}")" "true"
+expect_equal "server certificate is not a CA" "$(json_get server_ca <<<"${cert_info}")" "false"
+expect_equal "server certificate has EKU serverAuth" "$(json_get server_auth <<<"${cert_info}")" "true"
+expect_equal "server certificate is valid for exactly 825 days" "$(json_get server_days <<<"${cert_info}")" "825.0"
+expect_equal "server certificate has an empty subject" "$(json_get server_subject_empty <<<"${cert_info}")" "true"
+expect_equal "SAN is critical (RFC 5280, empty subject)" "$(json_get san_critical <<<"${cert_info}")" "true"
+expect_equal "server certificate uses ECDSA P-256" "$(json_str curve <<<"${cert_info}")" "secp256r1"
+expect_equal "server certificate is issued by the CA" "$(json_get issued_by_ca <<<"${cert_info}")" "true"
+expect_equal "SAN contains the configured IPs" "$(json_get ips <<<"${cert_info}")" '["10.77.31.50", "127.0.0.1"]'
+expect_equal "SAN contains the configured hostname" "$(json_get dns <<<"${cert_info}")" '["canary-host-7q.home.arpa"]'
+expect_equal "CA is a CA" "$(json_get ca_ca <<<"${cert_info}")" "true"
+expect_equal "CA has pathLenConstraint 0" "$(json_get ca_path_length <<<"${cert_info}")" "0"
+expect_equal "CA is valid for 10 years" "$(json_get ca_days <<<"${cert_info}")" "3650.0"
+expect_equal "CA may sign certificates" "$(json_get ca_key_cert_sign <<<"${cert_info}")" "true"
+expect_equal "CA name constraints are critical" "$(json_get name_constraints_critical <<<"${cert_info}")" "true"
+expect_equal "CA allows only the own addresses" "$(json_get permitted <<<"${cert_info}")" \
+  '["10.77.31.50/32", "127.0.0.1/32", "canary-host-7q.home.arpa"]'
+logs="$(docker logs "${main}" 2>&1)"
+logged_fp="$(grep -o 'TLS server certificate (ca) SHA-256 fingerprint: [0-9A-F:]*' <<<"${logs}" | tail -1 | awk '{print $NF}')"
 first_fp="$(served_fingerprint)"
-expect_equal "fingerprint in the log matches the served certificate" "${logged_fp}" "${first_fp}"
+expect_equal "server fingerprint in the log matches the served certificate" "${logged_fp}" "${first_fp}"
+ca_fp="$(python3 -c 'import hashlib,ssl,sys; print(hashlib.sha256(ssl.PEM_cert_to_DER_cert(open(sys.argv[1]).read())).digest().hex(":").upper())' "${CERT}")"
+expect_contains "CA fingerprint is in the log" "${logs}" "TLS CA SHA-256 fingerprint: ${ca_fp}"
 health="starting"
 for _ in $(seq 1 30); do
   health="$(docker inspect -f '{{.State.Health.Status}}' "${main}")"
@@ -218,6 +237,11 @@ expect_equal "/data/web is 0770 root:10001" "$(perm_group /data/web)" "770 0:100
 expect_equal "web database is 0600 web user" "$(perm_group /data/web/web.sqlite)" "600 10001:10001"
 expect_equal "/run/twinraid-tls is 0750 root:10001" "$(perm_group /run/twinraid-tls)" "750 0:10001"
 expect_equal "TLS key copy is 0640 root:10001" "$(perm_group /run/twinraid-tls/key.pem)" "640 0:10001"
+expect_equal "CA key is 0600 root" "$(perm /data/tls/ca-key.pem)" "600 0"
+ca_key_scan='import pathlib
+key=pathlib.Path("/data/tls/ca-key.pem").read_bytes()
+print(any(key in p.read_bytes() for p in pathlib.Path("/run/twinraid-tls").iterdir()))'
+expect_equal "web process gets no copy of the CA key" "$(docker exec "${main}" "${PY}" -c "${ca_key_scan}")" "False"
 expect_equal "socket dir is 0750 root:10001" "$(perm_group /run/twinraid)" "750 0:10001"
 expect_equal "socket is 0660 root:10001" "$(perm_group /run/twinraid/worker.sock)" "660 0:10001"
 for dir in /srv/worker /data/secrets /data/tls; do
@@ -305,6 +329,24 @@ expect_equal "status with session" "$(status_of -b "${JAR}" "${BASE}/api/status"
 expect_contains "API delivers config values after login" "$(https_get -b "${JAR}" "${BASE}/api/info")" \
   "$(json_str source_name <<<"${content}")"
 expect_contains "audit log lists the login" "$(https_get -b "${JAR}" "${BASE}/api/audit")" '"action":"login","result":"success"'
+expect_contains "status carries reasons and the job flag" "$(https_get -b "${JAR}" "${BASE}/api/status")" '"job_running":false'
+ca_download="${WORKDIR}/twinraid-ca.crt"
+expect_equal "CA certificate download" \
+  "$(curl -s -o "${ca_download}" -w '%{http_code} %{content_type}' --cacert "${CERT}" -b "${JAR}" "${BASE}/api/tls/ca-certificate")" \
+  "200 application/octet-stream"
+expect_equal "downloaded CA is the served CA (DER)" \
+  "$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).digest().hex(":").upper())' "${ca_download}")" "${ca_fp}"
+events="$(curl -s -N --max-time 4 --cacert "${CERT}" -b "${JAR}" "${BASE}/api/events" || true)"
+expect_contains "live stream delivers the status" "${events}" "event: status"
+expect_contains "simulated copy job can be switched on" "$(docker exec "${main}" twinraid-admin mock-job on 2>&1)" "now running"
+job_seen=""
+for _ in $(seq 1 10); do
+  job_seen="$(https_get -b "${JAR}" "${BASE}/api/status")"
+  [[ "${job_seen}" == *'"job_running":true'* ]] && break
+  sleep 1
+done
+expect_contains "status reports the running copy job" "${job_seen}" '"job_running":true'
+docker exec "${main}" twinraid-admin mock-job off >/dev/null
 expect_equal "logout without CSRF token is rejected" \
   "$(status_of -b "${JAR}" -H "${ORIGIN}" -X POST "${BASE}/api/auth/logout")" "403"
 expect_equal "logout with CSRF token" \
@@ -349,18 +391,28 @@ docker restart "${main}" >/dev/null
 if wait_for_https "${main}"; then pass "container restarts"; else fail "container did not restart"; fi
 expect_equal "certificate stays the same after restart" "$(served_fingerprint)" "${first_fp}"
 expect_equal "password survives the restart" "$(login_status "${PASSWORD}")" "200"
+wait_for_fingerprint() {
+  local wanted="$1" served=""
+  for _ in $(seq 1 20); do
+    served="$(served_fingerprint 2>/dev/null || true)"
+    [[ "${served}" == "${wanted}" ]] && break
+    sleep 1
+  done
+  echo "${served}"
+}
+server_fp_of() { grep -A1 '^Server certificate' <<<"$1" | grep -o 'SHA-256 fingerprint: [0-9A-F:]*' | awk '{print $NF}'; }
 renew="$(docker exec "${main}" twinraid-admin renew-cert 2>&1)"
-new_fp="$(grep -o 'SHA-256 fingerprint: [0-9A-F:]*' <<<"${renew}" | cut -d' ' -f3)"
-served="${first_fp}"
-for _ in $(seq 1 20); do
-  served="$(served_fingerprint 2>/dev/null || true)"
-  [[ "${served}" == "${new_fp}" ]] && break
-  sleep 1
-done
-expect_equal "renew-cert serves the new certificate" "${served}" "${new_fp}"
-if [[ "${new_fp}" != "${first_fp}" ]]; then pass "renew-cert changed the fingerprint"; else fail "fingerprint unchanged"; fi
-docker exec "${main}" cat /run/twinraid-tls/cert.pem >"${CERT}"
-expect_equal "HTTPS works with the renewed certificate" "$(https_get "${BASE}/health")" "ok"
+new_fp="$(server_fp_of "${renew}")"
+expect_equal "renew-cert serves the new server certificate" "$(wait_for_fingerprint "${new_fp}")" "${new_fp}"
+if [[ -n "${new_fp}" && "${new_fp}" != "${first_fp}" ]]; then pass "renew-cert changed the server fingerprint"; else fail "server fingerprint unchanged"; fi
+expect_equal "devices with the CA need no change after renew-cert" "$(https_get "${BASE}/health")" "ok"
+renew_ca="$(docker exec "${main}" twinraid-admin renew-cert --new-ca 2>&1)"
+expect_contains "renew-cert --new-ca asks to reinstall the CA" "${renew_ca}" "Install the new CA certificate on all devices"
+newest_fp="$(server_fp_of "${renew_ca}")"
+wait_for_fingerprint "${newest_fp}" >/dev/null
+expect_equal "the old CA no longer verifies after --new-ca" "$(curl -s --max-time 5 --cacert "${CERT}" "${BASE}/health" || echo rejected)" "rejected"
+docker exec "${main}" cat /run/twinraid-tls/ca.pem >"${CERT}"
+expect_equal "HTTPS works with the new CA" "$(https_get "${BASE}/health")" "ok"
 
 # --- 13. Sauberes Stoppen ------------------------------------------------------------------------
 started=$(date +%s)
@@ -372,6 +424,38 @@ if [[ "${code}" == "0" && "${duration}" -lt 10 ]]; then
 else
   fail "stop took ${duration}s, exit ${code}"
 fi
+
+# --- 13a. Rechte zurückgesetzt und nach Anleitung repariert (docs/EINRICHTUNG.md, Abschnitt 12) ---
+# Wie Unraid "New Permissions": alles nobody:users, Verzeichnisse 0777, Dateien 0666.
+on_data() {
+  docker run --rm --network none --entrypoint sh \
+    --mount "type=volume,src=${main}-data,dst=/data" "${IMAGE}" -c "$1"
+}
+on_data 'chown -R 99:100 /data && chmod -R u-x,go-rwx,go+u,ugo+X /data'
+docker start "${main}" >/dev/null
+if wait_for_exit "${main}" && [[ "$(exit_code "${main}")" != "0" ]] \
+  && [[ "$(docker logs --since 1m "${main}" 2>&1)" == *"/data is owned by uid 99, expected uid 0 (root)"* ]]; then
+  pass "reset permissions (New Permissions) stop the start"
+else
+  fail "start was not refused after New Permissions"
+fi
+# Genau die Befehle aus der Anleitung, mit /data statt des Host-Pfads. $D wird
+# absichtlich erst im Hilfscontainer ausgewertet.
+# shellcheck disable=SC2016
+on_data 'D=/data; chown -R root:root "$D"; chmod 755 "$D"; chown 10001:10001 "$D"/web/web.sqlite*'
+docker start "${main}" >/dev/null
+if wait_for_https "${main}"; then
+  pass "container starts again after the documented repair"
+  repaired_logs="$(docker logs --since 1m "${main}" 2>&1)"
+  expect_contains "start log reports the corrected modes" "${repaired_logs}" "Data directory: set mode 0700 on /data/secrets"
+  expect_equal "password survives the repair" "$(login_status "${PASSWORD}")" "200"
+  expect_equal "/data/web is 0770 root:10001 again" "$(perm_group /data/web)" "770 0:10001"
+  expect_equal "password file is 0600 root again" "$(perm /data/secrets/password.argon2)" "600 0"
+else
+  fail "container did not start after the documented repair"
+  docker logs "${main}" 2>&1 | tail -20
+fi
+docker stop -t 10 "${main}" >/dev/null
 
 # --- 14. Netzfilter: fremdes Netz bekommt 403 --------------------------------------------------
 foreign_config="${WORKDIR}/foreign.yaml"
@@ -393,31 +477,145 @@ bad_config="${WORKDIR}/bad.yaml"
 sed 's/- medien/- system/' "${CONFIG}" >"${bad_config}"
 chmod 0644 "${bad_config}"
 
+# Prüft, dass der Container aus genau dem erwarteten Grund nicht startet.
+# $1 = Bezeichnung, $2 = erwartete Logzeile (Prozess und Meldung), $3 = Konfiguration,
+# Rest = docker-run-Argumente. DATA_OWNER/DATA_MODE: /data vorher auf einem eigenen
+# Volume auf diesen Besitzer bzw. diese Rechte setzen (siehe prepare_data_volume).
 refuse() {
   local label="$1" expected="$2" config="$3"
   shift 3
-  local name="${PREFIX}-refuse-$((RANDOM))"
-  start "${name}" "" "${config}" "$@"
-  if wait_for_exit "${name}" && [[ "$(exit_code "${name}")" != "0" ]] \
-    && docker logs "${name}" 2>&1 | grep -q "${expected}"; then
+  local name="${PREFIX}-refuse-$((RANDOM))" logs code problems=()
+  if [[ -n "${DATA_OWNER:-}" ]]; then
+    prepare_data_volume "${name}-data" "${DATA_OWNER}" "${DATA_MODE}"
+    DATA_MOUNT_OPTS=",volume-nocopy" start "${name}" "" "${config}" "$@"
+  else
+    start "${name}" "" "${config}" "$@"
+  fi
+  wait_for_exit "${name}" || problems+=("still running after 30 s")
+  code="$(exit_code "${name}")"
+  # Das Log erst vollständig einlesen und dann durchsuchen. Mit pipefail scheitert
+  # "docker logs | grep -q" sonst zufällig: grep hört nach dem Treffer auf zu lesen,
+  # docker logs schreibt jede Zeile einzeln weiter und endet mit SIGPIPE (Status 141).
+  logs="$(docker logs "${name}" 2>&1)"
+  [[ "${code}" != "0" ]] || problems+=("exit code 0")
+  [[ "${logs}" == *"${expected}"* ]] || problems+=("expected log line missing: ${expected}")
+  [[ "${logs}" != *"worker listening"* ]] || problems+=("the worker started")
+  [[ "${logs}" != *"Uvicorn running"* ]] || problems+=("the web process started")
+  if [[ ${#problems[@]} -eq 0 ]]; then
     pass "refuses to start: ${label}"
   else
-    fail "did not refuse: ${label}"
-    docker logs "${name}" 2>&1 | tail -10
+    fail "did not refuse as expected: ${label} (exit code ${code}): $(printf '%s; ' "${problems[@]}")"
+    printf '%s\n' "${logs}" | sed 's/^/      | /'
   fi
   docker rm -f "${name}" >/dev/null
 }
-refuse "TWINRAID_MODE missing" "TWINRAID_MODE is not set" "${CONFIG}"
-refuse "TWINRAID_MODE invalid" "invalid value" "${CONFIG}" -e TWINRAID_MODE=produktion
-refuse "TWINRAID_MODE=real (not yet supported)" "not available in this version" "${CONFIG}" -e TWINRAID_MODE=real
-refuse "forbidden share in config" "must never be synced" "${bad_config}" -e TWINRAID_MODE=mock
-# Startfehler des Workers: Container hält an, statt den Dienst endlos neu zu starten.
-refuse "worker startup error (web UID 0)" "must not be 0" "${CONFIG}" -e TWINRAID_MODE=mock -e TWINRAID_WEB_UID=0
-# /data für alle beschreibbar: unsicher, Start wird mit Reparaturhinweis verweigert.
-NO_VOLUME=1 refuse "/data writable by others" "chown root:root" "${CONFIG}" -e TWINRAID_MODE=mock \
-  --tmpfs /data:rw,mode=1777
 
-# --- 16. Optional: Jede Capability ist nötig ------------------------------------------------------
+# Legt ein Volume für /data mit Besitzer und Rechten an, wie sie auf dem Host stehen
+# könnten. Ein Hilfscontainer setzt sie von innen; so ist das Ergebnis mit Docker
+# mit Root-Rechten (Unraid, CI) und rootless gleich. Ein Bind-Mount eines Host-Ordners
+# wäre das nicht: Rootless erscheint der eigene Host-Benutzer im Container als root.
+# volume-nocopy ist nötig: Docker füllt ein leeres Volume sonst bei jedem Einhängen
+# mit /data aus dem Image und setzt dabei Besitzer und Rechte auf root:root 0755
+# zurück. (Bind-Mounts wie auf Unraid kennen das nicht.)
+prepare_data_volume() {
+  local volume="$1" owner="$2" mode="$3"
+  local mount="type=volume,src=${volume},dst=/data,volume-nocopy"
+  docker run --rm --network none --entrypoint chown --mount "${mount}" "${IMAGE}" "${owner}" /data
+  docker run --rm --network none --entrypoint chmod --mount "${mount}" "${IMAGE}" "${mode}" /data
+  local actual
+  actual="$(docker run --rm --network none --entrypoint stat --mount "${mount}" "${IMAGE}" -c '%u:%g %a' /data)"
+  if [[ "${actual}" != "${owner} ${mode#0}" ]]; then
+    fail "could not prepare /data as ${owner} ${mode} (got ${actual})"
+  fi
+}
+
+unreadable_config="${WORKDIR}/unreadable.yaml"
+cp "${CONFIG}" "${unreadable_config}"
+chmod 0600 "${unreadable_config}"
+
+refuse "TWINRAID_MODE missing" "[preflight] twinraid.preflight: TWINRAID_MODE is not set" "${CONFIG}"
+refuse "TWINRAID_MODE invalid" "[preflight] twinraid.preflight: TWINRAID_MODE has the invalid value 'produktion'" \
+  "${CONFIG}" -e TWINRAID_MODE=produktion
+refuse "forbidden share in config" "share 'system' must never be synced" "${bad_config}" -e TWINRAID_MODE=mock
+# Die Startprüfung läuft als Web-Benutzer: Die Konfiguration muss für alle lesbar sein.
+refuse "config not readable for the web user" "file is not readable (permission denied)" \
+  "${unreadable_config}" -e TWINRAID_MODE=mock
+# Startfehler des Workers: Container hält an, statt den Dienst endlos neu zu starten.
+refuse "worker startup error (web UID 0)" "[worker] twinraid.worker: TWINRAID_WEB_UID must not be 0 (root)" \
+  "${CONFIG}" -e TWINRAID_MODE=mock -e TWINRAID_WEB_UID=0
+# /data unsicher: Start wird mit Reparaturhinweis verweigert (Konzept 5.9).
+repair="On the Unraid host run: chown root:root <data dir> && chmod 755 <data dir>"
+NO_VOLUME=1 refuse "/data on tmpfs writable by others" \
+  "[init] twinraid.init: /data is writable by group or others (mode 1777); only root may write there. ${repair}" \
+  "${CONFIG}" -e TWINRAID_MODE=mock --tmpfs /data:rw,mode=1777
+# Wie ein Unraid-Share-Ordner mit Standardrechten: nobody:users (99:100), 0777.
+DATA_OWNER=99:100 DATA_MODE=0777 refuse "/data owned by nobody:users like an Unraid share" \
+  "[init] twinraid.init: /data is owned by uid 99, expected uid 0 (root). ${repair}" \
+  "${CONFIG}" -e TWINRAID_MODE=mock
+# Besitzer korrigiert, Rechte vergessen.
+DATA_OWNER=0:0 DATA_MODE=0777 refuse "/data owned by root but writable by others" \
+  "[init] twinraid.init: /data is writable by group or others (mode 0777); only root may write there. ${repair}" \
+  "${CONFIG}" -e TWINRAID_MODE=mock
+DATA_OWNER=0:0 DATA_MODE=0775 refuse "/data owned by root but writable by its group" \
+  "[init] twinraid.init: /data is writable by group or others (mode 0775)" \
+  "${CONFIG}" -e TWINRAID_MODE=mock
+
+# --- 16. Modus real nur lesend (Konzept 6.4) ----------------------------------------------------
+# Server-Adressen aus TEST-NET-1 (RFC 5737): Sie werden nie geroutet, es wird also
+# kein echter Server angesprochen. Groß per http, damit der Hinweis erscheint.
+real_config="${WORKDIR}/real.yaml"
+python3 - "${CANARY_CONFIG}" "${real_config}" <<'PY'
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+text = text.replace("10.77.31.41", "192.0.2.41").replace("10.77.31.42", "192.0.2.42")
+text = text.replace("      scheme: https\n      port: 4443\n", "      scheme: http\n")
+open(sys.argv[2], "w", encoding="utf-8").write(text)
+PY
+chmod 0644 "${real_config}"
+real="${PREFIX}-real"
+start "${real}" "" "${real_config}" -e TWINRAID_MODE=real -p "127.0.0.1:$((PORT + 2)):8443"
+REAL_BASE="https://127.0.0.1:$((PORT + 2))"
+if wait_for_https "${real}" "$((PORT + 2))"; then
+  pass "container starts with TWINRAID_MODE=real"
+  real_logs="$(docker logs "${real}" 2>&1)"
+  expect_contains "real mode is announced as read-only" "${real_logs}" "Read-only real mode"
+  expect_contains "start log warns about the unencrypted API connection" "${real_logs}" "is unencrypted"
+  expect_not_contains "real mode shows no simulation banner" "${real_logs}" "SIMULATION MODE"
+  docker exec -i "${real}" twinraid-admin set-password --stdin <<<"${PASSWORD}" >/dev/null
+  real_key="SmokeTestKey_0123456789"
+  key_out="$(docker exec -i "${real}" twinraid-admin set-api-key target --stdin <<<"${real_key}" 2>&1 || true)"
+  expect_contains "set-api-key stores the key" "${key_out}" "saved"
+  expect_contains "set-api-key explains an unreachable target" "${key_out}" "is not reachable"
+  real_jar="${WORKDIR}/real-cookies.txt"
+  real_cert="${WORKDIR}/real-ca.pem"
+  docker exec "${real}" cat /run/twinraid-tls/ca.pem >"${real_cert}"
+  curl -s -o /dev/null -c "${real_jar}" --cacert "${real_cert}" -H "Origin: ${REAL_BASE}" -H "${JSON}" \
+    -d "{\"password\": \"${PASSWORD}\"}" "${REAL_BASE}/api/auth/login"
+  real_status=""
+  for _ in $(seq 1 20); do
+    real_status="$(curl -s --cacert "${real_cert}" -b "${real_jar}" "${REAL_BASE}/api/status")"
+    [[ "${real_status}" == *'"target_offline"'* ]] && break
+    sleep 1
+  done
+  expect_contains "unreachable target is reported as offline" "${real_status}" '"target":{"state":"offline","reason":"unreachable"}'
+  expect_contains "VM is off because the target is offline" "${real_status}" '"vm":{"state":"offline","reason":"target_offline"}'
+  expect_contains "info reports read-only mode" \
+    "$(curl -s --cacert "${real_cert}" -b "${real_jar}" "${REAL_BASE}/api/info")" '"read_only":true'
+  for command in wake_target shutdown_target vm_start vm_stop vm_force_stop sync_start; do
+    action='import socket,sys;s=socket.socket(socket.AF_UNIX);s.connect("/run/twinraid/worker.sock");s.sendall(("{\"command\":\""+sys.argv[1]+"\"}\n").encode());print(s.recv(300).decode())'
+    expect_contains "real mode locks ${command}" \
+      "$(docker exec -u 10001:10001 "${real}" "${PY}" -c "${action}" "${command}" 2>&1)" '"error":"not_available"'
+  done
+  expect_contains "mock-job is refused in real mode" "$(docker exec "${real}" twinraid-admin mock-job on 2>&1 || true)" "only works in simulation mode"
+  expect_not_contains "the API key never appears in the log" "$(docker logs "${real}" 2>&1)" "${real_key}"
+else
+  fail "container did not start with TWINRAID_MODE=real"
+  docker logs "${real}" 2>&1 | tail -20
+fi
+docker rm -f "${real}" >/dev/null
+
+# --- 17. Optional: Jede Capability ist nötig ------------------------------------------------------
 if [[ "${CHECK_EACH_CAP:-0}" == "1" ]]; then
   for cap in SETUID SETGID SETPCAP; do
     name="${PREFIX}-no-${cap,,}"

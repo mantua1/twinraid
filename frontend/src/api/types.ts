@@ -3,13 +3,38 @@
 export const RESOURCE_STATES = ["online", "offline", "starting", "stopping", "unknown"] as const;
 export type ResourceState = (typeof RESOURCE_STATES)[number];
 
+// Feste Liste von Ursachen (Konzept 3.5 und 4.1).
+export const STATUS_REASONS = [
+  "unreachable",
+  "target_offline",
+  "api_unreachable",
+  "api_redirected",
+  "api_key_missing",
+  "api_key_invalid",
+  "api_forbidden",
+  "api_cert_untrusted",
+  "api_cert_changed",
+  "api_error",
+  "vm_not_found",
+  "vm_paused",
+  "vm_suspended",
+  "vm_crashed",
+] as const;
+export type StatusReason = (typeof STATUS_REASONS)[number];
+
 export type RunMode = "mock" | "real";
 
+export interface ResourceInfo {
+  state: ResourceState;
+  reason: StatusReason | null;
+}
+
 export interface StatusSnapshot {
-  source: ResourceState;
-  target: ResourceState;
-  vm: ResourceState;
+  source: ResourceInfo;
+  target: ResourceInfo;
+  vm: ResourceInfo;
   checked_at: string | null;
+  job_running: boolean;
   password_set: boolean;
 }
 
@@ -22,6 +47,8 @@ export interface AppInfo {
     target: string;
     vm: string;
   };
+  read_only: boolean;
+  target_connection_encrypted: boolean;
 }
 
 export interface AuthState {
@@ -45,6 +72,8 @@ export const AUDIT_ACTIONS = [
   "cli_set_password",
   "cli_renew_cert",
   "cli_unlock",
+  "cli_set_api_key",
+  "cli_trust_api_cert",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -67,12 +96,23 @@ export interface AuditEntry {
   result: string;
 }
 
-export interface TlsInfo {
-  source: "self-signed" | "custom";
+export interface CertificateDetails {
   fingerprint_sha256: string;
   not_after: string;
   days_left: number;
   expires_soon: boolean;
+}
+
+export interface CaDetails extends CertificateDetails {
+  name: string;
+  fingerprint_sha1: string;
+}
+
+export interface TlsInfo {
+  source: "ca" | "custom";
+  server: CertificateDetails;
+  ca: CaDetails | null;
+  renewal_failed: boolean;
 }
 
 export const LOGIN_ERRORS = [

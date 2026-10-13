@@ -49,6 +49,13 @@ RUN mkdir /s6root \
 # --- Stufe 4: Laufzeit-Image -------------------------------------------------
 FROM python:3.14-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 
+# Feste Angaben; Version und Commit setzt die CI beim Bauen (Konzept 5.8).
+# source verknüpft das Paket auf ghcr.io mit dem Repository.
+LABEL org.opencontainers.image.title="TwinRaid" \
+      org.opencontainers.image.description="Web UI to control two Unraid servers: wake-on-LAN, status, gaming VM and mirror sync." \
+      org.opencontainers.image.source="https://github.com/mantua1/twinraid" \
+      org.opencontainers.image.licenses="MIT"
+
 COPY --from=s6 /s6root/ /
 
 # Web-Benutzer und Verzeichnisse (Konzept 3.2 und 5.4):

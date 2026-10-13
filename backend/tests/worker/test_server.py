@@ -12,11 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.support.passwords import TEST_PASSWORD, password_check
-from twinraid.integrations.mocks.status import MockStatusProvider
+from tests.support.passwords import TEST_PASSWORD
+from tests.support.worker import make_handler
 from twinraid.shared.ipc import MAX_REQUEST_BYTES, ErrorCode, ErrorResponse, OkResponse, Response
 from twinraid.shared.ipc import decode_response as decode
-from twinraid.worker.handler import CommandHandler
+from twinraid.shared.mode import RunMode
 from twinraid.worker.server import SocketPathError, WorkerServer, prepare_socket_path
 
 pytestmark = pytest.mark.anyio
@@ -34,11 +34,13 @@ def socket_dir() -> Iterator[Path]:
         shutil.rmtree(base)
 
 
-async def _start(path: Path, allowed_uid: int, read_timeout: float = 2.0) -> WorkerServer:
+async def _start(
+    path: Path, allowed_uid: int, read_timeout: float = 2.0, mode: RunMode = RunMode.MOCK
+) -> WorkerServer:
     server = WorkerServer(
         path,
         allowed_uid,
-        CommandHandler(MockStatusProvider(), password_check(path.parent.parent)),
+        make_handler(path.parent.parent, mode),
         read_timeout=read_timeout,
     )
     await server.start()
@@ -74,14 +76,16 @@ async def _error_code(path: Path, payload: bytes) -> ErrorCode:
     return response.error
 
 
-async def test_get_status_returns_unknown(server: WorkerServer) -> None:
+async def test_get_status_before_the_first_check(server: WorkerServer) -> None:
     response = await _raw(server.path, b'{"command":"get_status"}\n')
     assert isinstance(response, OkResponse)
+    unknown = {"state": "unknown", "reason": None}
     assert response.result == {
-        "source": "unknown",
-        "target": "unknown",
-        "vm": "unknown",
+        "source": unknown,
+        "target": unknown,
+        "vm": unknown,
         "checked_at": None,
+        "job_running": False,
         "password_set": True,
     }
 
@@ -113,21 +117,36 @@ async def test_verify_password_rejects_invalid_requests(
     assert await _error_code(server.path, payload) is ErrorCode.INVALID_REQUEST
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        b'{"command":"wake_target"}\n',
-        b'{"command":"shutdown_target"}\n',
-        b'{"command":"vm_start"}\n',
-        b'{"command":"vm_stop"}\n',
-        b'{"command":"vm_force_stop"}\n',
-        b'{"command":"sync_start"}\n',
-        f'{{"command":"sync_cancel","job_id":"{JOB_ID}"}}\n'.encode(),
-        f'{{"command":"sync_confirm_deletions","job_id":"{JOB_ID}"}}\n'.encode(),
-    ],
-)
+ACTION_PAYLOADS = [
+    b'{"command":"wake_target"}\n',
+    b'{"command":"shutdown_target"}\n',
+    b'{"command":"vm_start"}\n',
+    b'{"command":"vm_stop"}\n',
+    b'{"command":"vm_force_stop"}\n',
+    b'{"command":"sync_start"}\n',
+    f'{{"command":"sync_cancel","job_id":"{JOB_ID}"}}\n'.encode(),
+    f'{{"command":"sync_confirm_deletions","job_id":"{JOB_ID}"}}\n'.encode(),
+]
+
+
+@pytest.mark.parametrize("payload", ACTION_PAYLOADS)
 async def test_other_commands_are_not_implemented_yet(server: WorkerServer, payload: bytes) -> None:
     assert await _error_code(server.path, payload) is ErrorCode.NOT_IMPLEMENTED
+
+
+async def test_real_mode_locks_every_action(socket_dir: Path) -> None:
+    """Konzept 6.4: Im Modus real nur lesen; jede Aktion antwortet „noch nicht verfügbar“."""
+    worker = await _start(socket_dir / "worker.sock", os.getuid(), mode=RunMode.REAL)
+    try:
+        for payload in ACTION_PAYLOADS:
+            assert await _error_code(worker.path, payload) is ErrorCode.NOT_AVAILABLE, payload
+        status = await _raw(worker.path, b'{"command":"get_status"}\n')
+        assert isinstance(status, OkResponse)
+        login = json.dumps({"command": "verify_password", "password": TEST_PASSWORD})
+        verified = await _raw(worker.path, login.encode() + b"\n")
+        assert isinstance(verified, OkResponse)
+    finally:
+        await worker.close()
 
 
 @pytest.mark.parametrize(

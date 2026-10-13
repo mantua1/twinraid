@@ -1,4 +1,11 @@
 #!/command/with-contenv sh
+# Vor jedem Start ein fälliges Serverzertifikat erneuern (Konzept 5.2), als root
+# mit denselben Rechten wie twinraid-init. Der Web-Prozess beendet sich dafür
+# selbst, höchstens einmal in 24 Stunden. Scheitert die Erneuerung, startet er
+# mit dem bisherigen Zertifikat; das Dashboard zeigt eine Warnung.
+setpriv --reuid=0 --regid=10001 --clear-groups \
+    --inh-caps=-all --bounding-set=-all,+dac_read_search --no-new-privs \
+    -- /app/.venv/bin/twinraid-init --refresh-tls || true
 # Web-Prozess: UID und GID 10001, keine Capabilities (Konzept 3.2 und 5.4).
 exec setpriv --reuid=10001 --regid=10001 --clear-groups \
     --inh-caps=-all --bounding-set=-all --no-new-privs \

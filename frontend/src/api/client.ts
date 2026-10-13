@@ -6,11 +6,12 @@ import {
   type AuthState,
   type LoginErrorCode,
   type SessionInfo,
-  type StatusSnapshot,
   type TlsInfo,
 } from "./types";
 
-export const CERTIFICATE_URL = "/api/tls/certificate";
+export const CA_CERTIFICATE_URL = "/api/tls/ca-certificate";
+// Live-Datenstrom (SSE); der Browser sendet das Session-Cookie automatisch mit.
+export const EVENTS_URL = "/api/events";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -119,7 +120,6 @@ export const api = {
   logout,
   session,
   info: (signal?: AbortSignal) => getJson<AppInfo>("/api/info", signal),
-  status: (signal?: AbortSignal) => getJson<StatusSnapshot>("/api/status", signal),
   audit: async (signal?: AbortSignal) =>
     (await getJson<{ entries: AuditEntry[] }>("/api/audit", signal)).entries,
   tls: (signal?: AbortSignal) => getJson<TlsInfo>("/api/tls", signal),

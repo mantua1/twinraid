@@ -10,7 +10,8 @@
   "errors": {
     "connection": "Keine Verbindung zum TwinRaid-Server.",
     "status": "Der Status ist gerade nicht verfügbar.",
-    "sessionExpired": "Die Sitzung ist abgelaufen. Bitte erneut anmelden."
+    "sessionExpired": "Die Sitzung ist abgelaufen. Bitte erneut anmelden.",
+    "liveConnection": "Die Live-Verbindung ist unterbrochen. TwinRaid verbindet sich neu …"
   },
   "language": {
     "label": "Sprache",
@@ -32,11 +33,28 @@
     "offline": "Offline",
     "starting": "Startet …",
     "stopping": "Fährt herunter …",
-    "unknown": "Unbekannt"
+    "unknown": "Unbekannt",
+    "reasons": {
+      "unreachable": "Nicht erreichbar",
+      "target_offline": "Server offline",
+      "api_unreachable": "API nicht erreichbar",
+      "api_redirected": "Unraid leitet auf HTTPS um – in twinraid.yaml webgui.scheme auf https stellen",
+      "api_key_missing": "Kein API-Key gesetzt (twinraid-admin set-api-key target)",
+      "api_key_invalid": "API-Key ungültig",
+      "api_forbidden": "API-Key hat keine Leserechte für VMs",
+      "api_cert_untrusted": "Zertifikat von Unraid noch nicht bestätigt (twinraid-admin trust-api-cert target)",
+      "api_cert_changed": "Zertifikat geändert – neuen Fingerabdruck prüfen und mit twinraid-admin trust-api-cert target bestätigen",
+      "api_error": "Unerwartete Antwort der Unraid-API",
+      "vm_not_found": "VM nicht gefunden",
+      "vm_paused": "Pausiert",
+      "vm_suspended": "Im Ruhezustand",
+      "vm_crashed": "Abgestürzt"
+    }
   },
   "dashboard": {
     "title": "Übersicht",
-    "loading": "Wird geladen …"
+    "loading": "Wird geladen …",
+    "checkedAt": "Zuletzt geprüft: {{time}}"
   },
   "tiles": {
     "source": {
@@ -54,7 +72,8 @@
     "sync": {
       "title": "Sync",
       "description": "Spiegelung vom Quell- zum Zielserver.",
-      "empty": "Noch kein Sync-Lauf."
+      "empty": "Noch kein Sync-Lauf.",
+      "running": "Ein Kopierjob läuft."
     },
     "history": {
       "title": "Verlauf",
@@ -93,23 +112,39 @@
     "back": "Zurück zur Übersicht",
     "certificate": {
       "title": "TLS-Zertifikat",
-      "description": "Mit diesem Zertifikat ist die Verbindung verschlüsselt. Wird es auf einem Gerät als vertrauenswürdig installiert, erscheint dort keine Warnung mehr.",
+      "description": "Die Verbindung ist mit einem Zertifikat der eigenen TwinRaid-CA verschlüsselt. Wird das CA-Zertifikat einmal auf einem Gerät installiert, erscheint dort keine Warnung mehr.",
       "source": "Herkunft",
       "sources": {
-        "self-signed": "Selbstsigniert",
+        "ca": "TwinRaid-CA",
         "custom": "Eigenes Zertifikat"
       },
       "fingerprint": "SHA-256-Fingerabdruck",
-      "compare": "Der Fingerabdruck muss mit der Anzeige im Browser und im Container-Log übereinstimmen.",
+      "compare": "Muss mit der Anzeige im Browser und im Container-Log übereinstimmen.",
       "validUntil": "Gültig bis",
       "daysLeft_one": "noch {{count}} Tag",
       "daysLeft_other": "noch {{count}} Tage",
-      "download": "Zertifikat herunterladen",
-      "unavailable": "Die Zertifikatsdaten sind gerade nicht verfügbar."
+      "unavailable": "Die Zertifikatsdaten sind gerade nicht verfügbar.",
+      "ca": {
+        "title": "CA-Zertifikat",
+        "install": "Einmal auf jedem Gerät als vertrauenswürdige Zertifizierungsstelle installieren. Die Anleitung für Windows, Linux und Android steht in docs/EINRICHTUNG.md.",
+        "name": "Name",
+        "sha1": "SHA-1-Fingerabdruck",
+        "sha1Hint": "Windows zeigt bei der Installation nur diesen Wert an.",
+        "download": "CA-Zertifikat herunterladen"
+      },
+      "server": {
+        "title": "Serverzertifikat",
+        "renewal": "Wird 60 Tage vor Ablauf automatisch erneuert. Die Geräte merken davon nichts."
+      },
+      "customHint": "Aktiv ist ein eigenes Zertifikat aus /config/tls. Es gibt deshalb kein CA-Zertifikat zum Herunterladen."
+    },
+    "connection": {
+      "title": "Verbindung zu {{name}}",
+      "description": "So spricht TwinRaid die Unraid-API an (webgui in twinraid.yaml).",
+      "encrypted": "Verschlüsselt per HTTPS, Zertifikat über den bestätigten Fingerabdruck geprüft.",
+      "unencrypted": "Verbindung zu {{name}} unverschlüsselt, API-Key wird im Klartext übertragen."
     }
   },
-  "certificateWarning_one": "Das TLS-Zertifikat läuft in {{count}} Tag ab. Danach wird automatisch ein neues erzeugt, das auf den Geräten neu bestätigt werden muss.",
-  "certificateWarning_other": "Das TLS-Zertifikat läuft in {{count}} Tagen ab. Danach wird automatisch ein neues erzeugt, das auf den Geräten neu bestätigt werden muss.",
   "audit": {
     "actions": {
       "login": "Anmeldung",
@@ -119,7 +154,9 @@
       "origin_check": "Herkunftsprüfung",
       "cli_set_password": "Passwort gesetzt (CLI)",
       "cli_renew_cert": "Zertifikat erneuert (CLI)",
-      "cli_unlock": "Sperren aufgehoben (CLI)"
+      "cli_unlock": "Sperren aufgehoben (CLI)",
+      "cli_set_api_key": "API-Key gesetzt (CLI)",
+      "cli_trust_api_cert": "Unraid-Zertifikat bestätigt (CLI)"
     },
     "results": {
       "success": "erfolgreich",
@@ -134,5 +171,16 @@
     "unknown": "unbekannt",
     "from": "von {{ip}}",
     "local": "im Container"
+  },
+  "readOnlyBanner": {
+    "title": "Nur Statusanzeige",
+    "description": "In dieser Version werden die Server nur abgefragt. Aktionen wie Wecken, VM starten oder Sync sind noch nicht verfügbar."
+  },
+  "certificate": {
+    "renewalFailed": "Die automatische Erneuerung des TLS-Serverzertifikats ist fehlgeschlagen. Bitte das Container-Log prüfen.",
+    "serverExpires_one": "Das TLS-Serverzertifikat läuft in {{count}} Tag ab. Bitte das Container-Log prüfen.",
+    "serverExpires_other": "Das TLS-Serverzertifikat läuft in {{count}} Tagen ab. Bitte das Container-Log prüfen.",
+    "caExpires_one": "Die TwinRaid-CA läuft in {{count}} Tag ab. Mit twinraid-admin renew-cert --new-ca eine neue erzeugen und auf allen Geräten installieren.",
+    "caExpires_other": "Die TwinRaid-CA läuft in {{count}} Tagen ab. Mit twinraid-admin renew-cert --new-ca eine neue erzeugen und auf allen Geräten installieren."
   }
 }

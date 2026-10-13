@@ -30,6 +30,8 @@ class AuditAction(StrEnum):
     CLI_SET_PASSWORD = "cli_set_password"  # noqa: S105 - Aktionsname, kein Passwort
     CLI_RENEW_CERT = "cli_renew_cert"
     CLI_UNLOCK = "cli_unlock"
+    CLI_SET_API_KEY = "cli_set_api_key"
+    CLI_TRUST_API_CERT = "cli_trust_api_cert"
 
 
 class AuditResult(StrEnum):

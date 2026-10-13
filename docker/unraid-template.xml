@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<!--
+  Unraid-Template für TwinRaid (erste Fassung, Konzept 5.4 und 6.1).
+  Installation: siehe docs/EINRICHTUNG.md. Die Datei kommt nach
+  /boot/config/plugins/dockerMan/templates-user/my-TwinRaid.xml auf Unraid Klein.
+-->
+<Container version="2">
+  <Name>TwinRaid</Name>
+  <Repository>ghcr.io/mantua1/twinraid:latest</Repository>
+  <Registry>https://github.com/mantua1/twinraid/pkgs/container/twinraid</Registry>
+  <Network>br0</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/mantua1/twinraid/issues</Support>
+  <Project>https://github.com/mantua1/twinraid</Project>
+  <Overview>Steuert zwei Unraid-Server über eine Weboberfläche: Wake-on-LAN, Status, Gaming-VM und Spiegel-Backup. Läuft auf dem stromsparenden Server mit eigener IP im Netzwerk br0. Diese Version zeigt nur den Status an; Aktionen folgen. Einrichtung: docs/EINRICHTUNG.md im Repository.</Overview>
+  <Category>Tools: Network:Management</Category>
+  <WebUI>https://[IP]:[PORT:8443]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/mantua1/twinraid/main/docker/unraid-template.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/mantua1/twinraid/main/frontend/public/favicon.svg</Icon>
+  <ExtraParams>--read-only --tmpfs /run:rw,exec,nosuid,nodev,mode=0755,size=16m --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=SETPCAP --cap-add=KILL --cap-add=DAC_READ_SEARCH --security-opt=no-new-privileges</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <Requires>Eigene feste IP-Adresse im Netzwerk br0. In den Docker-Einstellungen von Unraid muss „Host access to custom networks“ aktiviert sein. Vor dem ersten Start die Konfiguration anlegen (docs/EINRICHTUNG.md).</Requires>
+  <Config Name="Betriebsmodus" Target="TWINRAID_MODE" Default="mock|real" Mode="" Description="mock: Simulation ohne echte Server (zum Ausprobieren). real: echter Status der Server, Aktionen sind in dieser Version gesperrt." Type="Variable" Display="always" Required="true" Mask="false">mock</Config>
+  <Config Name="Konfiguration" Target="/config" Default="/mnt/user/appdata/twinraid/config" Mode="ro" Description="Ordner mit twinraid.yaml (nur lesend eingebunden), optional tls/ für ein eigenes Zertifikat." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/twinraid/config</Config>
+  <Config Name="Daten" Target="/data" Default="/mnt/user/appdata/twinraid/data" Mode="rw" Description="Datenbank, Secrets und Zertifikate. Der Ordner muss root gehören und darf nur für root beschreibbar sein (chown root:root, chmod 755)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/twinraid/data</Config>
+  <Config Name="WebUI-Port" Target="8443" Default="8443" Mode="tcp" Description="Muss zu web.port in twinraid.yaml passen. Mit eigener IP auf br0 ist keine Portweiterleitung nötig." Type="Port" Display="advanced" Required="false" Mask="false">8443</Config>
+</Container>
