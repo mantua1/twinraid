@@ -2,7 +2,7 @@
 
 Weboberfläche in einem einzigen Docker-Container, die zwei Unraid-Server steuert: Wake-on-LAN, Statusanzeige, Gaming-VM und Spiegel-Backup per rsync.
 
-> **Stand: Phase 1 (Grundgerüst).** Es gibt noch keinen Login und keine echten Serverzugriffe. Diese Version nur lokal im Simulationsmodus verwenden.
+> **Stand: Phase 2 (Sicherheit).** HTTPS, Login, Sessions, CSRF-Schutz, Netzfilter, Rate-Limit und Audit-Log sind umgesetzt. Echte Server werden noch nicht angesprochen; diese Version läuft nur im Simulationsmodus.
 
 Das verbindliche Konzept steht in [docs/KONZEPT.md](docs/KONZEPT.md).
 
@@ -40,15 +40,24 @@ cd frontend && npm run build
 cd ../backend && ./scripts/dev.sh
 ```
 
-Danach im Browser: <http://127.0.0.1:8443>. Für Änderungen am Frontend mit sofortiger Vorschau zusätzlich in einem zweiten Terminal `cd frontend && npm run dev` starten und <http://127.0.0.1:5173> öffnen.
+Beim ersten Start erzeugt TwinRaid ein selbstsigniertes Zertifikat unter `.run/tls` und schreibt den Fingerabdruck ins Log. Das Passwort setzt du in einem zweiten Terminal:
+
+```bash
+cd backend && ./scripts/dev-admin.sh set-password
+```
+
+Danach im Browser: <https://127.0.0.1:8443>. Die Zertifikatswarnung des Browsers einmal bestätigen, nachdem du den Fingerabdruck mit dem Log verglichen hast. Für Änderungen am Frontend mit sofortiger Vorschau zusätzlich `cd frontend && npm run dev` starten und <https://127.0.0.1:5173> öffnen.
 
 ### Container lokal
 
 ```bash
-docker/run-local.sh                    # bauen und starten, http://127.0.0.1:8443
+docker/run-local.sh                    # bauen und starten, https://127.0.0.1:8443
+docker exec -it twinraid-dev twinraid-admin set-password   # zweites Terminal
 docker/smoke-test.sh                   # Starttest mit allen Sicherheitsprüfungen
 CHECK_EACH_CAP=1 docker/smoke-test.sh  # zusätzlich: jede Capability ist nötig
 ```
+
+Weitere Befehle der Admin-CLI im Container: `twinraid-admin show-cert-fingerprint`, `twinraid-admin renew-cert` und `twinraid-admin unlock` (hebt Login-Sperren auf).
 
 ## Lizenz
 
