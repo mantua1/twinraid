@@ -1,65 +1,67 @@
 import { useEffect, useState } from "react";
 
 import { api, UnauthorizedError } from "@/api/client";
-import type { AppInfo, AuditEntry, StatusSnapshot, TlsInfo } from "@/api/types";
+import type { AppInfo, AuditEntry, TlsInfo } from "@/api/types";
+import { useStatusStream, type StatusStream } from "@/hooks/useStatusStream";
 
 export interface DashboardData {
   info: AppInfo | null;
-  status: StatusSnapshot | null;
+  stream: StatusStream;
   audit: AuditEntry[];
   tls: TlsInfo | null;
   loading: boolean;
   infoFailed: boolean;
-  statusFailed: boolean;
 }
 
-const INITIAL: DashboardData = {
+interface StaticData {
+  info: AppInfo | null;
+  audit: AuditEntry[];
+  tls: TlsInfo | null;
+  loading: boolean;
+  infoFailed: boolean;
+}
+
+const INITIAL: StaticData = {
   info: null,
-  status: null,
   audit: [],
   tls: null,
   loading: true,
   infoFailed: false,
-  statusFailed: false,
 };
 
-/** Lädt die Daten nach dem Login einmalig. Live-Updates per SSE folgen in Phase 3. */
+/** Lädt die Daten nach dem Login einmalig; der Status kommt live per SSE. */
 export function useDashboardData(onUnauthorized: () => void): DashboardData {
-  const [data, setData] = useState<DashboardData>(INITIAL);
+  const [data, setData] = useState<StaticData>(INITIAL);
+  const stream = useStatusStream(onUnauthorized);
 
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
 
-    void Promise.allSettled([
-      api.info(signal),
-      api.status(signal),
-      api.audit(signal),
-      api.tls(signal),
-    ]).then(([info, status, audit, tls]) => {
-      if (signal.aborted) {
-        return;
-      }
-      const results = [info, status, audit, tls];
-      if (results.some((r) => r.status === "rejected" && r.reason instanceof UnauthorizedError)) {
-        onUnauthorized();
-        return;
-      }
-      setData({
-        info: info.status === "fulfilled" ? info.value : null,
-        status: status.status === "fulfilled" ? status.value : null,
-        audit: audit.status === "fulfilled" ? audit.value : [],
-        tls: tls.status === "fulfilled" ? tls.value : null,
-        loading: false,
-        infoFailed: info.status === "rejected",
-        statusFailed: status.status === "rejected",
-      });
-    });
+    void Promise.allSettled([api.info(signal), api.audit(signal), api.tls(signal)]).then(
+      ([info, audit, tls]) => {
+        if (signal.aborted) {
+          return;
+        }
+        const results = [info, audit, tls];
+        if (results.some((r) => r.status === "rejected" && r.reason instanceof UnauthorizedError)) {
+          onUnauthorized();
+          return;
+        }
+        setData({
+          info: info.status === "fulfilled" ? info.value : null,
+          audit: audit.status === "fulfilled" ? audit.value : [],
+          tls: tls.status === "fulfilled" ? tls.value : null,
+          loading: false,
+          infoFailed: info.status === "rejected",
+        });
+      },
+    );
 
     return () => {
       controller.abort();
     };
   }, [onUnauthorized]);
 
-  return data;
+  return { ...data, stream };
 }

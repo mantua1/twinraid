@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { AUDIT_ACTIONS, AUDIT_RESULTS, LOGIN_ERRORS, RESOURCE_STATES } from "@/api/types";
+import {
+  AUDIT_ACTIONS,
+  AUDIT_RESULTS,
+  LOGIN_ERRORS,
+  RESOURCE_STATES,
+  STATUS_REASONS,
+} from "@/api/types";
 
 import de from "./de.json";
 import { browserLanguage } from "./index";
@@ -50,9 +56,12 @@ describe("translations", () => {
     }
   });
 
-  it("cover every status value", () => {
+  it("cover every status value and reason", () => {
     for (const state of RESOURCE_STATES) {
       expect(german.has(`status.${state}`), state).toBe(true);
+    }
+    for (const reason of STATUS_REASONS) {
+      expect(german.has(`status.reasons.${reason}`), reason).toBe(true);
     }
   });
 });

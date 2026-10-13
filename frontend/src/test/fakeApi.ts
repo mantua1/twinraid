@@ -7,27 +7,88 @@ export const PASSWORD = "richtiges-passwort";
 export const CSRF = "csrf-token-123";
 
 export const INFO: AppInfo = {
-  version: "0.1.0",
+  version: "0.3.0",
   mode: "mock",
   default_language: "de",
   names: { source: "Unraid Klein", target: "Unraid Groß", vm: "Gaming-VM" },
+  read_only: false,
+  target_connection_encrypted: false,
 };
 
 export const STATUS: StatusSnapshot = {
-  source: "unknown",
-  target: "unknown",
-  vm: "unknown",
-  checked_at: null,
+  source: { state: "online", reason: null },
+  target: { state: "offline", reason: "unreachable" },
+  vm: { state: "offline", reason: "target_offline" },
+  checked_at: "2026-10-13T12:00:05Z",
+  job_running: false,
   password_set: true,
 };
 
 export const TLS: TlsInfo = {
-  source: "self-signed",
-  fingerprint_sha256: "AB:CD:EF:01",
-  not_after: "2029-01-15T12:00:00Z",
-  days_left: 824,
-  expires_soon: false,
+  source: "ca",
+  server: {
+    fingerprint_sha256: "AB:CD:EF:01",
+    not_after: "2029-01-15T12:00:00Z",
+    days_left: 824,
+    expires_soon: false,
+  },
+  ca: {
+    name: "TwinRaid CA 2026-10-13",
+    fingerprint_sha256: "CA:FE:00:01",
+    fingerprint_sha1: "CA:FE:5A:01",
+    not_after: "2036-10-10T12:00:00Z",
+    days_left: 3649,
+    expires_soon: false,
+  },
+  renewal_failed: false,
 };
+
+/** Simulierter Live-Datenstrom; Tests senden Ereignisse mit emit(). */
+export class FakeEventSource {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 2;
+  static instances: FakeEventSource[] = [];
+
+  readonly url: string;
+  readyState = FakeEventSource.CONNECTING;
+  onerror: ((event: Event) => void) | null = null;
+  private readonly listeners = new Map<string, ((event: MessageEvent<string>) => void)[]>();
+
+  constructor(url: string) {
+    this.url = url;
+    FakeEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: (event: MessageEvent<string>) => void): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+
+  emit(type: string, data: unknown): void {
+    this.readyState = FakeEventSource.OPEN;
+    const event = new MessageEvent<string>(type, { data: JSON.stringify(data) });
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener(event);
+    }
+  }
+
+  fail(closed: boolean): void {
+    this.readyState = closed ? FakeEventSource.CLOSED : FakeEventSource.CONNECTING;
+    this.onerror?.(new Event("error"));
+  }
+
+  close(): void {
+    this.readyState = FakeEventSource.CLOSED;
+  }
+}
+
+export function latestStream(): FakeEventSource {
+  const stream = FakeEventSource.instances.at(-1);
+  if (stream === undefined) {
+    throw new Error("no event stream was opened");
+  }
+  return stream;
+}
 
 export const AUDIT: AuditEntry[] = [
   { at: "2026-10-13T12:00:00Z", client_ip: "192.168.20.5", action: "login", result: "success" },
@@ -43,6 +104,8 @@ export interface FakeServer {
   // Antwort auf einen fehlgeschlagenen Login: Statuscode und Inhalt.
   loginFailure: { status: number; body: Record<string, unknown> };
   failAuthState: boolean;
+  // Status, den der Live-Datenstrom direkt nach dem Verbinden sendet; null: keiner.
+  status: StatusSnapshot | null;
   calls: { url: string; method: string; headers: Headers }[];
 }
 
@@ -66,9 +129,27 @@ export function installFakeApi(overrides: Partial<FakeServer> = {}): FakeServer 
     tls: TLS,
     loginFailure: { status: 401, body: { detail: "invalid_password" } },
     failAuthState: false,
+    status: STATUS,
     calls: [],
     ...overrides,
   };
+
+  FakeEventSource.instances = [];
+  class ConnectedEventSource extends FakeEventSource {
+    constructor(url: string) {
+      super(url);
+      server.calls.push({ url, method: "EVENTSOURCE", headers: new Headers() });
+      // Wie der Browser: asynchron verbinden; ohne Session antwortet der Server mit 401.
+      queueMicrotask(() => {
+        if (!server.authenticated) {
+          this.fail(true);
+        } else if (server.status !== null) {
+          this.emit("status", server.status);
+        }
+      });
+    }
+  }
+  vi.stubGlobal("EventSource", ConnectedEventSource);
 
   const protectedRoutes: Record<string, () => unknown> = {
     "/api/auth/session": () => ({
@@ -77,7 +158,6 @@ export function installFakeApi(overrides: Partial<FakeServer> = {}): FakeServer 
       idle_timeout_seconds: 1800,
     }),
     "/api/info": () => server.info,
-    "/api/status": () => STATUS,
     "/api/audit": () => ({ entries: AUDIT }),
     "/api/tls": () => server.tls,
   };

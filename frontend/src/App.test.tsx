@@ -2,8 +2,11 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
+import { act } from "react";
+
+import type { AppInfo } from "@/api/types";
 import { chooseLanguage } from "@/i18n";
-import { CSRF, installFakeApi, PASSWORD } from "@/test/fakeApi";
+import { CSRF, installFakeApi, latestStream, PASSWORD, STATUS, TLS } from "@/test/fakeApi";
 
 import { App } from "./App";
 
@@ -62,7 +65,7 @@ describe("login", () => {
     await signIn();
     expect(await screen.findByText("Unraid Klein")).toBeInTheDocument();
     expect(screen.getByText("Unraid Groß")).toBeInTheDocument();
-    expect(screen.getAllByText("Unbekannt")).toHaveLength(3);
+    expect(await screen.findByText("Server offline")).toBeInTheDocument();
     expect(screen.getByTestId("mock-banner")).toBeInTheDocument();
   });
 
@@ -71,6 +74,7 @@ describe("login", () => {
     render(<App />);
     await signIn();
     await screen.findByText("Unraid Klein");
+    await screen.findByText("Server offline");
     for (const call of server.calls) {
       expect(call.url).toMatch(/^\/api\//);
     }
@@ -134,20 +138,37 @@ describe("dashboard", () => {
     expect(tile.getByText(/im Container/)).toBeInTheDocument();
   });
 
-  it("warns before the certificate expires", async () => {
+  it("warns before the server certificate expires", async () => {
     installFakeApi({
       authenticated: true,
-      tls: {
-        source: "self-signed",
-        fingerprint_sha256: "AA",
-        not_after: "2026-11-01T00:00:00Z",
-        days_left: 19,
-        expires_soon: true,
-      },
+      tls: { ...TLS, server: { ...TLS.server, days_left: 19, expires_soon: true } },
     });
     render(<App />);
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Das TLS-Zertifikat läuft in 19 Tagen ab.",
+      "Das TLS-Serverzertifikat läuft in 19 Tagen ab.",
+    );
+  });
+
+  it("warns when the automatic renewal failed", async () => {
+    installFakeApi({ authenticated: true, tls: { ...TLS, renewal_failed: true } });
+    render(<App />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "automatische Erneuerung des TLS-Serverzertifikats ist fehlgeschlagen",
+    );
+  });
+
+  it("warns before the CA expires", async () => {
+    const ca = TLS.ca;
+    if (ca === null) {
+      throw new Error("test data needs a CA");
+    }
+    installFakeApi({
+      authenticated: true,
+      tls: { ...TLS, ca: { ...ca, days_left: 80, expires_soon: true } },
+    });
+    render(<App />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Die TwinRaid-CA läuft in 80 Tagen ab.",
     );
   });
 
@@ -165,27 +186,163 @@ describe("dashboard", () => {
   });
 });
 
+describe("live status", () => {
+  it("shows states and reasons from the event stream", async () => {
+    installFakeApi({ authenticated: true });
+    render(<App />);
+    expect(await screen.findByText("Server offline")).toBeInTheDocument();
+    expect(screen.getByText("Nicht erreichbar")).toBeInTheDocument();
+    expect(screen.getByText("Online")).toBeInTheDocument();
+    expect(screen.getByTestId("checked-at")).toHaveTextContent("Zuletzt geprüft:");
+    expect(latestStream().url).toBe("/api/events");
+  });
+
+  it("updates live and distinguishes API problems", async () => {
+    installFakeApi({ authenticated: true });
+    render(<App />);
+    await screen.findByText("Server offline");
+    act(() => {
+      latestStream().emit("status", {
+        ...STATUS,
+        target: { state: "online", reason: null },
+        vm: { state: "unknown", reason: "api_key_invalid" },
+      });
+    });
+    expect(await screen.findByText("API-Key ungültig")).toBeInTheDocument();
+    act(() => {
+      latestStream().emit("status", {
+        ...STATUS,
+        target: { state: "online", reason: null },
+        vm: { state: "unknown", reason: "api_cert_changed" },
+      });
+    });
+    expect(await screen.findByText(/Zertifikat geändert/)).toBeInTheDocument();
+  });
+
+  it("shows a running copy job", async () => {
+    installFakeApi({ authenticated: true, status: { ...STATUS, job_running: true } });
+    render(<App />);
+    expect(await screen.findByText("Ein Kopierjob läuft.")).toBeInTheDocument();
+  });
+
+  it("reports an unavailable worker", async () => {
+    installFakeApi({ authenticated: true, status: null });
+    render(<App />);
+    await screen.findByText("Unraid Klein");
+    act(() => {
+      latestStream().emit("worker_unavailable", {});
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Der Status ist gerade nicht verfügbar.",
+    );
+  });
+
+  it("returns to login when the stream reports the end of the session", async () => {
+    const server = installFakeApi({ authenticated: true });
+    render(<App />);
+    await screen.findByText("Server offline");
+    server.authenticated = false;
+    act(() => {
+      latestStream().emit("session_ended", {});
+    });
+    expect(await screen.findByRole("heading", { name: "Anmelden" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Die Sitzung ist abgelaufen.");
+    expect(latestStream().readyState).toBe(2);
+  });
+
+  it("returns to login when the stream is rejected", async () => {
+    const server = installFakeApi({ authenticated: true });
+    render(<App />);
+    await screen.findByText("Server offline");
+    server.authenticated = false;
+    act(() => {
+      latestStream().fail(true);
+    });
+    expect(await screen.findByRole("heading", { name: "Anmelden" })).toBeInTheDocument();
+  });
+
+  it("shows a hint while the browser reconnects", async () => {
+    installFakeApi({ authenticated: true });
+    render(<App />);
+    await screen.findByText("Server offline");
+    act(() => {
+      latestStream().fail(false);
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Live-Verbindung ist unterbrochen");
+  });
+
+  it("shows the read-only banner in real mode", async () => {
+    installFakeApi({
+      authenticated: true,
+      mode: "real",
+      info: { ...INFO_EN, default_language: "de", mode: "real", read_only: true },
+    });
+    render(<App />);
+    expect(await screen.findByTestId("read-only-banner")).toHaveTextContent("Nur Statusanzeige");
+    expect(screen.queryByTestId("mock-banner")).not.toBeInTheDocument();
+  });
+});
+
 describe("settings", () => {
-  it("shows the certificate and offers the download", async () => {
+  it("offers the CA certificate with both fingerprints", async () => {
     installFakeApi({ authenticated: true });
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("Unraid Klein");
     await user.click(screen.getByRole("button", { name: "Einstellungen" }));
-    expect(await screen.findByTestId("fingerprint")).toHaveTextContent("AB:CD:EF:01");
-    expect(screen.getByText("Selbstsigniert")).toBeInTheDocument();
+    expect(await screen.findByTestId("ca-fingerprint")).toHaveTextContent("CA:FE:00:01");
+    expect(screen.getByTestId("ca-fingerprint-sha1")).toHaveTextContent("CA:FE:5A:01");
+    expect(screen.getByTestId("server-fingerprint")).toHaveTextContent("AB:CD:EF:01");
+    expect(screen.getByText("TwinRaid CA 2026-10-13")).toBeInTheDocument();
     expect(screen.getByText(/noch 824 Tage/)).toBeInTheDocument();
-    const link = screen.getByRole("link", { name: "Zertifikat herunterladen" });
-    expect(link).toHaveAttribute("href", "/api/tls/certificate");
-    expect(link).toHaveAttribute("download", "twinraid.crt");
+    expect(screen.getByText(/automatisch erneuert/)).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "CA-Zertifikat herunterladen" });
+    expect(link).toHaveAttribute("href", "/api/tls/ca-certificate");
+    expect(link).toHaveAttribute("download", "twinraid-ca.crt");
     await user.click(screen.getByRole("button", { name: "Zurück zur Übersicht" }));
     expect(await screen.findByText("Unraid Klein")).toBeInTheDocument();
   });
+
+  it("explains that a custom certificate has no CA download", async () => {
+    installFakeApi({ authenticated: true, tls: { ...TLS, source: "custom", ca: null } });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("Unraid Klein");
+    await user.click(screen.getByRole("button", { name: "Einstellungen" }));
+    expect(await screen.findByText(/eigenes Zertifikat aus \/config\/tls/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "CA-Zertifikat herunterladen" })).toBeNull();
+  });
+
+  it("warns that the connection to the target is unencrypted", async () => {
+    installFakeApi({ authenticated: true });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("Unraid Klein");
+    await user.click(screen.getByRole("button", { name: "Einstellungen" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Verbindung zu Unraid Groß unverschlüsselt, API-Key wird im Klartext übertragen.",
+    );
+  });
+
+  it("confirms an encrypted connection", async () => {
+    installFakeApi({
+      authenticated: true,
+      info: { ...INFO_EN, default_language: "de", target_connection_encrypted: true },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("Unraid Klein");
+    await user.click(screen.getByRole("button", { name: "Einstellungen" }));
+    expect(await screen.findByTestId("connection-encrypted")).toHaveTextContent("HTTPS");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });
 
-const INFO_EN = {
-  version: "0.1.0",
-  mode: "mock" as const,
-  default_language: "en" as const,
+const INFO_EN: AppInfo = {
+  version: "0.3.0",
+  mode: "mock",
+  default_language: "en",
   names: { source: "Unraid Klein", target: "Unraid Groß", vm: "Gaming-VM" },
+  read_only: false,
+  target_connection_encrypted: false,
 };
