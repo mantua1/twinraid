@@ -74,13 +74,31 @@ TwinRaid bekommt eine eigene IP. Ohne diese Einstellung kann der Container seine
 
 Im **Unraid-Terminal von Unraid Klein**:
 
-**3.1 Ordner anlegen.** Der Datenordner muss root gehören und darf nur für root beschreibbar sein. Sonst startet TwinRaid aus Sicherheitsgründen nicht.
+**3.1 Ordner anlegen.** Der Datenordner enthält das Passwort, die Schlüssel der CA und später den API-Key. Er muss **root gehören** und darf **nur für root beschreibbar** sein. Sonst startet TwinRaid aus Sicherheitsgründen nicht.
+
+> **Den Ordner nicht über den Unraid-Dateimanager, eine Netzwerkfreigabe (SMB) oder den Windows-Explorer anlegen.** So angelegte Ordner gehören `nobody:users` und sind für alle beschreibbar (`0777`). TwinRaid verweigert dann den Start mit der Meldung `/data is owned by uid 99, expected uid 0 (root)`. Lege die Ordner deshalb mit den folgenden Befehlen im Terminal an.
 
 ```bash
 mkdir -p /mnt/user/appdata/twinraid/config /mnt/user/appdata/twinraid/data
 chown root:root /mnt/user/appdata/twinraid/data
 chmod 755 /mnt/user/appdata/twinraid/data
 ```
+
+**Kontrolle:**
+
+```bash
+ls -ld /mnt/user/appdata/twinraid/data
+```
+
+Die Zeile muss mit `drwxr-xr-x` beginnen und `root root` enthalten, zum Beispiel:
+
+```text
+drwxr-xr-x 1 root root 0 Oct 13 20:00 /mnt/user/appdata/twinraid/data
+```
+
+Steht dort `nobody users` oder beginnt die Zeile mit `drwxrwxrwx`, die beiden Befehle `chown` und `chmod` von oben wiederholen.
+
+> **Vorsicht mit „New Permissions“ und „Docker Safe New Perms“.** Das Unraid-Werkzeug *Tools → New Permissions* und *Docker Safe New Perms* aus dem Plugin *Fix Common Problems* setzen Besitzer und Rechte auf `nobody:users` und Schreibrechte für alle zurück. *New Permissions* tut das für alle gewählten Shares und Datenträger, auch für `appdata`. *Docker Safe New Perms* lässt `appdata` normalerweise aus, aber nur, solange es in seinen Einstellungen ausgenommen ist. Erwischt eines der Werkzeuge den Datenordner von TwinRaid, startet der Container danach nicht mehr. Wie du das reparierst, steht in Abschnitt 12 unter „Rechte des Datenordners zurückgesetzt“.
 
 > **Hinweis zu `appdata`:** TwinRaid speichert eine kleine SQLite-Datenbank. Am zuverlässigsten liegt `appdata` auf einem Pool (z. B. Cache) mit der Share-Einstellung *Exclusive access*. Bei den Unraid-Standardeinstellungen ist das meist schon so.
 
@@ -367,7 +385,32 @@ Der Befehl zeigt den Fingerabdruck, den Unraid Groß gerade ausliefert. Vergleic
 | **Live-Verbindung ist unterbrochen** | Verbindung zum Browser kurz weg (z. B. Neustart) | Verbindet sich von selbst neu |
 | **Automatische Erneuerung … fehlgeschlagen** | Neues Serverzertifikat konnte nicht erzeugt werden | Container-Log prüfen; `twinraid-admin renew-cert` |
 | Browser warnt trotz installierter CA | Falsche Datei installiert oder Adresse nicht in `web.tls` | Fingerabdruck vergleichen; Aufruf genau über die IP aus `web.tls.ip_addresses` |
-| Container startet nicht | Fehler in Konfiguration oder Rechten | Ende des Container-Logs lesen; dort steht der Grund und meist der Befehl zur Reparatur |
+| Container startet nicht | Fehler in Konfiguration oder Rechten | Ende des Container-Logs lesen; dort steht der Grund und meist der Befehl zur Reparatur. Bei `owned by uid 99` oder `writable by group or others`: unten „Rechte des Datenordners zurückgesetzt“ |
+| Unraid kann das Image nicht laden (`denied` oder `unauthorized`) | Das Paket auf ghcr.io ist noch privat | Nur direkt nach der ersten Veröffentlichung möglich: Paket öffentlich stellen (README, Abschnitt „Release veröffentlichen“) |
+
+### Rechte des Datenordners zurückgesetzt
+
+Nach *New Permissions* oder *Docker Safe New Perms*, oder wenn der Ordner über eine Freigabe angelegt wurde, meldet das Container-Log zum Beispiel:
+
+```text
+/data is owned by uid 99, expected uid 0 (root). On the Unraid host run: chown root:root …
+/data/secrets is owned by uid 99, expected uid 0. Remove it on the host or give it back to root (chown root).
+```
+
+So reparierst du es im **Unraid-Terminal von Klein**. Der Container darf dabei laufen oder gestoppt sein.
+
+```bash
+D=/mnt/user/appdata/twinraid/data
+chown -R root:root "$D"
+chmod 755 "$D"
+# Die Datenbank gehört dem Web-Prozess (Benutzer 10001); gibt es sie noch nicht, meldet der Befehl nur „No such file“.
+chown 10001:10001 "$D"/web/web.sqlite*
+ls -ld "$D"
+```
+
+Danach den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart**). Die übrigen Rechte stellt TwinRaid beim Start selbst richtig ein (`secrets` und `tls` nur für root, `web` für die Gruppe des Web-Prozesses, Dateien `0600`). Das Log nennt jede Korrektur mit `Data directory: …`.
+
+> **Waren die Dateien für alle lesbar?** Die Werkzeuge geben allen Benutzern Lesezugriff. Ist `appdata` als Netzwerkfreigabe für andere Personen erreichbar, sicherheitshalber neu erzeugen: eine neue CA mit `twinraid-admin renew-cert --new-ca` (danach auf den Geräten neu installieren), einen neuen API-Key auf Unraid Groß (Schritt 9) und ein neues Passwort mit `twinraid-admin set-password`.
 
 **Abgemeldet nach 10 Minuten:** Ohne Klick endet die Sitzung nach `session_idle_minutes` (Standard 10). Ein offenes Dashboard zählt nicht als Aktivität; nur während ein Kopierjob läuft, bleibt die Sitzung mit offenem Dashboard bestehen (ab Phase 5). Den Wert kannst du in `twinraid.yaml` erhöhen (höchstens 720).
 

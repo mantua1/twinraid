@@ -73,7 +73,13 @@ Images baut und veröffentlicht ausschließlich GitHub Actions (Workflow `CI`, J
 2. Nach dem Merge auf GitHub: *Releases → Draft a new release → Choose a tag*, neuen Tag wie `v0.3.0` eintragen, Ziel `main`, Titel und Beschreibung ausfüllen, *Publish release*.
 3. Der Workflow prüft, dass der Tag in `main` liegt und zur Version im Code passt, veröffentlicht `0.3.0`, `0.3` und `latest`, erzeugt den Herkunftsnachweis und prüft, dass das Image ohne Login abrufbar ist.
 
-**Beim allerersten Veröffentlichen** ist das Paket auf ghcr.io privat, und der letzte Schritt schlägt fehl. Einmalig öffentlich stellen: GitHub → Profilbild → *Your profile* → Reiter *Packages* → *twinraid* → *Package settings* → ganz unten *Danger Zone → Change visibility* → *Public* → Paketnamen zur Bestätigung eintippen. Danach im fehlgeschlagenen Workflow-Lauf *Re-run failed jobs* klicken.
+**Beim allerersten Veröffentlichen schlägt der Job *Publish image* im letzten Schritt fehl. Das ist erwartet.** Neue Pakete sind auf ghcr.io zunächst privat. Das Image ist dann schon hochgeladen und hat seinen Herkunftsnachweis, aber der Schritt *Image must be pullable without login* meldet „cannot be pulled without login“. Einmalig öffentlich stellen:
+
+1. GitHub → Profilbild oben rechts → **Your profile** → Reiter **Packages** → **twinraid**.
+2. Rechts **Package settings** → ganz unten im Bereich **Danger Zone** → **Change visibility** → **Public** → den Paketnamen `twinraid` zur Bestätigung eintippen → **I understand the consequences, change package visibility**.
+3. Reiter **Actions** → den fehlgeschlagenen Lauf öffnen → oben rechts **Re-run jobs** → **Re-run failed jobs**. Nur der Job *Publish image* läuft erneut; er lädt dasselbe Image noch einmal hoch (gleicher Digest) und meldet am Ende `ok: … is public`.
+
+Der Neustart klappt innerhalb von 24 Stunden. Danach ist das zwischengespeicherte Image-Artefakt abgelaufen; dann stattdessen **Re-run all jobs** wählen. Ab dem zweiten Veröffentlichen ist das Paket öffentlich, und der Job läuft durch.
 
 Herkunft prüfen: `gh attestation verify oci://ghcr.io/mantua1/twinraid:0.3.0 --owner mantua1`
 
