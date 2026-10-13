@@ -6,7 +6,7 @@ import tempfile
 from collections.abc import AsyncIterator
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 
 from tests.web.helpers import AllowAll, build_frontend, make_app
@@ -33,8 +33,8 @@ async def worker_socket() -> AsyncIterator[Path]:
 
 async def test_status_through_real_socket(worker_socket: Path, tmp_path: Path) -> None:
     app = make_app(build_frontend(tmp_path), AllowAll(), WorkerClient(worker_socket))
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    transport = httpx2.ASGITransport(app=app)
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/status")
     assert response.status_code == 200
     assert response.json()["vm"] == "unknown"
