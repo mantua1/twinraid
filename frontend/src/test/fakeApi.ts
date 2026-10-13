@@ -7,7 +7,7 @@ export const PASSWORD = "richtiges-passwort";
 export const CSRF = "csrf-token-123";
 
 export const INFO: AppInfo = {
-  version: "0.3.0",
+  version: "0.3.1",
   mode: "mock",
   default_language: "de",
   names: { source: "Unraid Klein", target: "Unraid Groß", vm: "Gaming-VM" },
@@ -41,6 +41,13 @@ export const TLS: TlsInfo = {
     expires_soon: false,
   },
   renewal_failed: false,
+  addresses: {
+    ip_addresses: ["192.168.10.20"],
+    hostnames: [],
+    origin: "detected",
+    interface: "eth0",
+  },
+  ca_change: null,
 };
 
 /** Simulierter Live-Datenstrom; Tests senden Ereignisse mit emit(). */
@@ -193,6 +200,13 @@ export function installFakeApi(overrides: Partial<FakeServer> = {}): FakeServer 
       }
       if (!server.authenticated) {
         return Promise.resolve(json({ detail: "not_authenticated" }, 401));
+      }
+      if (url === "/api/tls/ca-change/acknowledge" && method === "POST") {
+        if (headers.get("X-CSRF-Token") !== CSRF) {
+          return Promise.resolve(json({ detail: "csrf_rejected" }, 403));
+        }
+        server.tls = { ...server.tls, ca_change: null };
+        return Promise.resolve(json({ detail: "acknowledged" }));
       }
       if (url === "/api/auth/logout" && method === "POST") {
         if (headers.get("X-CSRF-Token") !== CSRF) {

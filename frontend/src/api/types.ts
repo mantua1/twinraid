@@ -74,6 +74,7 @@ export const AUDIT_ACTIONS = [
   "cli_unlock",
   "cli_set_api_key",
   "cli_trust_api_cert",
+  "ca_change_notice",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -86,6 +87,7 @@ export const AUDIT_RESULTS = [
   "busy",
   "expired",
   "rejected",
+  "acknowledged",
 ] as const;
 export type AuditResult = (typeof AUDIT_RESULTS)[number];
 
@@ -108,11 +110,35 @@ export interface CaDetails extends CertificateDetails {
   fingerprint_sha1: string;
 }
 
+export interface TlsAddressInfo {
+  ip_addresses: string[];
+  hostnames: string[];
+  origin: "detected" | "configured";
+  interface: string | null;
+}
+
+export const CA_CHANGE_REASONS = [
+  "addresses_changed",
+  "expired",
+  "requested",
+  "unusable",
+  "legacy_replaced",
+] as const;
+export type CaChangeReason = (typeof CA_CHANGE_REASONS)[number];
+
+export interface CaChangeInfo {
+  changed_at: string;
+  reason: CaChangeReason;
+}
+
 export interface TlsInfo {
   source: "ca" | "custom";
   server: CertificateDetails;
   ca: CaDetails | null;
   renewal_failed: boolean;
+  addresses: TlsAddressInfo;
+  // Gesetzt, bis der Hinweis zum CA-Wechsel bestätigt ist.
+  ca_change: CaChangeInfo | null;
 }
 
 export const LOGIN_ERRORS = [

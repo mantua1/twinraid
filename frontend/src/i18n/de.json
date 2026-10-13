@@ -136,7 +136,12 @@
         "title": "Serverzertifikat",
         "renewal": "Wird 60 Tage vor Ablauf automatisch erneuert. Die Geräte merken davon nichts."
       },
-      "customHint": "Aktiv ist ein eigenes Zertifikat aus /config/tls. Es gibt deshalb kein CA-Zertifikat zum Herunterladen."
+      "customHint": "Aktiv ist ein eigenes Zertifikat aus /config/tls. Es gibt deshalb kein CA-Zertifikat zum Herunterladen.",
+      "address": {
+        "label": "Adresse",
+        "detected": "automatisch erkannt (Schnittstelle {{interface}}, aus der festen IP im Unraid-Template)",
+        "configured": "aus twinraid.yaml (web.tls.ip_addresses)"
+      }
     },
     "connection": {
       "title": "Verbindung zu {{name}}",
@@ -156,7 +161,8 @@
       "cli_renew_cert": "Zertifikat erneuert (CLI)",
       "cli_unlock": "Sperren aufgehoben (CLI)",
       "cli_set_api_key": "API-Key gesetzt (CLI)",
-      "cli_trust_api_cert": "Unraid-Zertifikat bestätigt (CLI)"
+      "cli_trust_api_cert": "Unraid-Zertifikat bestätigt (CLI)",
+      "ca_change_notice": "Hinweis zum CA-Wechsel"
     },
     "results": {
       "success": "erfolgreich",
@@ -166,7 +172,8 @@
       "lockout_started": "Sperre begonnen",
       "busy": "zu viele Versuche",
       "expired": "abgelaufen",
-      "rejected": "abgewiesen"
+      "rejected": "abgewiesen",
+      "acknowledged": "bestätigt"
     },
     "unknown": "unbekannt",
     "from": "von {{ip}}",
@@ -182,5 +189,19 @@
     "serverExpires_other": "Das TLS-Serverzertifikat läuft in {{count}} Tagen ab. Bitte das Container-Log prüfen.",
     "caExpires_one": "Die TwinRaid-CA läuft in {{count}} Tag ab. Mit twinraid-admin renew-cert --new-ca eine neue erzeugen und auf allen Geräten installieren.",
     "caExpires_other": "Die TwinRaid-CA läuft in {{count}} Tagen ab. Mit twinraid-admin renew-cert --new-ca eine neue erzeugen und auf allen Geräten installieren."
+  },
+  "caChange": {
+    "title": "Neue TwinRaid-CA – auf allen Geräten neu installieren",
+    "when": "Die CA wurde am {{date}} neu erzeugt. Grund: {{reason}}.",
+    "action": "Lade unter Einstellungen das neue CA-Zertifikat herunter, installiere es auf jedem Gerät und entferne das alte. Bis dahin zeigen die Browser eine Warnung.",
+    "acknowledge": "Erledigt – Hinweis bestätigen",
+    "failed": "Die Bestätigung hat nicht geklappt. Bitte erneut versuchen.",
+    "reasons": {
+      "addresses_changed": "die Adresse von TwinRaid hat sich geändert (z. B. neue feste IP im Unraid-Template)",
+      "expired": "die alte CA war abgelaufen",
+      "requested": "mit twinraid-admin renew-cert --new-ca angefordert",
+      "unusable": "die gespeicherte CA war unbrauchbar",
+      "legacy_replaced": "das selbstsignierte Zertifikat einer älteren Version wurde ersetzt"
+    }
   }
 }

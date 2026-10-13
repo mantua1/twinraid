@@ -76,6 +76,17 @@ function CertificateCard({ tls }: { tls: TlsInfo | null }) {
           {t("settings.certificate.server.title")}
         </h2>
         <dl className="grid gap-3 text-sm sm:grid-cols-[max-content_1fr] sm:gap-x-6">
+          <dt className="font-medium">{t("settings.certificate.address.label")}</dt>
+          <dd data-testid="tls-address">
+            {[...tls.addresses.ip_addresses, ...tls.addresses.hostnames].join(", ")}
+            <p className="mt-1 text-muted-foreground">
+              {tls.addresses.origin === "detected"
+                ? t("settings.certificate.address.detected", {
+                    interface: tls.addresses.interface ?? "?",
+                  })
+                : t("settings.certificate.address.configured")}
+            </p>
+          </dd>
           <dt className="font-medium">{t("settings.certificate.source")}</dt>
           <dd>{t(`settings.certificate.sources.${tls.source}`)}</dd>
           <dt className="font-medium">{t("settings.certificate.validUntil")}</dt>

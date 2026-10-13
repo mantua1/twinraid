@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 
 import type { ResourceInfo } from "@/api/types";
+import { CaChangeNotice } from "@/components/CaChangeNotice";
 import { ErrorNotice } from "@/components/ErrorNotice";
 import { HistoryTile } from "@/components/HistoryTile";
 import { PlaceholderTile } from "@/components/PlaceholderTile";
@@ -30,6 +31,9 @@ export function Dashboard({ data }: { data: DashboardData }) {
           </p>
         )}
       </div>
+      {tls?.ca_change != null && (
+        <CaChangeNotice change={tls.ca_change} onAcknowledge={data.acknowledgeCaChange} />
+      )}
       {data.loading && <p className="text-sm text-muted-foreground">{t("dashboard.loading")}</p>}
       {data.infoFailed && <ErrorNotice message={t("errors.connection")} />}
       {!data.infoFailed && stream.state === "workerUnavailable" && (

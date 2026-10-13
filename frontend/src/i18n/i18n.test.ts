@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AUDIT_ACTIONS,
   AUDIT_RESULTS,
+  CA_CHANGE_REASONS,
   LOGIN_ERRORS,
   RESOURCE_STATES,
   STATUS_REASONS,
@@ -62,6 +63,9 @@ describe("translations", () => {
     }
     for (const reason of STATUS_REASONS) {
       expect(german.has(`status.reasons.${reason}`), reason).toBe(true);
+    }
+    for (const reason of CA_CHANGE_REASONS) {
+      expect(german.has(`caChange.reasons.${reason}`), reason).toBe(true);
     }
   });
 });

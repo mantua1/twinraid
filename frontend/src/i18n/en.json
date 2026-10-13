@@ -136,7 +136,12 @@
         "title": "Server certificate",
         "renewal": "Renewed automatically 60 days before it expires. Devices notice nothing."
       },
-      "customHint": "A custom certificate from /config/tls is active, so there is no CA certificate to download."
+      "customHint": "A custom certificate from /config/tls is active, so there is no CA certificate to download.",
+      "address": {
+        "label": "Address",
+        "detected": "detected automatically (interface {{interface}}, from the fixed IP in the Unraid template)",
+        "configured": "from twinraid.yaml (web.tls.ip_addresses)"
+      }
     },
     "connection": {
       "title": "Connection to {{name}}",
@@ -156,7 +161,8 @@
       "cli_renew_cert": "Certificate renewed (CLI)",
       "cli_unlock": "Locks cleared (CLI)",
       "cli_set_api_key": "API key set (CLI)",
-      "cli_trust_api_cert": "Unraid certificate confirmed (CLI)"
+      "cli_trust_api_cert": "Unraid certificate confirmed (CLI)",
+      "ca_change_notice": "CA change notice"
     },
     "results": {
       "success": "successful",
@@ -166,7 +172,8 @@
       "lockout_started": "lock started",
       "busy": "too many attempts",
       "expired": "expired",
-      "rejected": "rejected"
+      "rejected": "rejected",
+      "acknowledged": "acknowledged"
     },
     "unknown": "unknown",
     "from": "from {{ip}}",
@@ -182,5 +189,19 @@
     "serverExpires_other": "The TLS server certificate expires in {{count}} days. Please check the container log.",
     "caExpires_one": "The TwinRaid CA expires in {{count}} day. Create a new one with twinraid-admin renew-cert --new-ca and install it on all devices.",
     "caExpires_other": "The TwinRaid CA expires in {{count}} days. Create a new one with twinraid-admin renew-cert --new-ca and install it on all devices."
+  },
+  "caChange": {
+    "title": "New TwinRaid CA – install it again on all devices",
+    "when": "The CA was created again on {{date}}. Reason: {{reason}}.",
+    "action": "Download the new CA certificate in Settings, install it on every device and remove the old one. Until then browsers show a warning.",
+    "acknowledge": "Done – acknowledge",
+    "failed": "The acknowledgement failed. Please try again.",
+    "reasons": {
+      "addresses_changed": "the address of TwinRaid changed (e.g. a new fixed IP in the Unraid template)",
+      "expired": "the old CA had expired",
+      "requested": "requested with twinraid-admin renew-cert --new-ca",
+      "unusable": "the stored CA was unusable",
+      "legacy_replaced": "the self-signed certificate of an older version was replaced"
+    }
   }
 }

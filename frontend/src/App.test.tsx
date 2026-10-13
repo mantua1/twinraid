@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
@@ -283,7 +283,71 @@ describe("live status", () => {
   });
 });
 
+describe("CA change", () => {
+  it("shows the notice until it is acknowledged", async () => {
+    const server = installFakeApi({
+      authenticated: true,
+      tls: {
+        ...TLS,
+        ca_change: { changed_at: "2026-10-13T20:00:00Z", reason: "addresses_changed" },
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const notice = await screen.findByTestId("ca-change-notice");
+    expect(notice).toHaveTextContent("Neue TwinRaid-CA");
+    expect(notice).toHaveTextContent("die Adresse von TwinRaid hat sich geändert");
+    await user.click(within(notice).getByRole("button", { name: "Erledigt – Hinweis bestätigen" }));
+    await waitFor(() => {
+      expect(screen.queryByTestId("ca-change-notice")).not.toBeInTheDocument();
+    });
+    const call = server.calls.find((c) => c.url === "/api/tls/ca-change/acknowledge");
+    expect(call?.method).toBe("POST");
+    expect(call?.headers.get("X-CSRF-Token")).toBe(CSRF);
+  });
+
+  it("shows no notice without a CA change", async () => {
+    installFakeApi({ authenticated: true });
+    render(<App />);
+    await screen.findByText("Unraid Klein");
+    expect(screen.queryByTestId("ca-change-notice")).not.toBeInTheDocument();
+  });
+});
+
 describe("settings", () => {
+  it("shows the address and where it comes from", async () => {
+    installFakeApi({ authenticated: true });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("Unraid Klein");
+    await user.click(screen.getByRole("button", { name: "Einstellungen" }));
+    const address = await screen.findByTestId("tls-address");
+    expect(address).toHaveTextContent("192.168.10.20");
+    expect(address).toHaveTextContent("automatisch erkannt (Schnittstelle eth0");
+  });
+
+  it("marks a configured address", async () => {
+    installFakeApi({
+      authenticated: true,
+      tls: {
+        ...TLS,
+        addresses: {
+          ip_addresses: ["127.0.0.1"],
+          hostnames: ["localhost"],
+          origin: "configured",
+          interface: null,
+        },
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("Unraid Klein");
+    await user.click(screen.getByRole("button", { name: "Einstellungen" }));
+    const address = await screen.findByTestId("tls-address");
+    expect(address).toHaveTextContent("127.0.0.1, localhost");
+    expect(address).toHaveTextContent("aus twinraid.yaml");
+  });
+
   it("offers the CA certificate with both fingerprints", async () => {
     installFakeApi({ authenticated: true });
     const user = userEvent.setup();
@@ -339,7 +403,7 @@ describe("settings", () => {
 });
 
 const INFO_EN: AppInfo = {
-  version: "0.3.0",
+  version: "0.3.1",
   mode: "mock",
   default_language: "en",
   names: { source: "Unraid Klein", target: "Unraid Groß", vm: "Gaming-VM" },
