@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.types import PrivateKeyTypes
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from twinraid.config.models import TlsConfig
+from twinraid.shared.addresses import TlsAddresses
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.files import write_file_atomic
 
@@ -43,6 +43,10 @@ NO_DNS_NAMES = "invalid"
 
 FIRST_CA_REASON = "no CA exists yet"
 LEGACY_REASON = "the self-signed certificate of an earlier version was replaced"
+ADDRESSES_CHANGED_REASON = "the TLS addresses have changed"
+
+# Kurze Codes für den Grund eines CA-Wechsels (Hinweis im Dashboard, Konzept 5.2).
+CaChangeReason = Literal["addresses_changed", "expired", "requested", "unusable", "legacy_replaced"]
 
 CertificateSource = Literal["ca", "custom"]
 IpAddress = IPv4Address | IPv6Address
@@ -75,6 +79,44 @@ class CertificateInfo:
 
 
 @dataclass(frozen=True)
+class CaChange:
+    """Ersetzte CA: Zeitpunkt, Grund und Fingerabdruck der neuen CA."""
+
+    changed_at: datetime
+    reason: CaChangeReason
+    ca_fingerprint: str
+
+    def to_json(self) -> dict[str, str]:
+        return {
+            "changed_at": self.changed_at.isoformat(),
+            "reason": self.reason,
+            "ca_fingerprint": self.ca_fingerprint,
+        }
+
+    @classmethod
+    def from_json(cls, data: object) -> CaChange | None:
+        if not isinstance(data, dict):
+            return None
+        reason = data.get("reason")
+        reasons: tuple[CaChangeReason, ...] = (
+            "addresses_changed",
+            "expired",
+            "requested",
+            "unusable",
+            "legacy_replaced",
+        )
+        try:
+            changed_at = datetime.fromisoformat(str(data["changed_at"]))
+            fingerprint = str(data["ca_fingerprint"])
+        except KeyError, ValueError:
+            return None
+        for known in reasons:
+            if reason == known:
+                return cls(changed_at, known, fingerprint)
+        return None
+
+
+@dataclass(frozen=True)
 class ActiveCertificate:
     """Ergebnis der Einrichtung: was ausgeliefert wird und was neu erzeugt wurde."""
 
@@ -85,6 +127,9 @@ class ActiveCertificate:
     ca_generated_because: str | None
     server_generated_because: str | None
     legacy_removed: bool
+    addresses: TlsAddresses
+    # Gesetzt, wenn bei diesem Aufruf eine bestehende CA ersetzt wurde.
+    ca_change: CaChange | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +140,9 @@ class RuntimeTls:
     source: CertificateSource
     ca: x509.Certificate | None
     renewal_failed_at: datetime | None
+    addresses: TlsAddresses | None = None
+    # Letzter CA-Wechsel, sofern er zur aktuellen CA gehört.
+    ca_change: CaChange | None = None
 
 
 def fingerprint(
@@ -165,16 +213,16 @@ def _alt_names(
     return names
 
 
-def name_constraints(tls_config: TlsConfig) -> x509.NameConstraints:
+def name_constraints(addresses: TlsAddresses) -> x509.NameConstraints:
     """Erlaubt nur die eigenen Adressen: jede IP als Einzeladresse, die Hostnamen aus web.tls."""
     permitted: list[x509.GeneralName] = [
-        x509.IPAddress(ip_network(f"{ip}/{ip.max_prefixlen}")) for ip in tls_config.ip_addresses
+        x509.IPAddress(ip_network(f"{ip}/{ip.max_prefixlen}")) for ip in addresses.ip_addresses
     ]
-    dns = [x509.DNSName(host) for host in tls_config.hostnames] or [x509.DNSName(NO_DNS_NAMES)]
+    dns = [x509.DNSName(host) for host in addresses.hostnames] or [x509.DNSName(NO_DNS_NAMES)]
     return x509.NameConstraints(permitted_subtrees=[*permitted, *dns], excluded_subtrees=None)
 
 
-def generate_ca(tls_config: TlsConfig, now: datetime) -> tuple[bytes, bytes]:
+def generate_ca(addresses: TlsAddresses, now: datetime) -> tuple[bytes, bytes]:
     """Erzeugt CA-Schlüssel und -Zertifikat. Gibt (Zertifikat-PEM, Schlüssel-PEM) zurück."""
     key = _new_key()
     public_key = key.public_key()
@@ -194,7 +242,7 @@ def generate_ca(tls_config: TlsConfig, now: datetime) -> tuple[bytes, bytes]:
         .add_extension(_key_usage(cert_sign=True), critical=True)
         # Zusätzliche Begrenzung: Die CA taugt nur für Serverzertifikate.
         .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
-        .add_extension(name_constraints(tls_config), critical=True)
+        .add_extension(name_constraints(addresses), critical=True)
         .add_extension(x509.SubjectKeyIdentifier.from_public_key(public_key), critical=False)
         .sign(key, hashes.SHA256())
     )
@@ -202,7 +250,7 @@ def generate_ca(tls_config: TlsConfig, now: datetime) -> tuple[bytes, bytes]:
 
 
 def generate_server(
-    tls_config: TlsConfig,
+    addresses: TlsAddresses,
     ca_cert: x509.Certificate,
     ca_key: ec.EllipticCurvePrivateKey,
     now: datetime,
@@ -212,7 +260,7 @@ def generate_server(
     public_key = key.public_key()
     not_before = now - BACKDATE
     not_after = min(not_before + SERVER_VALIDITY, ca_cert.not_valid_after_utc)
-    alt_names = _alt_names(tls_config.ip_addresses, tls_config.hostnames)
+    alt_names = _alt_names(addresses.ip_addresses, addresses.hostnames)
     certificate = (
         x509.CertificateBuilder()
         # Leeres Subject: Kein Prüfprogramm kann einen Namen im Subject gegen die
@@ -278,17 +326,17 @@ def _load_ca(
 
 
 def _ca_renewal_reason(
-    ca_cert: x509.Certificate, tls_config: TlsConfig, now: datetime
-) -> str | None:
+    ca_cert: x509.Certificate, addresses: TlsAddresses, now: datetime
+) -> tuple[CaChangeReason, str] | None:
     if ca_cert.not_valid_after_utc <= now:
-        return "the CA has expired"
+        return "expired", "the CA has expired"
     try:
         current = ca_cert.extensions.get_extension_for_class(x509.NameConstraints).value
     except x509.ExtensionNotFound:
-        return "the CA has no name constraints"
-    wanted = name_constraints(tls_config)
+        return "unusable", "the CA has no name constraints"
+    wanted = name_constraints(addresses)
     if set(current.permitted_subtrees or ()) != set(wanted.permitted_subtrees or ()):
-        return "the addresses in web.tls have changed"
+        return "addresses_changed", ADDRESSES_CHANGED_REASON
     return None
 
 
@@ -313,16 +361,16 @@ def server_renewal_due(
 
 
 def _server_renewal_reason(
-    server_cert: x509.Certificate, ca_cert: x509.Certificate, tls_config: TlsConfig, now: datetime
+    server_cert: x509.Certificate, ca_cert: x509.Certificate, addresses: TlsAddresses, now: datetime
 ) -> str | None:
     if server_cert.not_valid_after_utc <= now:
         return "the server certificate has expired"
     if not issued_by(server_cert, ca_cert):
         return "the server certificate was not issued by the current CA"
     info = certificate_info(server_cert)
-    wanted_ips = frozenset(str(ip) for ip in tls_config.ip_addresses)
-    if info.ip_addresses != wanted_ips or info.hostnames != frozenset(tls_config.hostnames):
-        return "the addresses in web.tls have changed"
+    wanted_ips = frozenset(str(ip) for ip in addresses.ip_addresses)
+    if info.ip_addresses != wanted_ips or info.hostnames != frozenset(addresses.hostnames):
+        return ADDRESSES_CHANGED_REASON
     if server_renewal_due(server_cert, ca_cert, now):
         return f"the server certificate expires in {info.days_left(now)} days"
     return None
@@ -343,29 +391,38 @@ class _Material:
     server_key_pem: bytes
     server_cert: x509.Certificate
     ca_reason: str | None
+    # Code des Grunds; None bei unveränderter oder erstmals erzeugter CA.
+    ca_change_reason: CaChangeReason | None
     server_reason: str | None
     legacy_removed: bool
 
 
 def _ensure_ca(
-    paths: DataPaths, tls_config: TlsConfig, now: datetime, force_reason: str | None
-) -> tuple[bytes, x509.Certificate, ec.EllipticCurvePrivateKey, str | None]:
-    reason = force_reason
+    paths: DataPaths, addresses: TlsAddresses, now: datetime, new_ca: bool
+) -> tuple[
+    bytes, x509.Certificate, ec.EllipticCurvePrivateKey, tuple[CaChangeReason | None, str] | None
+]:
+    """Gibt (PEM, Zertifikat, Schlüssel, (Code, Grund) oder None) zurück.
+
+    Der Code ist None, wenn die CA zum ersten Mal erzeugt wird.
+    """
     cert_pem = _read_optional(paths.tls_ca_cert)
     key_pem = _read_optional(paths.tls_ca_key)
-    if reason is None:
-        if cert_pem is None or key_pem is None:
-            reason = FIRST_CA_REASON
+    reason: tuple[CaChangeReason | None, str] | None
+    if new_ca:
+        reason = ("requested", "a new CA was requested")
+    elif cert_pem is None or key_pem is None:
+        reason = (None, FIRST_CA_REASON)
+    else:
+        try:
+            ca_cert, ca_key = _load_ca(cert_pem, key_pem)
+        except TlsError as exc:
+            reason = ("unusable", f"the stored CA is unusable ({exc})")
         else:
-            try:
-                ca_cert, ca_key = _load_ca(cert_pem, key_pem)
-            except TlsError as exc:
-                reason = f"the stored CA is unusable ({exc})"
-            else:
-                reason = _ca_renewal_reason(ca_cert, tls_config, now)
-                if reason is None:
-                    return cert_pem, ca_cert, ca_key, None
-    cert_pem, key_pem = generate_ca(tls_config, now)
+            reason = _ca_renewal_reason(ca_cert, addresses, now)
+            if reason is None:
+                return cert_pem, ca_cert, ca_key, None
+    cert_pem, key_pem = generate_ca(addresses, now)
     write_file_atomic(paths.tls_ca_key, key_pem, 0o600)
     write_file_atomic(paths.tls_ca_cert, cert_pem, 0o600)
     ca_cert, ca_key = _load_ca(cert_pem, key_pem)
@@ -374,7 +431,7 @@ def _ensure_ca(
 
 def _ensure_server(
     paths: DataPaths,
-    tls_config: TlsConfig,
+    addresses: TlsAddresses,
     ca_cert: x509.Certificate,
     ca_key: ec.EllipticCurvePrivateKey,
     now: datetime,
@@ -392,27 +449,29 @@ def _ensure_server(
             except TlsError as exc:
                 reason = f"the stored server certificate is unusable ({exc})"
             else:
-                reason = _server_renewal_reason(server_cert, ca_cert, tls_config, now)
+                reason = _server_renewal_reason(server_cert, ca_cert, addresses, now)
                 if reason is None:
                     return cert_pem, key_pem, server_cert, None
-    cert_pem, key_pem = generate_server(tls_config, ca_cert, ca_key, now)
+    cert_pem, key_pem = generate_server(addresses, ca_cert, ca_key, now)
     write_file_atomic(paths.tls_server_key, key_pem, 0o600)
     write_file_atomic(paths.tls_server_cert, cert_pem, 0o600)
     return cert_pem, key_pem, x509.load_pem_x509_certificate(cert_pem), reason
 
 
 def _ensure_material(
-    paths: DataPaths, tls_config: TlsConfig, now: datetime, renew_server: bool, new_ca: bool
+    paths: DataPaths, addresses: TlsAddresses, now: datetime, renew_server: bool, new_ca: bool
 ) -> _Material:
     legacy = paths.legacy_tls_cert.exists() or paths.legacy_tls_key.exists()
-    ca_pem, ca_cert, ca_key, ca_reason = _ensure_ca(
-        paths, tls_config, now, "a new CA was requested" if new_ca else None
-    )
-    if ca_reason == FIRST_CA_REASON and legacy:
-        ca_reason = LEGACY_REASON
-    server_force = "renewal was requested" if renew_server and ca_reason is None else None
+    ca_pem, ca_cert, ca_key, ca_result = _ensure_ca(paths, addresses, now, new_ca)
+    change_code: CaChangeReason | None = None
+    ca_reason: str | None = None
+    if ca_result is not None:
+        change_code, ca_reason = ca_result
+        if change_code is None and legacy:
+            change_code, ca_reason = "legacy_replaced", LEGACY_REASON
+    server_force = "renewal was requested" if renew_server and ca_result is None else None
     server_pem, server_key_pem, server_cert, server_reason = _ensure_server(
-        paths, tls_config, ca_cert, ca_key, now, server_force
+        paths, addresses, ca_cert, ca_key, now, server_force
     )
     if legacy:
         # Erst löschen, wenn CA und Serverzertifikat sicher geschrieben sind.
@@ -425,6 +484,7 @@ def _ensure_material(
         server_key_pem=server_key_pem,
         server_cert=server_cert,
         ca_reason=ca_reason,
+        ca_change_reason=change_code,
         server_reason=server_reason,
         legacy_removed=legacy,
     )
@@ -448,12 +508,8 @@ def load_custom(custom_dir: Path, now: datetime) -> tuple[bytes, bytes] | None:
     return cert_pem, key_pem
 
 
-def _write_info(
-    runtime_dir: Path, source: CertificateSource, renewal_failed_at: datetime | None, web_gid: int
-) -> None:
-    failed = renewal_failed_at.isoformat() if renewal_failed_at is not None else None
-    info = json.dumps({"source": source, "renewal_failed_at": failed}).encode()
-    write_file_atomic(runtime_dir / _RUNTIME_INFO, info, 0o644, web_gid)
+def _write_info(runtime_dir: Path, info: dict[str, object], web_gid: int) -> None:
+    write_file_atomic(runtime_dir / _RUNTIME_INFO, json.dumps(info).encode(), 0o644, web_gid)
 
 
 def install_runtime(
@@ -463,10 +519,14 @@ def install_runtime(
     ca_pem: bytes | None,
     source: CertificateSource,
     web_gid: int,
+    addresses: TlsAddresses,
+    ca_change: CaChange | None = None,
 ) -> None:
     """Legt das aktive Paar für den Web-Prozess ab (nur im RAM unter /run).
 
-    Bei eigenem Zertifikat gibt es kein CA-Zertifikat zum Download.
+    Bei eigenem Zertifikat gibt es kein CA-Zertifikat zum Download. info.json
+    enthält die verwendeten Adressen; der Web-Prozess übernimmt sie für die
+    Host-Prüfung, statt selbst zu erkennen (Konzept 5.1).
     """
     runtime_dir.mkdir(mode=0o750, exist_ok=True)
     runtime_dir.chmod(0o750)
@@ -477,19 +537,31 @@ def install_runtime(
         (runtime_dir / _RUNTIME_CA).unlink(missing_ok=True)
     else:
         write_file_atomic(runtime_dir / _RUNTIME_CA, ca_pem, 0o644, web_gid)
-    _write_info(runtime_dir, source, None, web_gid)
+    info: dict[str, object] = {
+        "source": source,
+        "renewal_failed_at": None,
+        "addresses": addresses.to_json(),
+        "ca_change": ca_change.to_json() if ca_change is not None else None,
+    }
+    _write_info(runtime_dir, info, web_gid)
     # Ablage aus Phase 2, ersetzt durch info.json.
     (runtime_dir / "source.json").unlink(missing_ok=True)
 
 
 def record_refresh_failure(runtime_dir: Path, now: datetime, web_gid: int) -> None:
     """Vermerkt eine gescheiterte automatische Erneuerung für das Dashboard."""
-    source = read_runtime(runtime_dir).source
-    _write_info(runtime_dir, source, now, web_gid)
+    try:
+        info = json.loads((runtime_dir / _RUNTIME_INFO).read_text())
+    except (OSError, ValueError) as exc:
+        raise TlsError(f"no active certificate in {runtime_dir}") from exc
+    if not isinstance(info, dict):
+        raise TlsError(f"no active certificate in {runtime_dir}")
+    info["renewal_failed_at"] = now.isoformat()
+    _write_info(runtime_dir, info, web_gid)
 
 
 def read_runtime(runtime_dir: Path) -> RuntimeTls:
-    """Aktives Zertifikat, CA und Status, wie sie der Web-Prozess verwendet."""
+    """Aktives Zertifikat, CA, Adressen und Status, wie sie der Web-Prozess verwendet."""
     try:
         chain = x509.load_pem_x509_certificates((runtime_dir / _RUNTIME_CHAIN).read_bytes())
         info = json.loads((runtime_dir / _RUNTIME_INFO).read_text())
@@ -511,7 +583,25 @@ def read_runtime(runtime_dir: Path) -> RuntimeTls:
             failed_at = datetime.fromisoformat(raw_failed)
         except ValueError:
             failed_at = None
-    return RuntimeTls(leaf=chain[0], source=source, ca=ca, renewal_failed_at=failed_at)
+    addresses: TlsAddresses | None = None
+    raw_addresses = info.get("addresses")
+    if isinstance(raw_addresses, dict):
+        try:
+            addresses = TlsAddresses.from_json(raw_addresses)
+        except ValueError:
+            addresses = None
+    change = CaChange.from_json(info.get("ca_change"))
+    # Der Vermerk gilt nur, solange er zur ausgelieferten CA gehört.
+    if change is not None and (ca is None or fingerprint(ca) != change.ca_fingerprint):
+        change = None
+    return RuntimeTls(
+        leaf=chain[0],
+        source=source,
+        ca=ca,
+        renewal_failed_at=failed_at,
+        addresses=addresses,
+        ca_change=change,
+    )
 
 
 def runtime_ca_der(runtime_dir: Path) -> bytes | None:
@@ -522,9 +612,23 @@ def runtime_ca_der(runtime_dir: Path) -> bytes | None:
     return tls.ca.public_bytes(serialization.Encoding.DER)
 
 
+def _record_ca_change(paths: DataPaths, change: CaChange) -> None:
+    write_file_atomic(paths.tls_ca_change, json.dumps(change.to_json()).encode(), 0o600)
+
+
+def _stored_ca_change(paths: DataPaths) -> CaChange | None:
+    raw = _read_optional(paths.tls_ca_change)
+    if raw is None:
+        return None
+    try:
+        return CaChange.from_json(json.loads(raw))
+    except ValueError:
+        return None
+
+
 def activate(
     paths: DataPaths,
-    tls_config: TlsConfig,
+    addresses: TlsAddresses,
     custom_dir: Path,
     runtime_dir: Path,
     web_gid: int,
@@ -534,17 +638,31 @@ def activate(
 ) -> ActiveCertificate:
     """Pflegt CA und Serverzertifikat, wählt das aktive Zertifikat und stellt es bereit."""
     now = now or datetime.now(UTC)
-    material = _ensure_material(paths, tls_config, now, renew_server, new_ca)
+    material = _ensure_material(paths, addresses, now, renew_server, new_ca)
+    ca_fingerprint = fingerprint(material.ca_cert)
+    new_change: CaChange | None = None
+    if material.ca_change_reason is not None:
+        new_change = CaChange(now, material.ca_change_reason, ca_fingerprint)
+        _record_ca_change(paths, new_change)
+    stored = new_change or _stored_ca_change(paths)
+    current_change = stored if stored and stored.ca_fingerprint == ca_fingerprint else None
     custom = load_custom(custom_dir, now)
     if custom is not None:
         chain_pem, key_pem = custom
-        install_runtime(runtime_dir, chain_pem, key_pem, None, "custom", web_gid)
+        install_runtime(runtime_dir, chain_pem, key_pem, None, "custom", web_gid, addresses)
         leaf = x509.load_pem_x509_certificates(chain_pem)[0]
         source: CertificateSource = "custom"
     else:
         chain_pem = material.server_pem + material.ca_pem
         install_runtime(
-            runtime_dir, chain_pem, material.server_key_pem, material.ca_pem, "ca", web_gid
+            runtime_dir,
+            chain_pem,
+            material.server_key_pem,
+            material.ca_pem,
+            "ca",
+            web_gid,
+            addresses,
+            current_change,
         )
         leaf = material.server_cert
         source = "ca"
@@ -555,13 +673,15 @@ def activate(
         ca_generated_because=material.ca_reason,
         server_generated_because=material.server_reason,
         legacy_removed=material.legacy_removed,
+        addresses=addresses,
+        ca_change=new_change,
     )
 
 
-def uncovered_hosts(info: CertificateInfo, tls_config: TlsConfig) -> list[str]:
-    """Adressen aus web.tls, für die das Zertifikat nicht gilt (z. B. eigenes Zertifikat)."""
+def uncovered_hosts(info: CertificateInfo, addresses: TlsAddresses) -> list[str]:
+    """Verwendete Adressen, für die das Zertifikat nicht gilt (z. B. eigenes Zertifikat)."""
     missing: list[str] = []
-    for host in sorted(tls_config.allowed_hosts()):
+    for host in sorted(addresses.allowed_hosts()):
         if host in info.ip_addresses or host in info.hostnames:
             continue
         parent = host.split(".", 1)[1] if "." in host else ""

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from twinraid.shared import addresses
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_CONFIG = REPO_ROOT / "config.example.yaml"
 # Konfiguration mit eindeutigen Testwerten, auch vom Container-Starttest genutzt.
@@ -31,6 +33,27 @@ def _allowed(address: object) -> bool:
     except ValueError:
         return False
     return host.is_loopback or host in _TEST_NET
+
+
+# Die echte Erkennung, bevor _fixed_interfaces sie in jedem Test ersetzt.
+REAL_INTERFACE_ADDRESSES = addresses.interface_addresses
+
+# Simulierte Netzwerkschnittstellen des Containers: Loopback und genau eine eigene
+# Adresse, passend zu config.example.yaml (Client-Netz, BASE_URL der Web-Tests).
+TEST_INTERFACES = [
+    ("lo", "127.0.0.1"),
+    ("eth0", "192.168.10.20"),
+]
+
+
+@pytest.fixture(autouse=True)
+def _fixed_interfaces(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests hängen nie von den echten Schnittstellen des Rechners ab."""
+    found = [
+        addresses.InterfaceAddress(name, ip_address(address)) for name, address in TEST_INTERFACES
+    ]
+    monkeypatch.setattr(addresses, "interface_addresses", lambda: list(found))
+    monkeypatch.setattr(addresses, "ipv6_addresses", lambda *_args: [])
 
 
 @pytest.fixture(autouse=True)

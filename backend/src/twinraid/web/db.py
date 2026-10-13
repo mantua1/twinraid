@@ -36,6 +36,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
     result TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS audit_log_at ON audit_log (at);
+CREATE TABLE IF NOT EXISTS acknowledgements (
+    kind TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    at REAL NOT NULL,
+    PRIMARY KEY (kind, ref)
+);
 """
 
 

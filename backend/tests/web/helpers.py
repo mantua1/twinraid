@@ -3,6 +3,7 @@
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from ipaddress import ip_address
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -11,6 +12,7 @@ from tests.conftest import EXAMPLE_CONFIG
 from tests.support.passwords import TEST_PASSWORD
 from tests.support.tls import install_test_runtime
 from twinraid.config import load_config
+from twinraid.shared.addresses import configured, resolve_addresses
 from twinraid.shared.mode import RunMode
 from twinraid.shared.passwords import VerifyOutcome
 from twinraid.shared.status import UNKNOWN, StatusSnapshot
@@ -25,7 +27,10 @@ TEST_EVENT_TIMINGS = EventTimings(
     poll_seconds=0.01, session_check_seconds=0.005, keepalive_seconds=0.05, max_stream_seconds=0.5
 )
 
-# Passend zu config.example.yaml: Adresse aus web.tls, Client aus dem Client-Netz.
+# Verwendete Adresse ohne Konfiguration: die erkannte Testschnittstelle (tests/conftest.py).
+TEST_ADDRESSES = configured([ip_address("192.168.10.20")])
+
+# Passend zu config.example.yaml: erkannte Adresse, Client aus dem Client-Netz.
 BASE_URL = "https://192.168.10.20:8443"
 CLIENT_IP = "192.168.20.5"
 
@@ -112,17 +117,20 @@ def make_app(
     mode: RunMode = RunMode.MOCK,
 ) -> WebApp:
     config = load_config(config_path)
+    # Wie twinraid-init: konfigurierte Adressen oder die erkannte Testschnittstelle.
+    addresses = resolve_addresses(config.web.tls)
     database = WebDatabase(tmp_path / "web.sqlite")
     database.initialize()
     runtime_tls = tmp_path / "run-tls"
     if not (runtime_tls / "cert.pem").exists():
-        install_test_runtime(runtime_tls, config.web.tls)
+        install_test_runtime(runtime_tls, addresses)
     settings = WebSettings(
         mode=mode,
         config=config,
         frontend_dir=frontend_dir if frontend_dir is not None else build_frontend(tmp_path),
         runtime_tls_dir=runtime_tls,
         renewal_marker=tmp_path / "tls-renewal.json",
+        addresses=addresses,
     )
     return create_app(
         settings,

@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 
 from tests.support.tls import install_test_runtime
-from twinraid.config.models import TlsConfig
+from twinraid.shared.addresses import configured
 from twinraid.shared.tls import install_runtime
 from twinraid.web.tls_renewal import RenewalWatcher
 
-TLS = TlsConfig(ip_addresses=[ip_address("192.168.10.20")], hostnames=[])
+TLS = configured([ip_address("192.168.10.20")])
 ISSUED = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
 # 30 Tage vor Ablauf des Serverzertifikats: Erneuerung fällig.
 DUE = ISSUED + timedelta(days=825 - 30)
@@ -99,7 +99,7 @@ def test_custom_certificate_is_never_renewed(harness: Harness) -> None:
     runtime = harness.runtime
     chain = (runtime / "cert.pem").read_bytes()
     key = (runtime / "key.pem").read_bytes()
-    install_runtime(runtime, chain, key, None, "custom", os.getgid())
+    install_runtime(runtime, chain, key, None, "custom", os.getgid(), TLS)
     harness.now = DUE
     assert harness.watcher().check() is False
 

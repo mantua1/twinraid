@@ -1,10 +1,13 @@
 """Startverhalten des Web-Prozesses bei fehlerhafter Umgebung."""
 
+import json
 from pathlib import Path
 
 import pytest
 
 from tests.conftest import EXAMPLE_CONFIG
+from tests.support.tls import install_test_runtime
+from tests.web.helpers import TEST_ADDRESSES
 from twinraid.web.main import EXIT_STARTUP_ERROR, main
 
 
@@ -30,3 +33,14 @@ def test_invalid_config_stops_web(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
 def test_missing_certificate_stops_web(capsys: pytest.CaptureFixture[str]) -> None:
     assert main() == EXIT_STARTUP_ERROR
     assert "twinraid-init must run first" in capsys.readouterr().err
+
+
+def test_missing_addresses_stop_web(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Ohne die von twinraid-init ermittelten Adressen startet der Web-Prozess nicht."""
+    install_test_runtime(tmp_path / "run-tls", TEST_ADDRESSES)
+    info = tmp_path / "run-tls" / "info.json"
+    data = json.loads(info.read_text())
+    del data["addresses"]
+    info.write_text(json.dumps(data))
+    assert main() == EXIT_STARTUP_ERROR
+    assert "No TLS addresses" in capsys.readouterr().err

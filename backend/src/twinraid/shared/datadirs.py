@@ -59,6 +59,11 @@ class DataPaths:
         return self.tls / "ca-key.pem"
 
     @property
+    def tls_ca_change(self) -> Path:
+        """Vermerk des letzten CA-Wechsels für den Hinweis im Dashboard (Konzept 5.2)."""
+        return self.tls / "ca-change.json"
+
+    @property
     def tls_server_cert(self) -> Path:
         return self.tls / "server.pem"
 

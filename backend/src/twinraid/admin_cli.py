@@ -37,6 +37,7 @@ from twinraid.integrations.unraid_api import (
     presented_fingerprint,
 )
 from twinraid.shared import runtime
+from twinraid.shared.addresses import AddressError, resolve_addresses
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.mode import RunMode, RunModeError, resolve_run_mode
 from twinraid.shared.passwords import PasswordPolicyError, PasswordStore
@@ -236,14 +237,14 @@ def cmd_renew_cert(context: Context, args: argparse.Namespace) -> int:
     try:
         active = activate(
             context.paths,
-            context.config.web.tls,
+            resolve_addresses(context.config.web.tls),
             context.custom_tls_dir,
             context.runtime_tls_dir,
             context.web_gid,
             renew_server=True,
             new_ca=new_ca,
         )
-    except TlsError as exc:
+    except (TlsError, AddressError) as exc:
         raise CliError(str(exc)) from None
     _audit(context, AuditAction.CLI_RENEW_CERT)
     if active.source == "custom":

@@ -32,6 +32,7 @@ class AuditAction(StrEnum):
     CLI_UNLOCK = "cli_unlock"
     CLI_SET_API_KEY = "cli_set_api_key"
     CLI_TRUST_API_CERT = "cli_trust_api_cert"
+    CA_CHANGE_NOTICE = "ca_change_notice"
 
 
 class AuditResult(StrEnum):
@@ -43,6 +44,7 @@ class AuditResult(StrEnum):
     BUSY = "busy"
     EXPIRED = "expired"
     REJECTED = "rejected"
+    ACKNOWLEDGED = "acknowledged"
 
 
 @dataclass(frozen=True)

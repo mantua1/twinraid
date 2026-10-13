@@ -25,17 +25,20 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from twinraid import __version__
 from twinraid.config import TwinRaidConfig
+from twinraid.shared.addresses import TlsAddresses
 from twinraid.shared.mode import REAL_ACTIONS_ENABLED, RunMode
 from twinraid.shared.passwords import VerifyOutcome
 from twinraid.shared.status import StatusSnapshot
 from twinraid.shared.tls import (
     CA_EXPIRY_WARNING,
     SERVER_EXPIRY_WARNING,
+    RuntimeTls,
     TlsError,
     certificate_info,
     read_runtime,
     runtime_ca_der,
 )
+from twinraid.web.acknowledgements import Acknowledgements
 from twinraid.web.audit import AuditAction, AuditLog, AuditResult
 from twinraid.web.auth import AuthMiddleware, passive, public, session_of
 from twinraid.web.db import WebDatabase
@@ -46,11 +49,13 @@ from twinraid.web.schemas import (
     AuditEntryOut,
     AuditList,
     AuthState,
+    CaChangeInfo,
     CaDetails,
     CertificateDetails,
     DisplayNames,
     LoginRequest,
     SessionInfo,
+    TlsAddressInfo,
     TlsInfo,
 )
 from twinraid.web.security import (
@@ -101,6 +106,8 @@ class WebSettings:
     runtime_tls_dir: Path
     # Vermerk der letzten Erneuerungsanfrage (Konzept 5.2), liegt in /data/web.
     renewal_marker: Path
+    # Von twinraid-init ermittelte Adressen für die Host-Prüfung (Konzept 5.1).
+    addresses: TlsAddresses
 
 
 class SessionAuthenticator:
@@ -196,7 +203,7 @@ def create_app(
     # Alle Routen direkt an der App, ohne include_router() (siehe web/auth.py).
     _register_public_routes(api, settings.frontend_dir)
     _register_auth_routes(api, settings, worker, sessions, limiter, audit, authenticator, clock)
-    _register_api_routes(api, settings, worker, audit)
+    _register_api_routes(api, settings, worker, audit, Acknowledgements(database, clock))
     _register_event_routes(api, worker, sessions, audit, event_timings or EventTimings())
 
     async def on_csrf_reject(scope: Scope) -> None:
@@ -216,7 +223,7 @@ def create_app(
     )
     api.add_middleware(OriginCheckMiddleware, on_reject=on_origin_reject)
     api.add_middleware(BodyLimitMiddleware)
-    api.add_middleware(HostCheckMiddleware, allowed_hosts=config.web.tls.allowed_hosts())
+    api.add_middleware(HostCheckMiddleware, allowed_hosts=settings.addresses.allowed_hosts())
     outer = SecurityHeadersMiddleware(NetworkFilterMiddleware(api, config.web.allowed_networks))
     return WebApp(api, outer)
 
@@ -365,7 +372,11 @@ def _register_auth_routes(
 
 
 def _register_api_routes(
-    api: FastAPI, settings: WebSettings, worker: WorkerApi, audit: AuditLog
+    api: FastAPI,
+    settings: WebSettings,
+    worker: WorkerApi,
+    audit: AuditLog,
+    acknowledgements: Acknowledgements,
 ) -> None:
     config = settings.config
     info = AppInfo(
@@ -404,12 +415,23 @@ def _register_api_routes(
             ]
         )
 
-    @api.get("/api/tls")
-    def tls_info() -> TlsInfo:
+    def runtime_state() -> RuntimeTls:
         try:
-            state = read_runtime(settings.runtime_tls_dir)
+            return read_runtime(settings.runtime_tls_dir)
         except TlsError:
             raise HTTPException(status_code=503, detail="certificate_unavailable") from None
+
+    @api.get("/api/tls")
+    def tls_info() -> TlsInfo:
+        state = runtime_state()
+        addresses = settings.addresses
+        change: CaChangeInfo | None = None
+        if state.ca_change is not None and not acknowledgements.is_acknowledged(
+            "ca_change", state.ca_change.ca_fingerprint
+        ):
+            change = CaChangeInfo(
+                changed_at=state.ca_change.changed_at, reason=state.ca_change.reason
+            )
         now = datetime.now(UTC)
         server = certificate_info(state.leaf)
         ca_details: CaDetails | None = None
@@ -433,7 +455,24 @@ def _register_api_routes(
             ),
             ca=ca_details,
             renewal_failed=state.renewal_failed_at is not None,
+            addresses=TlsAddressInfo(
+                ip_addresses=[str(ip) for ip in addresses.ip_addresses],
+                hostnames=list(addresses.hostnames),
+                origin=addresses.origin,
+                interface=addresses.interface,
+            ),
+            ca_change=change,
         )
+
+    @api.post("/api/tls/ca-change/acknowledge")
+    def acknowledge_ca_change(request: Request) -> Response:
+        """Bestätigt den Hinweis zum CA-Wechsel. Nimmt keine Daten entgegen."""
+        state = runtime_state()
+        if state.ca_change is None:
+            return JSONResponse({"detail": "nothing_to_acknowledge"})
+        if acknowledgements.acknowledge("ca_change", state.ca_change.ca_fingerprint):
+            audit.record(AuditAction.CA_CHANGE_NOTICE, AuditResult.ACKNOWLEDGED, client_ip(request))
+        return JSONResponse({"detail": "acknowledged"})
 
     @api.get("/api/tls/ca-certificate")
     def tls_ca_certificate() -> Response:

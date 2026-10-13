@@ -17,6 +17,13 @@ from datetime import UTC, datetime
 
 from twinraid.config import ConfigError, TwinRaidConfig, load_config
 from twinraid.shared import runtime
+from twinraid.shared.addresses import (
+    AddressError,
+    TlsAddresses,
+    bridge_warning,
+    ipv6_addresses,
+    resolve_addresses,
+)
 from twinraid.shared.datadirs import DataDirError, DataPaths, prepare_data_dirs
 from twinraid.shared.logs import configure_logging
 from twinraid.shared.mode import RunMode, RunModeError, resolve_run_mode
@@ -36,6 +43,38 @@ logger = logging.getLogger("twinraid.init")
 _NOT_STARTING = "TwinRaid will not start. Fix the problem above and restart the container."
 
 
+def log_addresses(addresses: TlsAddresses) -> None:
+    """Verwendete Adresse, Warnung bei Bridge-Netz, ignorierte IPv6-Adressen (Konzept 5.1)."""
+    logger.info("TLS address: %s", addresses.describe())
+    warning = bridge_warning(addresses)
+    if warning is not None:
+        line = "=" * 72
+        logger.warning(line)
+        logger.warning("  PROBABLY THE WRONG NETWORK TYPE")
+        logger.warning("  %s", warning)
+        logger.warning(line)
+    if addresses.origin == "detected":
+        for entry in ipv6_addresses():
+            logger.info(
+                "IPv6 address %s on %s is not used; add it to web.tls.ip_addresses if "
+                "clients connect through it.",
+                entry.address,
+                entry.interface,
+            )
+
+
+def _log_ca_change(active: ActiveCertificate) -> None:
+    """Auffälliger Block: Eine bestehende CA wurde ersetzt (Konzept 5.2)."""
+    line = "=" * 72
+    logger.warning(line)
+    logger.warning("  A NEW TWINRAID CA WAS CREATED")
+    logger.warning("  Reason: %s.", active.ca_generated_because)
+    logger.warning("  Addresses: %s", active.addresses.describe())
+    logger.warning("  Install the new CA certificate on ALL devices (Settings → download CA")
+    logger.warning("  certificate) and remove the old one. Until then browsers show a warning.")
+    logger.warning(line)
+
+
 def log_certificate(active: ActiveCertificate, now: datetime, quiet: bool = False) -> None:
     """Schreibt Fingerabdrücke und Hinweise ins Log. quiet: nur bei Änderungen."""
     ca, server = active.ca, active.info
@@ -47,12 +86,8 @@ def log_certificate(active: ActiveCertificate, now: datetime, quiet: bool = Fals
         )
     elif active.ca_generated_because == FIRST_CA_REASON:
         logger.info("Generated the TwinRaid CA. Install its certificate once on your devices.")
-    elif active.ca_generated_because is not None:
-        logger.warning(
-            "Generated a new TwinRaid CA because %s. Install the new CA certificate on all "
-            "devices; the old one no longer works.",
-            active.ca_generated_because,
-        )
+    elif active.ca_change is not None:
+        _log_ca_change(active)
     if active.server_generated_because is not None and active.ca_generated_because is None:
         logger.info(
             "Renewed the TLS server certificate because %s. Devices that trust the CA need "
@@ -107,13 +142,13 @@ def _refresh(config: TwinRaidConfig, now: datetime) -> int:
     try:
         active = activate(
             DataPaths(runtime.data_dir(env)),
-            config.web.tls,
+            resolve_addresses(config.web.tls),
             custom_dir=runtime.custom_tls_dir(env),
             runtime_dir=runtime_dir,
             web_gid=web_gid,
             now=now,
         )
-    except (TlsError, OSError) as exc:
+    except (TlsError, AddressError, OSError) as exc:
         logger.error("Automatic TLS renewal failed: %s", exc)
         logger.error("The web process keeps the current certificate.")
         try:
@@ -147,9 +182,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         paths = DataPaths(runtime.data_dir(env))
         for correction in prepare_data_dirs(paths, owner_uid=os.geteuid(), web_gid=web_gid):
             logger.info("Data directory: %s", correction)
+        addresses = resolve_addresses(config.web.tls)
+        log_addresses(addresses)
         active = activate(
             paths,
-            config.web.tls,
+            addresses,
             custom_dir=runtime.custom_tls_dir(env),
             runtime_dir=runtime.runtime_tls_dir(env),
             web_gid=web_gid,
@@ -159,14 +196,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.error("%s", exc.render())
         logger.error(_NOT_STARTING)
         return 1
-    except (RunModeError, runtime.RuntimeSettingError, DataDirError, TlsError) as exc:
+    except (RunModeError, runtime.RuntimeSettingError, DataDirError, AddressError, TlsError) as exc:
         logger.error("%s", exc)
         logger.error(_NOT_STARTING)
         return 1
 
     log_certificate(active, now)
-    for host in uncovered_hosts(active.info, config.web.tls):
-        logger.warning("The active certificate does not cover %s from web.tls.", host)
+    for host in uncovered_hosts(active.info, active.addresses):
+        logger.warning("The active certificate does not cover %s.", host)
     log_unencrypted_api(config, mode)
     if not paths.password_file.exists():
         logger.warning("No password is set. Run inside the container: twinraid-admin set-password")
