@@ -39,11 +39,13 @@ def test_info_contains_mode_and_names(tmp_path: Path) -> None:
 def test_status_from_worker(tmp_path: Path) -> None:
     response = _client(tmp_path).get("/api/status")
     assert response.status_code == 200
+    unknown = {"state": "unknown", "reason": None}
     assert response.json() == {
-        "source": "unknown",
-        "target": "unknown",
-        "vm": "unknown",
+        "source": unknown,
+        "target": unknown,
+        "vm": unknown,
         "checked_at": None,
+        "job_running": False,
         "password_set": True,
     }
 

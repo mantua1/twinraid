@@ -2,7 +2,13 @@
 
 import pytest
 
-from twinraid.shared.mode import RunMode, RunModeError, parse_run_mode, resolve_run_mode
+from twinraid.shared.mode import (
+    REAL_ACTIONS_ENABLED,
+    RunMode,
+    RunModeError,
+    parse_run_mode,
+    resolve_run_mode,
+)
 
 
 def test_mock_is_accepted() -> None:
@@ -33,7 +39,8 @@ def test_very_long_value_is_truncated_in_message() -> None:
     assert len(str(excinfo.value)) < 200
 
 
-def test_real_is_known_but_not_yet_supported() -> None:
+def test_real_is_supported_read_only() -> None:
+    """Seit Phase 3 ist real zugelassen, aber Aktionen bleiben gesperrt (Konzept 6.4)."""
     assert parse_run_mode({"TWINRAID_MODE": "real"}) is RunMode.REAL
-    with pytest.raises(RunModeError, match="not available in this version"):
-        resolve_run_mode({"TWINRAID_MODE": "real"})
+    assert resolve_run_mode({"TWINRAID_MODE": "real"}) is RunMode.REAL
+    assert REAL_ACTIONS_ENABLED is False

@@ -12,7 +12,7 @@ from tests.support.tls import install_test_runtime
 from twinraid.config import load_config
 from twinraid.shared.mode import RunMode
 from twinraid.shared.passwords import VerifyOutcome
-from twinraid.shared.status import ResourceState, StatusSnapshot
+from twinraid.shared.status import UNKNOWN, StatusSnapshot
 from twinraid.web.app import WebApp, WebSettings, create_app
 from twinraid.web.db import WebDatabase
 from twinraid.web.worker_client import WorkerApi, WorkerUnavailableError
@@ -22,26 +22,35 @@ BASE_URL = "https://192.168.10.20:8443"
 CLIENT_IP = "192.168.20.5"
 
 
-def unknown_status(password_set: bool = True) -> StatusSnapshot:
+def unknown_status(password_set: bool = True, job_running: bool = False) -> StatusSnapshot:
     return StatusSnapshot(
-        source=ResourceState.UNKNOWN,
-        target=ResourceState.UNKNOWN,
-        vm=ResourceState.UNKNOWN,
+        source=UNKNOWN,
+        target=UNKNOWN,
+        vm=UNKNOWN,
         checked_at=None,
+        job_running=job_running,
         password_set=password_set,
     )
 
 
 class FakeWorker:
+    """Simulierter Worker. Zählt alle Aufrufe, damit Tests prüfen können, was gesendet wurde."""
+
     def __init__(self, available: bool = True, password: str | None = TEST_PASSWORD) -> None:
         self.available = available
         self.password = password
+        self.job_running = False
+        self.status: StatusSnapshot | None = None
         self.verify_calls = 0
+        self.status_calls = 0
 
     async def get_status(self) -> StatusSnapshot:
+        self.status_calls += 1
         if not self.available:
             raise WorkerUnavailableError("down")
-        return unknown_status(self.password is not None)
+        if self.status is not None:
+            return self.status
+        return unknown_status(self.password is not None, self.job_running)
 
     async def verify_password(self, password: str) -> VerifyOutcome:
         self.verify_calls += 1

@@ -8,13 +8,14 @@ import signal
 from pathlib import Path
 
 from twinraid.config import ConfigError, load_config
-from twinraid.integrations.factory import build_status_provider
+from twinraid.integrations.factory import build_job_state, build_status_provider
 from twinraid.shared import runtime
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.logs import configure_logging, warn_if_mock
-from twinraid.shared.mode import RunModeError, resolve_run_mode
+from twinraid.shared.mode import RunMode, RunModeError, resolve_run_mode
 from twinraid.shared.passwords import PasswordStore
 from twinraid.worker.handler import CommandHandler
+from twinraid.worker.monitor import StatusMonitor
 from twinraid.worker.password_check import PasswordCheck
 from twinraid.worker.server import SocketPathError, WorkerServer
 
@@ -39,17 +40,21 @@ def main() -> int:
     warn_if_mock(logger, mode)
 
     try:
-        load_config(runtime.config_path(env))
+        config = load_config(runtime.config_path(env))
     except ConfigError as exc:
         logger.error("%s", exc.render())
         return EXIT_STARTUP_ERROR
 
-    store = PasswordStore(DataPaths(runtime.data_dir(env)).password_file)
-    password_check = PasswordCheck(store)
-    handler = CommandHandler(build_status_provider(mode), password_check)
+    paths = DataPaths(runtime.data_dir(env))
+    password_check = PasswordCheck(PasswordStore(paths.password_file))
+    monitor = StatusMonitor(build_status_provider(mode, config, paths))
+    jobs = build_job_state(mode, runtime.mock_job_flag(env))
+    handler = CommandHandler(monitor, password_check, jobs, mode)
     server = WorkerServer(runtime.socket_path(env), allowed_uid, handler)
+    if mode is RunMode.REAL:
+        logger.info("Read-only real mode: status checks only, all actions are locked.")
     try:
-        asyncio.run(_serve(server, password_check))
+        asyncio.run(_serve(server, password_check, monitor))
     except SocketPathError as exc:
         logger.error("%s", exc)
         return EXIT_STARTUP_ERROR
@@ -68,7 +73,9 @@ async def heartbeat(path: Path, interval: float = HEARTBEAT_INTERVAL_SECONDS) ->
         await asyncio.sleep(interval)
 
 
-async def _serve(server: WorkerServer, password_check: PasswordCheck) -> None:
+async def _serve(
+    server: WorkerServer, password_check: PasswordCheck, monitor: StatusMonitor
+) -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -81,13 +88,18 @@ async def _serve(server: WorkerServer, password_check: PasswordCheck) -> None:
     # SIGUSR1 kommt von "twinraid-admin unlock" über s6-svc -1.
     loop.add_signal_handler(signal.SIGUSR1, reset_throttle)
     await server.start()
-    beat = asyncio.create_task(heartbeat(server.path.parent / HEARTBEAT_FILE))
+    tasks = [
+        asyncio.create_task(heartbeat(server.path.parent / HEARTBEAT_FILE)),
+        asyncio.create_task(monitor.run()),
+    ]
     logger.info("worker listening on %s", server.path)
     try:
         await stop.wait()
     finally:
-        beat.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await beat
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await server.close()
         logger.info("worker stopped")
