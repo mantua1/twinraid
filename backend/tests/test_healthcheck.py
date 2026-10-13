@@ -7,20 +7,22 @@ import ssl
 import threading
 import time
 from collections.abc import Iterator
-from datetime import UTC, datetime
 from ipaddress import ip_address
 from pathlib import Path
 
 import pytest
 
 from tests.conftest import EXAMPLE_CONFIG
+from tests.support.tls import install_test_runtime
 from twinraid import healthcheck
-from twinraid.shared.tls import generate_self_signed, install_runtime
+from twinraid.config.models import TlsConfig
+
+LOOPBACK = TlsConfig(ip_addresses=[ip_address("127.0.0.1")], hostnames=[])
 
 
 def _write_pair(directory: Path) -> tuple[Path, Path]:
-    cert, key = generate_self_signed([ip_address("127.0.0.1")], [], datetime.now(UTC))
-    install_runtime(directory, cert, key, "self-signed", os.getgid())
+    """Kette aus Server- und CA-Zertifikat wie im Container."""
+    install_test_runtime(directory, LOOPBACK)
     return directory / "cert.pem", directory / "key.pem"
 
 

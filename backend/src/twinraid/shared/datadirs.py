@@ -41,16 +41,48 @@ class DataPaths:
         return self.secrets / "password.argon2"
 
     @property
-    def tls_cert(self) -> Path:
+    def target_api_key(self) -> Path:
+        """API-Key von Unraid Groß (Konzept 3.5 und 5.5)."""
+        return self.secrets / "target-api-key"
+
+    @property
+    def target_api_cert(self) -> Path:
+        """Bestätigter SHA-256-Fingerabdruck des Zertifikats von Unraid Groß."""
+        return self.secrets / "target-api-cert.sha256"
+
+    @property
+    def tls_ca_cert(self) -> Path:
+        return self.tls / "ca.pem"
+
+    @property
+    def tls_ca_key(self) -> Path:
+        return self.tls / "ca-key.pem"
+
+    @property
+    def tls_server_cert(self) -> Path:
+        return self.tls / "server.pem"
+
+    @property
+    def tls_server_key(self) -> Path:
+        return self.tls / "server-key.pem"
+
+    @property
+    def legacy_tls_cert(self) -> Path:
+        """Selbstsigniertes Zertifikat aus Phase 2; wird beim Übergang gelöscht."""
         return self.tls / "cert.pem"
 
     @property
-    def tls_key(self) -> Path:
+    def legacy_tls_key(self) -> Path:
         return self.tls / "key.pem"
 
     @property
     def web_database(self) -> Path:
         return self.web / "web.sqlite"
+
+    @property
+    def tls_renewal_marker(self) -> Path:
+        """Vermerk des Web-Prozesses, wann er sich zuletzt für eine Erneuerung beendet hat."""
+        return self.web / "tls-renewal.json"
 
 
 def check_data_root(root: Path, owner_uid: int) -> None:

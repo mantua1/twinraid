@@ -34,7 +34,7 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setenv("TWINRAID_WEB_GID", str(os.getgid()))
     # Kein s6 in Tests.
     monkeypatch.setattr(admin_cli, "S6_SVC", tmp_path / "no-s6")
-    assert init_main() == 0
+    assert init_main([]) == 0
     return tmp_path
 
 
@@ -125,23 +125,42 @@ def test_unlock_signals_worker_via_s6(env: Path, monkeypatch: pytest.MonkeyPatch
     assert calls == [[str(s6), "-1", str(env / "service" / "twinraid-worker")]]
 
 
-def test_renew_cert(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    before = certificate_info(read_runtime(env / "run-tls")[0]).fingerprint
+def _fingerprints(env: Path) -> tuple[str, str]:
+    state = read_runtime(env / "run-tls")
+    assert state.ca is not None
+    return certificate_info(state.ca).fingerprint, certificate_info(state.leaf).fingerprint
+
+
+def test_renew_cert_keeps_the_ca(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    ca_before, server_before = _fingerprints(env)
     assert admin_cli.main(["renew-cert"]) == 0
-    after = certificate_info(read_runtime(env / "run-tls")[0]).fingerprint
-    assert before != after
+    ca_after, server_after = _fingerprints(env)
+    assert ca_after == ca_before
+    assert server_after != server_before
     out = capsys.readouterr().out
-    assert f"SHA-256 fingerprint: {after}" in out
+    assert f"SHA-256 fingerprint: {server_after}" in out
+    assert "Devices that trust the CA need no change" in out
     with _db(env) as db:
         assert db.execute("SELECT action FROM audit_log").fetchall() == [("cli_renew_cert",)]
 
 
+def test_renew_cert_with_new_ca(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    ca_before, server_before = _fingerprints(env)
+    assert admin_cli.main(["renew-cert", "--new-ca"]) == 0
+    ca_after, server_after = _fingerprints(env)
+    assert ca_after != ca_before
+    assert server_after != server_before
+    assert "Install the new CA certificate on all devices" in capsys.readouterr().out
+
+
 def test_show_cert_fingerprint(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    expected = certificate_info(read_runtime(env / "run-tls")[0]).fingerprint
+    ca, server = _fingerprints(env)
     assert admin_cli.main(["show-cert-fingerprint"]) == 0
     out = capsys.readouterr().out
-    assert f"SHA-256 fingerprint: {expected}" in out
-    assert "Active certificate: self-signed" in out
+    assert f"SHA-256 fingerprint: {ca}" in out
+    assert f"SHA-256 fingerprint: {server}" in out
+    assert "SHA-1 fingerprint (shown by Windows)" in out
+    assert "Server certificate: TwinRaid CA" in out
     assert "192.168.10.20" in out
 
 

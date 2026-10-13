@@ -1,19 +1,18 @@
 """Hilfsmittel für Web-Tests."""
 
-import os
+import time
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from tests.conftest import EXAMPLE_CONFIG
 from tests.support.passwords import TEST_PASSWORD
+from tests.support.tls import install_test_runtime
 from twinraid.config import load_config
 from twinraid.shared.mode import RunMode
 from twinraid.shared.passwords import VerifyOutcome
 from twinraid.shared.status import ResourceState, StatusSnapshot
-from twinraid.shared.tls import generate_self_signed, install_runtime
 from twinraid.web.app import WebApp, WebSettings, create_app
 from twinraid.web.db import WebDatabase
 from twinraid.web.worker_client import WorkerApi, WorkerUnavailableError
@@ -85,18 +84,15 @@ def make_app(
     database.initialize()
     runtime_tls = tmp_path / "run-tls"
     if not (runtime_tls / "cert.pem").exists():
-        cert, key = generate_self_signed(
-            config.web.tls.ip_addresses, config.web.tls.hostnames, datetime.now(UTC)
-        )
-        install_runtime(runtime_tls, cert, key, "self-signed", os.getgid())
+        install_test_runtime(runtime_tls, config.web.tls)
     settings = WebSettings(
         mode=RunMode.MOCK,
         config=config,
         frontend_dir=frontend_dir if frontend_dir is not None else build_frontend(tmp_path),
         runtime_tls_dir=runtime_tls,
+        renewal_marker=tmp_path / "tls-renewal.json",
     )
-    kwargs = {"clock": clock} if clock is not None else {}
-    return create_app(settings, worker or FakeWorker(), database, **kwargs)
+    return create_app(settings, worker or FakeWorker(), database, clock=clock or time.time)
 
 
 def make_client(

@@ -4,7 +4,7 @@ Aufruf im Container als root, z. B. über die Container-Konsole in Unraid:
 
     twinraid-admin set-password
     twinraid-admin show-cert-fingerprint
-    twinraid-admin renew-cert
+    twinraid-admin renew-cert [--new-ca]
     twinraid-admin unlock
 
 Root darf ohne DAC_OVERRIDE nicht in die Datenbank des Web-Prozesses schreiben.
@@ -181,15 +181,22 @@ def cmd_unlock(context: Context, _args: argparse.Namespace) -> int:
 
 def _print_certificate(context: Context) -> None:
     try:
-        certificate, source = read_runtime(context.runtime_tls_dir)
+        state = read_runtime(context.runtime_tls_dir)
     except TlsError as exc:
         raise CliError(str(exc)) from None
-    info = certificate_info(certificate)
     now = datetime.now(UTC)
-    say(f"Active certificate: {source}")
-    say(f"SHA-256 fingerprint: {info.fingerprint}")
-    say(f"Valid until: {info.not_after.date().isoformat()} ({info.days_left(now)} days left)")
-    say(f"Addresses: {', '.join(sorted(info.ip_addresses | info.hostnames)) or 'none'}")
+    if state.ca is not None:
+        ca = certificate_info(state.ca)
+        say(f"CA certificate: {ca.name} (install this one on your devices)")
+        say(f"  SHA-256 fingerprint: {ca.fingerprint}")
+        say(f"  SHA-1 fingerprint (shown by Windows): {ca.fingerprint_sha1}")
+        say(f"  Valid until: {ca.not_after.date().isoformat()} ({ca.days_left(now)} days left)")
+    info = certificate_info(state.leaf)
+    label = "TwinRaid CA" if state.source == "ca" else "custom certificate from /config/tls"
+    say(f"Server certificate: {label}")
+    say(f"  SHA-256 fingerprint: {info.fingerprint}")
+    say(f"  Valid until: {info.not_after.date().isoformat()} ({info.days_left(now)} days left)")
+    say(f"  Addresses: {', '.join(sorted(info.ip_addresses | info.hostnames)) or 'none'}")
 
 
 def cmd_show_cert_fingerprint(context: Context, _args: argparse.Namespace) -> int:
@@ -197,8 +204,9 @@ def cmd_show_cert_fingerprint(context: Context, _args: argparse.Namespace) -> in
     return 0
 
 
-def cmd_renew_cert(context: Context, _args: argparse.Namespace) -> int:
+def cmd_renew_cert(context: Context, args: argparse.Namespace) -> int:
     context.require_owner()
+    new_ca = bool(args.new_ca)
     if os.geteuid() == 0 and context.web_gid not in os.getgroups():
         # Nötig, damit die Kopie unter /run der Gruppe des Web-Prozesses gehören darf.
         os.setgroups([context.web_gid])
@@ -209,20 +217,24 @@ def cmd_renew_cert(context: Context, _args: argparse.Namespace) -> int:
             context.custom_tls_dir,
             context.runtime_tls_dir,
             context.web_gid,
-            force_new_self_signed=True,
+            renew_server=True,
+            new_ca=new_ca,
         )
     except TlsError as exc:
         raise CliError(str(exc)) from None
     _audit(context, AuditAction.CLI_RENEW_CERT)
     if active.source == "custom":
-        warn("A new self-signed certificate was created, but the custom certificate in ")
-        warn(f"{context.custom_tls_dir} stays active.")
+        warn(f"The custom certificate in {context.custom_tls_dir} stays active.")
     if _s6("-r", "twinraid-web"):
         say("The web process is restarting with the new certificate.")
     else:
         warn("Restart the web process to load the new certificate.")
     _print_certificate(context)
-    say("Devices that trusted the old certificate must confirm or install the new one.")
+    if new_ca:
+        say("A new CA was created. Install the new CA certificate on all devices and remove")
+        say("the old one; until then browsers show a warning.")
+    else:
+        say("Only the server certificate was renewed. Devices that trust the CA need no change.")
     return 0
 
 
@@ -238,11 +250,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="read the password from standard input instead of prompting (for scripts)",
     )
     set_password.set_defaults(handler=cmd_set_password)
-    commands.add_parser("renew-cert", help="create a new self-signed TLS certificate").set_defaults(
-        handler=cmd_renew_cert
+    renew = commands.add_parser("renew-cert", help="renew the TLS server certificate")
+    renew.add_argument(
+        "--new-ca",
+        action="store_true",
+        help="also create a new CA (it must then be installed again on all devices)",
     )
+    renew.set_defaults(handler=cmd_renew_cert)
     commands.add_parser(
-        "show-cert-fingerprint", help="show the fingerprint of the active certificate"
+        "show-cert-fingerprint", help="show the fingerprints of the CA and the server certificate"
     ).set_defaults(handler=cmd_show_cert_fingerprint)
     commands.add_parser("unlock", help="clear all login locks and throttling").set_defaults(
         handler=cmd_unlock

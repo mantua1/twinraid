@@ -25,6 +25,7 @@ with tempfile.TemporaryDirectory() as directory:
         config=load_config(Path("/config/twinraid.yaml")),
         frontend_dir=Path("/app/frontend"),
         runtime_tls_dir=Path("/run/twinraid-tls"),
+        renewal_marker=Path(directory) / "tls-renewal.json",
     )
     app = create_app(settings, WorkerClient(Path(directory) / "none.sock"), database)
     routes = [

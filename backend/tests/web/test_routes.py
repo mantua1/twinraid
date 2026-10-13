@@ -1,13 +1,15 @@
 """Verhalten der einzelnen Routen mit gültiger Session."""
 
+import os
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cryptography import x509
 from fastapi.testclient import TestClient
 
 from tests.web.helpers import FakeClock, FakeWorker, build_frontend, login, make_app, make_client
-from twinraid.shared.tls import certificate_info
+from twinraid.shared.tls import certificate_info, install_runtime, record_refresh_failure
 
 
 def _client(tmp_path: Path, worker: FakeWorker | None = None) -> TestClient:
@@ -83,21 +85,49 @@ def test_unknown_path_is_404_with_session(tmp_path: Path) -> None:
 def test_tls_info(tmp_path: Path) -> None:
     client = _client(tmp_path)
     info = client.get("/api/tls").json()
-    assert info["source"] == "self-signed"
-    assert info["days_left"] >= 824
-    assert info["expires_soon"] is False
-    pem = (tmp_path / "run-tls" / "cert.pem").read_bytes()
-    expected = certificate_info(x509.load_pem_x509_certificate(pem)).fingerprint
-    assert info["fingerprint_sha256"] == expected
+    assert info["source"] == "ca"
+    assert info["renewal_failed"] is False
+    chain = x509.load_pem_x509_certificates((tmp_path / "run-tls" / "cert.pem").read_bytes())
+    server, ca = (certificate_info(c) for c in chain)
+    assert info["server"]["fingerprint_sha256"] == server.fingerprint
+    assert info["server"]["days_left"] >= 824
+    assert info["server"]["expires_soon"] is False
+    assert info["ca"]["fingerprint_sha256"] == ca.fingerprint
+    assert info["ca"]["fingerprint_sha1"] == ca.fingerprint_sha1
+    assert info["ca"]["name"] == ca.name
+    assert info["ca"]["days_left"] >= 3649
+    assert info["ca"]["expires_soon"] is False
 
 
-def test_certificate_download(tmp_path: Path) -> None:
-    response = _client(tmp_path).get("/api/tls/certificate")
+def test_tls_info_reports_failed_renewal(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    record_refresh_failure(tmp_path / "run-tls", datetime.now(UTC), os.getgid())
+    assert client.get("/api/tls").json()["renewal_failed"] is True
+
+
+def test_ca_certificate_download(tmp_path: Path) -> None:
+    response = _client(tmp_path).get("/api/tls/ca-certificate")
     assert response.status_code == 200
-    assert response.headers["content-type"] == "application/x-pem-file"
-    assert response.headers["content-disposition"] == 'attachment; filename="twinraid.crt"'
-    assert response.content.startswith(b"-----BEGIN CERTIFICATE-----")
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert response.headers["content-disposition"] == 'attachment; filename="twinraid-ca.crt"'
+    ca = x509.load_der_x509_certificate(response.content)
+    assert ca.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
     assert b"PRIVATE KEY" not in response.content
+
+
+def test_no_ca_download_with_custom_certificate(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    runtime = tmp_path / "run-tls"
+    chain = (runtime / "cert.pem").read_bytes()
+    install_runtime(runtime, chain, (runtime / "key.pem").read_bytes(), None, "custom", os.getgid())
+    assert client.get("/api/tls/ca-certificate").status_code == 404
+    info = client.get("/api/tls").json()
+    assert info["source"] == "custom"
+    assert info["ca"] is None
+
+
+def test_server_certificate_download_is_gone(tmp_path: Path) -> None:
+    assert _client(tmp_path).get("/api/tls/certificate").status_code == 404
 
 
 def test_audit_list(tmp_path: Path) -> None:

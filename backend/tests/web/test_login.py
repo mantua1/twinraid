@@ -192,7 +192,7 @@ def test_maximum_lifetime_of_12_hours(tmp_path: Path) -> None:
     clock = FakeClock()
     client = make_client(make_app(tmp_path, clock=clock))
     login(client)
-    # 79 × 9 Minuten = 11 Stunden 51 Minuten, jeweils innerhalb des Inaktivitäts-Timeouts.
+    # 79 mal 9 Minuten = 11 Stunden 51 Minuten, jeweils innerhalb des Inaktivitäts-Timeouts.
     for _ in range(79):
         clock.advance(9 * 60)
         assert client.get("/api/status").status_code == 200

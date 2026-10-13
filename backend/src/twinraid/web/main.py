@@ -47,7 +47,8 @@ def main() -> int:
         logger.error("No TLS certificate in %s; twinraid-init must run first.", tls_dir)
         return EXIT_STARTUP_ERROR
 
-    database = WebDatabase(DataPaths(runtime.data_dir(env)).web_database)
+    data_paths = DataPaths(runtime.data_dir(env))
+    database = WebDatabase(data_paths.web_database)
     try:
         database.initialize()
     except (DatabaseError, sqlite3.Error) as exc:
@@ -59,9 +60,23 @@ def main() -> int:
         config=config,
         frontend_dir=runtime.frontend_dir(env),
         runtime_tls_dir=tls_dir,
+        renewal_marker=data_paths.tls_renewal_marker,
     )
-    app = create_app(settings, WorkerClient(runtime.socket_path(env)), database)
-    uvicorn.run(
+    server: uvicorn.Server | None = None
+
+    def request_restart() -> None:
+        # Geordnet beenden; s6 startet den Web-Prozess neu und erneuert vorher das
+        # Zertifikat (Konzept 5.2).
+        if server is not None:
+            server.should_exit = True
+
+    app = create_app(
+        settings,
+        WorkerClient(runtime.socket_path(env)),
+        database,
+        request_restart=request_restart,
+    )
+    uvicorn_config = uvicorn.Config(
         app,
         host=runtime.bind_host(env),
         port=config.web.port,
@@ -74,4 +89,6 @@ def main() -> int:
         server_header=False,
         log_config=None,
     )
+    server = uvicorn.Server(uvicorn_config)
+    server.run()
     return 0
