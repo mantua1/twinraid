@@ -27,6 +27,7 @@ VALIDITY = timedelta(days=825)
 # Kleiner Vorlauf, damit leicht falsch gehende Uhren das Zertifikat nicht ablehnen.
 BACKDATE = timedelta(minutes=5)
 EXPIRY_WARNING = timedelta(days=30)
+FIRST_CERTIFICATE_REASON = "no certificate exists yet"
 
 CertificateSource = Literal["self-signed", "custom"]
 IpAddress = IPv4Address | IPv6Address
@@ -179,7 +180,7 @@ def ensure_self_signed(
     key_pem = _read_optional(paths.tls_key)
     if reason is None:
         if cert_pem is None or key_pem is None:
-            reason = "no certificate exists yet"
+            reason = FIRST_CERTIFICATE_REASON
         else:
             try:
                 reason = _renewal_reason(load_pair(cert_pem, key_pem), tls_config, now)

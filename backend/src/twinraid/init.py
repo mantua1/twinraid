@@ -13,7 +13,13 @@ from twinraid.shared import runtime
 from twinraid.shared.datadirs import DataDirError, DataPaths, prepare_data_dirs
 from twinraid.shared.logs import configure_logging
 from twinraid.shared.mode import RunModeError, resolve_run_mode
-from twinraid.shared.tls import ActiveCertificate, TlsError, activate, uncovered_hosts
+from twinraid.shared.tls import (
+    FIRST_CERTIFICATE_REASON,
+    ActiveCertificate,
+    TlsError,
+    activate,
+    uncovered_hosts,
+)
 
 logger = logging.getLogger("twinraid.init")
 
@@ -22,7 +28,9 @@ _NOT_STARTING = "TwinRaid will not start. Fix the problem above and restart the 
 
 def log_certificate(active: ActiveCertificate, now: datetime) -> None:
     info = active.info
-    if active.generated_because is not None:
+    if active.generated_because == FIRST_CERTIFICATE_REASON:
+        logger.info("Generated the self-signed TLS certificate.")
+    elif active.generated_because is not None:
         logger.warning(
             "Generated a new self-signed TLS certificate because %s. Browsers and devices "
             "that trusted the old certificate must confirm the new one.",
