@@ -1,0 +1,55 @@
+# TwinRaid-Konfiguration für die lokale Entwicklung (backend/scripts/dev.sh,
+# docker/run-local.sh). Nur Beispielwerte, keine echten Adressen.
+# Aufruf im Browser: https://127.0.0.1:8443 oder https://localhost:8443
+
+web:
+  port: 8443
+  allowed_networks:
+    - 127.0.0.0/8              # Start ohne Container
+    - 172.16.0.0/12            # Docker-Bridge beim Start im Container
+  session_idle_minutes: 30
+  default_language: de
+  tls:
+    ip_addresses:
+      - 127.0.0.1
+    hostnames:
+      - localhost
+
+servers:
+  source:
+    name: "Unraid Klein"
+    host: 192.168.10.10
+  target:
+    name: "Unraid Groß"
+    host: 192.168.10.11
+    mac: "AA:BB:CC:DD:EE:FF"
+    wol_broadcast: 192.168.10.255
+    boot_timeout_minutes: 5
+
+gaming_vm:
+  display_name: "Gaming-VM"
+  unraid_vm_name: "Windows 11 Gaming"
+  shutdown_timeout_minutes: 3
+
+sync:
+  shares:
+    - appdata
+    - dokumente
+    - medien
+  appdata_share: appdata
+  exclude:
+    - appdata/twinraid
+  protect_on_target:
+    - appdata/_twinraid
+  max_deletions: 1000
+  stop_containers: true
+  never_stop:
+    - twinraid
+  copy_templates: true
+  schedule:
+    enabled: true
+    timezone: "Europe/Berlin"
+    days: [sun]
+    time: "03:00"
+    wake_target: true
+    shutdown_after: true

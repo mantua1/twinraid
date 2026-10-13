@@ -46,8 +46,12 @@ def test_sensitive_values_cover_all_kinds() -> None:
         "canaryshare7q",  # Share
         "canaryapp7q/canaryexclude7q",  # Pfad
         "canarycontainer7q",  # Container
+        "10.77.31.50",  # IP im Zertifikat
+        "canary-host-7q.home.arpa",  # Hostname im Zertifikat
     }
     assert expected <= values
+    # Loopback ist kein schützenswerter Wert und taucht deshalb nicht auf.
+    assert "127.0.0.1" not in values
 
 
 @pytest.mark.parametrize("path", sorted(PUBLIC_PATHS.values()))

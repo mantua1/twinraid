@@ -15,6 +15,10 @@ def sensitive_values(config: TwinRaidConfig) -> frozenset[str]:
         values.add(str(network))
         values.add(str(network.network_address))
 
+    # Adressen aus dem Zertifikat. Loopback ist kein schützenswerter Wert.
+    values.update(str(ip) for ip in config.web.tls.ip_addresses if not ip.is_loopback)
+    values.update(config.web.tls.hostnames)
+
     source = config.servers.source
     target = config.servers.target
     values.update({str(source.host), str(target.host), str(target.wol_broadcast)})

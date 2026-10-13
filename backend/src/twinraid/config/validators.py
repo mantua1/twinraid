@@ -19,6 +19,11 @@ FORBIDDEN_SHARES = frozenset({"system", "domains"})
 # Container-Namen wie bei Docker erlaubt.
 _CONTAINER_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", re.ASCII)
 
+# DNS-Name nach RFC 1123: Labels aus Buchstaben, Ziffern und Bindestrich,
+# nicht mit Bindestrich beginnend oder endend, je höchstens 63 Zeichen.
+_HOSTNAME_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", re.ASCII)
+_MAX_HOSTNAME_LENGTH = 253
+
 _MAC_RE = re.compile(r"[0-9A-Fa-f]{2}([:-])(?:[0-9A-Fa-f]{2}\1){4}[0-9A-Fa-f]{2}", re.ASCII)
 
 # Zeichen, die rsync in Filterregeln als Muster auswertet.
@@ -162,3 +167,38 @@ def reject_duplicate_days[T: str](days: list[T]) -> list[T]:
     if duplicates:
         raise ValueError(f"days contains duplicates: {', '.join(duplicates)}")
     return days
+
+
+def validate_hostname(value: str) -> str:
+    """DNS-Name nach RFC 1123, ohne Platzhalter, in Kleinbuchstaben gespeichert."""
+    name = value.lower()
+    if not 0 < len(name) <= _MAX_HOSTNAME_LENGTH:
+        raise ValueError(f"invalid hostname {value!r}: must be 1 to 253 characters")
+    labels = name.split(".")
+    if any(_HOSTNAME_LABEL_RE.fullmatch(label) is None for label in labels):
+        raise ValueError(
+            f"invalid hostname {value!r}: use letters, digits and '-' in dot-separated "
+            "labels, e.g. twinraid.home.arpa"
+        )
+    if all(label.isdigit() for label in labels):
+        raise ValueError(f"hostname {value!r} looks like an IP address; use ip_addresses")
+    return name
+
+
+def validate_tls_address[A: (IPv4Address, IPv6Address)](value: A) -> A:
+    """Adresse für das Zertifikat. Loopback ist für die lokale Entwicklung erlaubt."""
+    if value.is_unspecified or value.is_multicast:
+        raise ValueError(f"{value} cannot be used in a certificate")
+    return value
+
+
+def reject_duplicates[T](values: list[T]) -> list[T]:
+    seen: set[T] = set()
+    duplicates: list[str] = []
+    for value in values:
+        if value in seen:
+            duplicates.append(str(value))
+        seen.add(value)
+    if duplicates:
+        raise ValueError(f"duplicate entries: {', '.join(sorted(set(duplicates)))}")
+    return values

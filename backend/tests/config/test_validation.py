@@ -134,6 +134,24 @@ INVALID_CASES: list[tuple[str, object, str]] = [
     ("web.allowed_networks", ["kein-netz"], "allowed_networks[0]"),
     ("web.default_language", "fr", "'de' or 'en'"),
     ("web.session_idle_minutes", 0, "greater than or equal to 1"),
+    # --- TLS ---
+    ("web.tls.ip_addresses", [], "at least 1"),
+    ("web.tls.ip_addresses", ["0.0.0.0"], "cannot be used in a certificate"),  # noqa: S104
+    ("web.tls.ip_addresses", ["224.0.0.1"], "cannot be used in a certificate"),
+    ("web.tls.ip_addresses", ["twinraid.local"], "web.tls.ip_addresses[0]"),
+    ("web.tls.ip_addresses", ["192.168.10.20", "192.168.10.20"], "duplicate entries"),
+    ("web.tls.hostnames", ["*.home.arpa"], "invalid hostname"),
+    ("web.tls.hostnames", ["-twinraid.home.arpa"], "invalid hostname"),
+    ("web.tls.hostnames", ["twinraid..home.arpa"], "invalid hostname"),
+    ("web.tls.hostnames", ["twinraid.home.arpa."], "invalid hostname"),
+    ("web.tls.hostnames", ["twin raid"], "invalid hostname"),
+    ("web.tls.hostnames", ["x" * 64 + ".home.arpa"], "invalid hostname"),
+    ("web.tls.hostnames", ["192.168.10.20"], "looks like an IP address"),
+    ("web.tls.hostnames", ["bücher.home.arpa"], "invalid hostname"),
+    ("web.tls.hostnames", ["Twin.Home.Arpa", "twin.home.arpa"], "duplicate entries"),
+    ("web.tls.hostnames", "twinraid.home.arpa", "valid list"),
+    ("web.tls.port", 8443, "web.tls.port: unknown key"),
+    ("web.tls", _DELETE, "web.tls: required key is missing"),
     # --- Server ---
     ("servers.source.host", "999.1.1.1", "servers.source.host"),
     ("servers.source.host", "unraid.local", "servers.source.host"),
@@ -249,3 +267,31 @@ def test_config_is_immutable() -> None:
     config = load_config(EXAMPLE_CONFIG)
     with pytest.raises(ValueError, match="frozen"):
         config.web.port = 1  # type: ignore[misc]
+
+
+def test_tls_from_example() -> None:
+    tls = load_config(EXAMPLE_CONFIG).web.tls
+    assert [str(ip) for ip in tls.ip_addresses] == ["192.168.10.20"]
+    assert tls.hostnames == []
+
+
+def test_tls_hostnames_are_optional_and_lowercased(tmp_path: Path) -> None:
+    data = _example()
+    del data["web"]["tls"]["hostnames"]
+    assert _load(tmp_path, data).web.tls.hostnames == []
+    data["web"]["tls"]["hostnames"] = ["TwinRaid.Home.Arpa"]
+    assert _load(tmp_path, data).web.tls.hostnames == ["twinraid.home.arpa"]
+
+
+def test_tls_allows_loopback_and_ipv6(tmp_path: Path) -> None:
+    data = _with("web.tls.ip_addresses", ["127.0.0.1", "fd00:10::20"])
+    tls = _load(tmp_path, data).web.tls
+    assert tls.allowed_hosts() == {"127.0.0.1", "fd00:10::20"}
+
+
+def test_allowed_hosts_combines_ips_and_names(tmp_path: Path) -> None:
+    data = _with("web.tls.hostnames", ["twinraid.home.arpa"])
+    assert _load(tmp_path, data).web.tls.allowed_hosts() == {
+        "192.168.10.20",
+        "twinraid.home.arpa",
+    }
