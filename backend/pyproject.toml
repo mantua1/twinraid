@@ -18,6 +18,8 @@ twinraid-web = "twinraid.web.main:main"
 twinraid-worker = "twinraid.worker.main:main"
 twinraid-preflight = "twinraid.preflight:main"
 twinraid-init = "twinraid.init:main"
+twinraid-admin = "twinraid.admin_cli:main"
+twinraid-healthcheck = "twinraid.healthcheck:main"
 
 [build-system]
 requires = ["uv_build==0.13.0"]
