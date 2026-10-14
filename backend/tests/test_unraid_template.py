@@ -26,6 +26,16 @@ def test_image_and_network() -> None:
     assert _text("WebUI").startswith("https://")
 
 
+def test_address_fields_stay_empty() -> None:
+    """IP und MAC trägt der Nutzer nur auf Unraid ein, nie im Repo (Konzept 5.1)."""
+    assert _text("MyIP") == ""
+    assert _text("MyMAC") == ""
+    # Die feste MAC kommt über das Feld, nicht über die Extra Parameters.
+    assert "--mac-address" not in _text("ExtraParams")
+    assert "--network" not in _text("ExtraParams")
+    assert "--net=" not in _text("ExtraParams")
+
+
 def test_hardening_matches_the_start_test() -> None:
     params = _text("ExtraParams").split()
     smoke = SMOKE_TEST.read_text(encoding="utf-8")

@@ -1,10 +1,10 @@
 # TwinRaid auf Unraid einrichten
 
-> **Stand: Version 0.3.1 (erste Fassung).** Diese Version zeigt den Status beider Server und der Gaming-VM an. Aktionen wie Wecken, Herunterfahren, VM starten oder Sync folgen in späteren Versionen. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
+> **Stand: Version 0.3.2 (erste Fassung).** Diese Version zeigt den Status beider Server und der Gaming-VM an. Aktionen wie Wecken, Herunterfahren, VM starten oder Sync folgen in späteren Versionen. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
 
 Diese Anleitung führt Schritt für Schritt durch die Installation auf **Unraid Klein** (dem stromsparenden Server, der immer läuft). Am Ende:
 
-- läuft TwinRaid als Container mit eigener IP-Adresse im Server-Netz,
+- läuft TwinRaid als Container mit eigener IP- und MAC-Adresse im Server-Netz,
 - ist die Weboberfläche per HTTPS aus dem Server-Netz und dem Client-Netz erreichbar,
 - vertrauen deine Geräte (Windows, Linux, Android) dem Zertifikat ohne Warnung,
 - zeigt das Dashboard den echten Status von Unraid Klein, Unraid Groß und der Gaming-VM.
@@ -14,11 +14,11 @@ Die Begriffe und Sicherheitsregeln stehen in [KONZEPT.md](KONZEPT.md).
 ## Inhalt
 
 1. [Vorbereitung: Werte notieren](#1-vorbereitung-werte-notieren)
-2. [Unraid Klein: Zugriff auf den eigenen Host erlauben](#2-unraid-klein-zugriff-auf-den-eigenen-host-erlauben)
+2. [Unraid Klein: „Host access to custom networks“ ausgeschaltet lassen](#2-unraid-klein-host-access-to-custom-networks-ausgeschaltet-lassen)
 3. [Ordner und Konfiguration anlegen](#3-ordner-und-konfiguration-anlegen)
 4. [Container installieren (zuerst im Simulationsmodus)](#4-container-installieren-zuerst-im-simulationsmodus)
 5. [Erster Start: Log prüfen und Passwort setzen](#5-erster-start-log-prüfen-und-passwort-setzen)
-6. [UniFi: Zugriff aus dem Client-Netz erlauben](#6-unifi-zugriff-aus-dem-client-netz-erlauben)
+6. [UniFi: IP reservieren und Zugriff aus dem Client-Netz erlauben](#6-unifi-ip-reservieren-und-zugriff-aus-dem-client-netz-erlauben)
 7. [Erste Anmeldung und CA-Zertifikat herunterladen](#7-erste-anmeldung-und-ca-zertifikat-herunterladen)
 8. [CA-Zertifikat auf den Geräten installieren](#8-ca-zertifikat-auf-den-geräten-installieren)
 9. [Unraid Groß: API-Key nur zum Lesen anlegen](#9-unraid-groß-api-key-nur-zum-lesen-anlegen)
@@ -46,6 +46,8 @@ Notiere dir vorab diese Werte. Die Beispiele passen zur Beispielkonfiguration; d
 | Server-Netz | `192.168.10.0/24` | UniFi: *Settings → Networks* |
 | Client-Netz | `192.168.20.0/24` | UniFi: *Settings → Networks* |
 | **Feste IP für TwinRaid** | `192.168.10.20` | Selbst wählen: eine freie Adresse im Server-Netz **außerhalb** des DHCP-Bereichs. Sie wird **nur im Unraid-Template** eingetragen (Schritt 4), nirgends sonst. |
+| **Feste MAC für TwinRaid** | `02:5e:3a:91:c4:07` | Selbst erzeugen (Befehl unten). Sie wird **nur im Unraid-Template** eingetragen (Schritt 4) und in UniFi für die Reservierung verwendet (Schritt 6). |
+| Geräte im Server-Netz, die TwinRaid aufrufen dürfen | `192.168.10.50` (Admin-PC) | Einzelne Geräte, die im Server-Netz stehen, z. B. dein PC. Sie kommen als `/32` in die Konfiguration (Schritt 3.3). |
 | IP von Unraid Klein | `192.168.10.10` | Unraid Klein: *Settings → Network Settings* |
 | IP von Unraid Groß | `192.168.10.11` | Unraid Groß: *Settings → Network Settings* |
 | MAC-Adresse von Unraid Groß | `AA:BB:CC:DD:EE:FF` | Unraid Groß: *Settings → Network Settings* (wird erst für Wake-on-LAN gebraucht, muss aber schon in der Konfiguration stehen) |
@@ -54,19 +56,38 @@ Notiere dir vorab diese Werte. Die Beispiele passen zur Beispielkonfiguration; d
 | Name der Gaming-VM | `Windows 11 Gaming` | Unraid Groß: Reiter **VMs**, genau so geschrieben |
 | Shares zum Spiegeln | `appdata`, `dokumente`, `medien` | Reiter **Shares**; `system` und `domains` sind nie erlaubt |
 
-**Prüfen, ob die feste IP frei ist:** Im Unraid-Terminal `ping -c 3 192.168.10.20` (deine Adresse). Kommt *keine* Antwort („100% packet loss“), ist sie frei.
+**Prüfen, ob die feste IP frei ist:** Im Unraid-Terminal `ping -c 3 192.168.10.20` (deine Adresse). Kommt *keine* Antwort („100% packet loss“), ist sie frei. Achtung: Container mit eigener IP auf Unraid Klein selbst antworten hier nie (siehe Schritt 2). Sieh deshalb zusätzlich im Reiter **Docker** (oben rechts **Advanced View**) nach, ob ein Container die Adresse schon verwendet.
+
+**MAC-Adresse erzeugen:** Im Unraid-Terminal (oder auf einem Linux-PC):
+
+```bash
+printf '02:%02x:%02x:%02x:%02x:%02x\n' $(od -An -N5 -tu1 /dev/urandom)
+```
+
+Das Ergebnis sieht aus wie `02:5e:3a:91:c4:07` und ist bei jedem Aufruf anders. Notiere es einmal und verwende immer dieselbe Adresse. Die `02` am Anfang kennzeichnet eine selbst vergebene Adresse („lokal administriert“), die mit keiner echten Netzwerkkarte kollidiert. Die MAC gehört wie die IP nur in das Template auf Unraid Klein, nicht in `twinraid.yaml` und nicht ins Repository.
+
+> **Warum eine feste MAC?** Ohne feste Angabe bekommt der Container von Docker (ab Version 28, Unraid 7.3.3 hat 29.8.2) bei jedem Start eine neue, zufällige MAC. Eine Reservierung in UniFi würde dann nach dem nächsten Neustart oder Update nicht mehr passen, und UniFi zeigt jedes Mal ein neues Gerät.
 
 ---
 
-## 2. Unraid Klein: Zugriff auf den eigenen Host erlauben
+## 2. Unraid Klein: „Host access to custom networks“ ausgeschaltet lassen
 
-TwinRaid bekommt eine eigene IP. Ohne diese Einstellung kann der Container seinen eigenen Host (Unraid Klein) nicht erreichen, und Klein würde als „offline“ angezeigt.
+TwinRaid braucht diese Einstellung nicht. **Nicht einschalten.**
 
-1. *Settings → Docker* öffnen.
-2. Oben rechts **Advanced View** einschalten.
-3. **Enable Docker** auf **No** stellen und **Apply** klicken. (Alle Container stoppen kurz.)
-4. **Host access to custom networks** auf **Enabled** stellen.
-5. **Enable Docker** wieder auf **Yes** stellen und **Apply** klicken.
+**Kontrolle:** *Settings → Docker*, oben rechts **Advanced View**. Dort sollte stehen:
+
+- **Docker custom network type:** `macvlan`
+- **Host access to custom networks:** `Disabled`
+
+Nichts ändern, nur ansehen.
+
+> **Warum ausgeschaltet?** Auf Unraid Klein hängen Container mit eigener IP per macvlan an der Bridge `br0`. Laut den Release Notes von Unraid 6.12.4 ist macvlan auf einer Bridge unzuverlässig und kann zu Call Traces (Kernel-Fehlermeldungen bis hin zu Abstürzen) führen. „Host access“ legt auf `br0` zusätzlich eine eigene macvlan-Schnittstelle für den Server selbst an und leitet dessen Verkehr darüber. Die von Unraid empfohlene Abhilfe (Bridging aus, Netzwerk `eth0`) würde alle Container mit eigener IP auf Klein betreffen.
+
+**Was das für TwinRaid bedeutet:**
+
+- Container mit eigener IP und Unraid Klein selbst erreichen sich gegenseitig nicht. Aus dem Unraid-Terminal von Klein bekommst du von TwinRaid deshalb keine Antwort (`ping`, `curl`). Das ist normal. Von deinem PC aus ist TwinRaid ganz normal erreichbar.
+- Die Kachel **Unraid Klein** zeigt im Echtbetrieb immer **Online** mit dem Hinweis **TwinRaid läuft auf diesem Server**. TwinRaid läuft ja auf Klein; solange du das Dashboard siehst, ist Klein an.
+- Für den späteren Sync muss TwinRaid Container auf Klein stoppen und starten. Wie das ohne Host access geht, ist noch offen (Konzept, Entscheidung E7). In dieser Version wird das nicht gebraucht.
 
 ---
 
@@ -102,11 +123,11 @@ Steht dort `nobody users` oder beginnt die Zeile mit `drwxrwxrwx`, die beiden Be
 
 > **Hinweis zu `appdata`:** TwinRaid speichert eine kleine SQLite-Datenbank. Am zuverlässigsten liegt `appdata` auf einem Pool (z. B. Cache) mit der Share-Einstellung *Exclusive access*. Bei den Unraid-Standardeinstellungen ist das meist schon so.
 
-**3.2 Beispielkonfiguration herunterladen.** Die Version im Pfad (`v0.3.1`) passt zur installierten Version.
+**3.2 Beispielkonfiguration herunterladen.** Die Version im Pfad (`v0.3.2`) passt zur installierten Version.
 
 ```bash
 wget -O /mnt/user/appdata/twinraid/config/twinraid.yaml \
-  https://raw.githubusercontent.com/mantua1/twinraid/v0.3.1/config.example.yaml
+  https://raw.githubusercontent.com/mantua1/twinraid/v0.3.2/config.example.yaml
 chmod 644 /mnt/user/appdata/twinraid/config/twinraid.yaml
 ```
 
@@ -118,7 +139,7 @@ nano /mnt/user/appdata/twinraid/config/twinraid.yaml
 
 Ersetze die Beispielwerte durch deine Werte aus Schritt 1:
 
-- `web.allowed_networks`: Server-Netz und Client-Netz. Nur Geräte aus diesen Netzen dürfen TwinRaid aufrufen.
+- `web.allowed_networks`: Nur Geräte aus diesen Einträgen dürfen TwinRaid aufrufen. Ein Eintrag ist ein ganzes Netz (`192.168.20.0/24`) oder ein einzelnes Gerät (`192.168.10.50/32`). Beides lässt sich mischen. Siehe Kasten unten.
 - **Die IP von TwinRaid trägst du hier nicht ein.** Sie steht nur im Unraid-Template (Schritt 4); TwinRaid erkennt sie beim Start selbst und verwendet sie für Zertifikat und Adressprüfung. Die Zeilen `# ip_addresses:` bleiben auskommentiert.
 - `web.tls.hostnames`: leer lassen (`[]`), außer du hast für TwinRaid einen Namen im DNS eingerichtet.
 - `web.port`: bleibt auskommentiert (Standard 8443, passend zum Template).
@@ -129,6 +150,16 @@ Ersetze die Beispielwerte durch deine Werte aus Schritt 1:
 - `sync.shares`: deine Shares. Der Sync selbst kommt erst in einer späteren Version, die Werte werden aber schon geprüft.
 
 Speichern mit `Strg+O`, dann `Enter`; beenden mit `Strg+X`.
+
+> **Welche Netze eintragen?** Eine Router-Firewall wie die von UniFi filtert nur Verkehr **zwischen** Netzen, nicht **innerhalb** eines Netzes. Im Server-Netz, in dem TwinRaid selbst steht, stehen auch andere Container mit eigener IP und VMs direkt daneben. Die Router-Firewall sieht deren Zugriffe auf TwinRaid gar nicht. Trag im Server-Netz deshalb **nur einzelne Geräte als `/32`** ein, die TwinRaid wirklich aufrufen sollen (z. B. deinen Admin-PC). Andere Netze wie das Client-Netz kannst du **ganz** eintragen, weil dort die Firewall-Regel aus Schritt 6 den Zugriff regelt.
+>
+> ```yaml
+>   allowed_networks:
+>     - 192.168.10.50/32         # Server-Netz: nur der Admin-PC
+>     - 192.168.20.0/24          # Client-Netz: ganz, die UniFi-Regel regelt den Zugriff
+> ```
+>
+> Ein einzelnes Gerät **immer mit `/32`** schreiben (oder ganz ohne Maske). `192.168.10.50/24` ist ein Fehler: Die Maske meint das ganze Netz, TwinRaid startet dann nicht und nennt beide richtigen Schreibweisen.
 
 > **Wichtig:** Einrückungen sind Leerzeichen, keine Tabulatoren. Uhrzeiten stehen in Anführungszeichen (`time: "03:00"`). Ist etwas falsch, startet der Container nicht und nennt im Log genau die Stelle.
 
@@ -142,7 +173,7 @@ Im Simulationsmodus spricht TwinRaid keine echten Server an. So prüfst du zuers
 
 ```bash
 wget -O /boot/config/plugins/dockerMan/templates-user/my-TwinRaid.xml \
-  https://raw.githubusercontent.com/mantua1/twinraid/v0.3.1/docker/unraid-template.xml
+  https://raw.githubusercontent.com/mantua1/twinraid/v0.3.2/docker/unraid-template.xml
 ```
 
 **4.2 Container anlegen:**
@@ -151,9 +182,12 @@ wget -O /boot/config/plugins/dockerMan/templates-user/my-TwinRaid.xml \
 2. Bei **Template** unter *User templates* den Eintrag **TwinRaid** wählen.
 3. **Network Type:** `Custom: br0` (ist vorausgewählt).
 4. **Fixed IP address:** die feste IP für TwinRaid aus Schritt 1. Das ist die einzige Stelle, an der die IP steht.
-5. **Betriebsmodus:** `mock` lassen.
-6. **Konfiguration** und **Daten:** die vorgegebenen Pfade lassen (`/mnt/user/appdata/twinraid/config` und `…/data`).
-7. **Apply** klicken.
+5. **Fixed MAC address** (direkt darunter, ab Unraid 7.3): die MAC aus Schritt 1. Auch sie steht nur hier.
+6. **Betriebsmodus:** `mock` lassen.
+7. **Konfiguration** und **Daten:** die vorgegebenen Pfade lassen (`/mnt/user/appdata/twinraid/config` und `…/data`).
+8. **Apply** klicken.
+
+Unraid übergibt Netzwerk, IP und MAC zusammen an Docker. In der Ausgabe nach **Apply** steht deshalb eine Zeile mit `--network='name=br0,ip=…,mac-address=…'`. Die MAC bitte **nicht** zusätzlich als `--mac-address` in die *Extra Parameters* schreiben; das Feld ist der vorgesehene Weg.
 
 Die zusätzlichen Docker-Parameter (*Extra Parameters*, nur in der *Advanced View* sichtbar) härten den Container: schreibgeschütztes Dateisystem, nur fünf nötige Rechte, kein Rechteausbau. Bitte nicht ändern.
 
@@ -187,11 +221,32 @@ twinraid-admin show-cert-fingerprint
 
 Lass dieses Fenster offen oder notiere die Werte unter *CA certificate*. Du brauchst sie in Schritt 8, um zu prüfen, dass du wirklich das CA-Zertifikat von TwinRaid installierst.
 
+**5.4 MAC-Adresse prüfen, vor und nach einer Neuanlage.** So stellst du sicher, dass die MAC auch Updates übersteht. Im **Unraid-Terminal von Klein**:
+
+1. Aktuelle MAC anzeigen:
+
+   ```bash
+   docker inspect --format '{{range .NetworkSettings.Networks}}{{.MacAddress}}{{end}}' TwinRaid
+   ```
+
+   Die Ausgabe muss genau die MAC aus Schritt 1 sein. (Alternativ zeigt der Reiter **Docker** in der **Advanced View** die MAC jedes Containers.)
+2. Eine Neuanlage auslösen, wie sie auch bei jedem Update passiert: Reiter **Docker** → Symbol *TwinRaid* → **Edit** → ohne Änderung **Apply**. Unraid löscht den Container und legt ihn neu an.
+3. Den Befehl aus 1. wiederholen. Die MAC muss **gleich** geblieben sein.
+4. Zusätzlich einmal **Restart** (Symbol *TwinRaid* → **Restart**) und erneut vergleichen.
+
+Hat sich die MAC geändert, ist das Feld **Fixed MAC address** leer oder die Unraid-Version älter als 7.3. Ohne feste MAC vergibt Docker bei jedem Start eine neue. Wiederhole den Vergleich nach dem ersten echten Update (Abschnitt 13).
+
 ---
 
-## 6. UniFi: Zugriff aus dem Client-Netz erlauben
+## 6. UniFi: IP reservieren und Zugriff aus dem Client-Netz erlauben
 
-Aus dem Server-Netz ist TwinRaid sofort erreichbar. Für das Client-Netz brauchst du eine Firewall-Regel. Es reicht genau ein Port.
+**6.1 Feste IP per MAC reservieren.** TwinRaid nutzt kein DHCP; die IP steht fest im Template. Die Reservierung in UniFi sorgt dafür, dass der Router diese IP nie an ein anderes Gerät vergibt und TwinRaid immer als dasselbe Gerät führt.
+
+1. UniFi: **Client Devices** → das Gerät mit der MAC aus Schritt 1 öffnen. (Steht es noch nicht in der Liste, zuerst TwinRaid einmal im Browser aufrufen, Schritt 7 Punkt 1, und dann hierher zurückkehren.)
+2. **Settings** → **Fixed IP Address** einschalten, die feste IP für TwinRaid eintragen. Optional als Namen `TwinRaid` vergeben.
+3. **Apply**.
+
+**6.2 Firewall-Regel für das Client-Netz.** Aus dem Server-Netz dürfen nur die Geräte zugreifen, die in `web.allowed_networks` stehen (Schritt 3.3). Für das Client-Netz brauchst du eine Firewall-Regel. Es reicht genau ein Port.
 
 **UniFi Network ab Version 9 (Zone-Based Firewall):** *Settings → Policy Engine → Zones → Create Policy*
 
@@ -208,7 +263,7 @@ Aus dem Server-Netz ist TwinRaid sofort erreichbar. Für das Client-Netz brauchs
 
 ## 7. Erste Anmeldung und CA-Zertifikat herunterladen
 
-1. Im Browser `https://192.168.10.20:8443` aufrufen (deine feste IP).
+1. Im Browser `https://192.168.10.20:8443` aufrufen (deine feste IP). Das Gerät muss in `web.allowed_networks` stehen (Schritt 3.3), sonst zeigt der Browser nur `forbidden`.
 2. Der Browser warnt, weil er die TwinRaid-CA noch nicht kennt. **Nur dieses eine Mal** die Warnung bestätigen (Chrome/Edge: *Erweitert → Weiter zu …*; Firefox: *Erweitert → Risiko akzeptieren und fortfahren*).
 3. Mit dem Passwort aus Schritt 5 anmelden. Oben siehst du das gelbe Banner **Simulationsmodus**.
 4. **Einstellungen** → Abschnitt **CA-Zertifikat** → **CA-Zertifikat herunterladen**. Die Datei heißt `twinraid-ca.crt`.
@@ -321,7 +376,7 @@ OK: the API key works. VM 'Windows 11 Gaming' is SHUTOFF.
 
 Klappt es nicht, nennt der Befehl die Ursache, etwa einen falschen Key, fehlende Rechte oder einen falsch geschriebenen VM-Namen (dann listet er die vorhandenen VMs auf). Hilfe dazu in Abschnitt 12.
 
-**10.3 Dashboard prüfen:** Im Browser neu laden. Statt des gelben Banners steht oben **Nur Statusanzeige**. Die Kacheln zeigen innerhalb von etwa 10 Sekunden den echten Zustand. Ist Unraid Groß aus, steht bei der VM „Server offline“.
+**10.3 Dashboard prüfen:** Im Browser neu laden. Statt des gelben Banners steht oben **Nur Statusanzeige**. Die Kacheln zeigen innerhalb von etwa 10 Sekunden den echten Zustand. Unraid Klein steht immer auf **Online** mit dem Hinweis „TwinRaid läuft auf diesem Server“ (siehe Schritt 2). Ist Unraid Groß aus, steht bei der VM „Server offline“.
 
 > **Hinweis bei `scheme: http`:** Solange Unraid Groß auf *Use SSL/TLS: No* steht, geht der API-Key unverschlüsselt durch das Server-Netz. TwinRaid zeigt das im Startlog und unter **Einstellungen → Verbindung zu Unraid Groß** an. Abschnitt 11 beschreibt die Umstellung auf HTTPS.
 
@@ -373,7 +428,11 @@ Der Befehl zeigt den Fingerabdruck, den Unraid Groß gerade ausliefert. Vergleic
 
 | Anzeige im Dashboard | Bedeutung | Abhilfe |
 |---|---|---|
-| Klein: **Nicht erreichbar** | TwinRaid erreicht seinen eigenen Host nicht | Schritt 2 (Host access to custom networks); `servers.source.host` und `webgui` prüfen |
+| Klein: **TwinRaid läuft auf diesem Server** | Normal im Echtbetrieb: TwinRaid läuft auf Klein und prüft Klein deshalb nicht | Nichts zu tun. „Host access to custom networks“ bleibt aus (Schritt 2) |
+| Browser zeigt nur **forbidden** | Das Gerät steht nicht in `web.allowed_networks`; im Container-Log steht `Rejected request from … not in web.allowed_networks` | IP des Geräts eintragen (im Server-Netz einzeln als `/32`, Schritt 3.3) und den Container neu starten |
+| Log: `… has host bits set` | Ein Eintrag in `allowed_networks` wie `192.168.10.50/24` | Einzelnes Gerät als `192.168.10.50/32`, ganzes Netz als `192.168.10.0/24` schreiben; die Meldung nennt beide Varianten |
+| TwinRaid aus dem Unraid-Terminal von Klein nicht erreichbar (`ping`, `curl`) | Normal ohne „Host access to custom networks“ | Nichts zu tun; von anderen Geräten aus testen |
+| MAC nach Update oder Neustart anders, UniFi zeigt ein neues Gerät | Feld **Fixed MAC address** im Template leer oder Unraid älter als 7.3 | MAC aus Schritt 1 im Template eintragen (Schritt 4.2), danach Schritt 5.4 |
 | Groß: **Nicht erreichbar**, VM: **Server offline** | Unraid Groß ist aus oder nicht erreichbar | Normal, wenn Groß aus ist. Sonst IP und `webgui` in `twinraid.yaml` prüfen |
 | VM: **API nicht erreichbar** | Groß antwortet, die API aber nicht | `webgui.scheme` und `port` prüfen; Groß gerade erst gestartet? Kurz warten |
 | VM: **Unraid leitet auf HTTPS um** | Groß steht auf *Use SSL/TLS: Yes*, TwinRaid nutzt `http` | Abschnitt 11.3 und 11.4 |
@@ -426,12 +485,12 @@ Danach den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart
 
 ## 13. Updates einspielen und Herkunft prüfen
 
-- Unraid prüft regelmäßig, ob es eine neue Version gibt. Im Reiter **Docker** steht dann bei TwinRaid **update ready**. Klick auf das Symbol → **Update**. Daten und Einstellungen bleiben erhalten.
+- Unraid prüft regelmäßig, ob es eine neue Version gibt. Im Reiter **Docker** steht dann bei TwinRaid **update ready**. Klick auf das Symbol → **Update**. Daten und Einstellungen bleiben erhalten, die MAC dank des Felds **Fixed MAC address** ebenso. Nach dem ersten Update einmal wie in Schritt 5.4 vergleichen.
 - Das Template verwendet `ghcr.io/mantua1/twinraid:latest`. Dieser Tag zeigt immer auf das neueste Release. Wer eine Version festhalten möchte, trägt unter *Repository* zum Beispiel `ghcr.io/mantua1/twinraid:0.3` ein.
 - Jedes Image wird ausschließlich von GitHub Actions aus diesem Repository gebaut und hat einen signierten Herkunftsnachweis. Prüfen kannst du ihn auf einem PC mit der GitHub-CLI (`gh`):
 
 ```bash
-gh attestation verify oci://ghcr.io/mantua1/twinraid:0.3.1 --owner mantua1
+gh attestation verify oci://ghcr.io/mantua1/twinraid:0.3.2 --owner mantua1
 ```
 
 Steht am Ende `Verification succeeded!`, stammt das Image nachweislich aus diesem Repository.
