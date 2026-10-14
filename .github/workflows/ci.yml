@@ -35,7 +35,8 @@ jobs:
           version: "0.13.0"
           working-directory: backend
           enable-cache: true
-          cache-dependency-glob: backend/uv.lock
+          # Relativ zu working-directory (sonst sucht setup-uv backend/backend/uv.lock).
+          cache-dependency-glob: uv.lock
       - run: uv sync --locked
       - run: uv run ruff check
       - run: uv run ruff format --check
