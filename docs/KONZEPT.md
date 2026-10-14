@@ -1,6 +1,6 @@
 # TwinRaid – Projektkonzept
 
-> Arbeitstitel „TwinRaid“ · Version 0.7 · Stand 13.10.2026
+> Arbeitstitel „TwinRaid“ · Version 0.8 · Stand 14.10.2026
 > Dieses Dokument ist die verbindliche Grundlage für die Entwicklung. Änderungen am Konzept werden hier eingetragen, bevor sie umgesetzt werden.
 
 ---
@@ -102,11 +102,12 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 
 | Aufgabe | Weg | Rechte |
 |---|---|---|
-| Server online/offline | TCP-Check auf den WebGUI-Port aus `servers.<server>.webgui` | keine |
+| Groß online/offline | TCP-Check auf den WebGUI-Port aus `servers.target.webgui` | keine |
+| Klein online/offline | keine Prüfung: TwinRaid läuft auf Klein, im Modus `real` gilt Klein deshalb immer als online (ab v0.3.2, siehe 4.1) | keine |
 | Wake-on-LAN | UDP-Magic-Packet an die Broadcast-Adresse des Server-Netzes | keine |
 | Gaming-VM Status | Unraid-API auf Groß (siehe 3.5) | API-Key nur mit `VMS:READ_ANY` (ab Phase 3) |
 | Gaming-VM Start/Stop/Force-Stop | Unraid-API auf Groß | zusätzlich `VMS:UPDATE_ANY` (ab Phase 4) |
-| Container stoppen/starten (Konsistenz beim Sync) | Unraid-API auf Klein | API-Key nur mit Docker-Rechten |
+| Container stoppen/starten (Konsistenz beim Sync) | Unraid-API auf Klein; der Weg dorthin ohne „Host access to custom networks“ ist offen (E7) | API-Key nur mit Docker-Rechten |
 | Daten kopieren | rsync über SSH nach Groß | SSH-Key „sync“, per Wrapper auf erlaubte Zielpfade beschränkt |
 | Groß herunterfahren | SSH (oder Unraid-API, falls sie eine Shutdown-Funktion bietet, wird in Phase 4 geprüft) | SSH-Key „power“, darf ausschließlich den Shutdown-Befehl ausführen |
 
@@ -131,7 +132,7 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 
 Kacheln:
 
-1. **Unraid Klein:** Status (sollte immer online sein).
+1. **Unraid Klein:** Status. Im Modus `real` immer „Online“ mit der Ursache „TwinRaid läuft auf diesem Server“ (siehe „Prüfung“).
 2. **Unraid Groß:** Status mit den Buttons „Wecken“ und „Herunterfahren“.
 3. **Gaming-VM:** Status mit den Buttons „Starten“ und „Herunterfahren“. Nach einem Timeout zusätzlich „Erzwingen“.
 4. **Sync:** letzter Lauf (Ergebnis, Dauer, Datenmenge), nächster geplanter Lauf, Button „Jetzt synchronisieren“, Live-Fortschritt während eines Laufs.
@@ -139,7 +140,8 @@ Kacheln:
 
 Statuswerte: `Online`, `Offline`, `Startet …`, `Fährt herunter …`, `Unbekannt`. Zu jedem Status kann eine **Ursache** aus einer festen Liste kommen (z. B. „Server offline“, „API nicht erreichbar“, „API-Key ungültig“, „Zertifikat geändert“, „VM pausiert“; siehe 3.5). So ist bei einem Fehler klar unterscheidbar, ob der Server aus ist, die API nicht antwortet oder der Key nicht passt.
 
-- **Prüfung:** Der Worker prüft alle 10 Sekunden. Klein und Groß per TCP-Check gleichzeitig, die VM über die API nur, wenn Groß online ist. Ist Groß offline, gilt die VM als aus mit der Ursache „Server offline“. `get_status` liefert sofort den zuletzt geprüften Stand.
+- **Prüfung:** Der Worker prüft alle 10 Sekunden. Groß per TCP-Check, die VM über die API nur, wenn Groß online ist. Ist Groß offline, gilt die VM als aus mit der Ursache „Server offline“. `get_status` liefert sofort den zuletzt geprüften Stand.
+- **Klein (ab v0.3.2):** TwinRaid läuft auf Klein. Solange der Worker antwortet, ist Klein also online. Im Modus `real` entfällt deshalb der TCP-Check von Klein; die Kachel zeigt „Online“ mit der festen Ursache „TwinRaid läuft auf diesem Server“. Grund: Ohne „Host access to custom networks“ (siehe 5.1) erreicht der Container seinen eigenen Host nicht, ein TCP-Check würde Klein fälschlich als offline melden.
 - **VM-Zustände** (libvirt über die Unraid-API): `RUNNING` und `IDLE` → Online; `PAUSED` → Online, Ursache „pausiert“; `PMSUSPENDED` → Online, Ursache „im Ruhezustand“; `SHUTDOWN` → Fährt herunter …; `SHUTOFF` → Offline; `CRASHED` → Offline, Ursache „abgestürzt“; `NOSTATE` und Unbekanntes → Unbekannt.
 - **Live-Updates:** Die Oberfläche öffnet einen SSE-Datenstrom (`GET /api/events`, geschützt). Ein einziger Abfrage-Task im Web-Prozess fragt den Worker alle 2 Sekunden mit dem vorhandenen Befehl `get_status` und schickt Änderungen an alle offenen Datenströme. Es gibt dafür keinen neuen Worker-Befehl. Höchstens 32 Datenströme gleichzeitig.
 - **Kopierjob:** Der Status enthält das Feld `job_running` („Kopierjob läuft“). Ab Phase 5 kommt es vom echten Sync. Bis dahin ist es im Modus `real` immer aus und im Simulationsmodus mit `twinraid-admin mock-job on|off` schaltbar. Es steuert die Ausnahme vom Inaktivitäts-Timeout (siehe 5.3).
@@ -224,7 +226,8 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 - **UniFi-Firewall:**
   - Client-Netz → Container-IP nur TCP 8443 erlauben.
   - Optional: Container → Internet sperren. Er braucht zur Laufzeit kein Internet; Images lädt der Docker-Dienst des Hosts.
-- **In der App:** Erlaubte Netze kommen aus der Konfiguration. Anfragen von anderen Adressen werden vor jeder Verarbeitung mit 403 abgewiesen, auch für `/health` und die statischen Dateien. Maßgeblich ist die IP der TCP-Verbindung; IPv4-Adressen in IPv6-Schreibweise werden vorher umgewandelt. `X-Forwarded-For` wird ignoriert, außer ein Reverse-Proxy ist explizit als vertrauenswürdig konfiguriert (bisher nicht vorgesehen). Abweisungen stehen höchstens einmal pro Minute und IP im Container-Log.
+- **In der App:** Erlaubte Netze kommen aus der Konfiguration (`web.allowed_networks`). Einträge sind ganze Netze (z. B. `192.168.20.0/24`) oder einzelne Adressen (`192.168.10.50/32` oder ohne Maske, IPv6 mit `/128`), beliebig gemischt. Anfragen von anderen Adressen werden vor jeder Verarbeitung mit 403 abgewiesen, auch für `/health` und die statischen Dateien. Maßgeblich ist die IP der TCP-Verbindung; IPv4-Adressen in IPv6-Schreibweise werden vorher umgewandelt. `X-Forwarded-For` wird ignoriert, außer ein Reverse-Proxy ist explizit als vertrauenswürdig konfiguriert (bisher nicht vorgesehen). Abweisungen stehen höchstens einmal pro Minute und IP im Container-Log.
+- **Erlaubte Netze richtig wählen (ab v0.3.2):** Eine Router-Firewall filtert nur Verkehr zwischen Netzen, nicht innerhalb eines Netzes. Im Netz, in dem TwinRaid selbst steht (Server-Netz), werden deshalb nur einzelne Geräte als `/32` eingetragen. Sonst könnten andere Container mit eigener IP und VMs, die direkt daneben stehen, TwinRaid ungehindert aufrufen. Andere Netze können ganz eingetragen werden, wenn die Router-Firewall den Zugriff dort regelt (siehe „UniFi-Firewall“).
 - **Host-Prüfung (ab Phase 2):** Der `Host`-Header muss eine der verwendeten Adressen (siehe „Eigene Adresse“) oder einer der Namen aus `web.tls.hostnames` sein, sonst 400. Das verhindert DNS-Rebinding, bei dem eine fremde Webseite über einen eigenen Hostnamen auf den Container zugreift.
 - **Eigene Adresse (ab v0.3.1):** Die IP des Containers wird nur an einer Stelle festgelegt, im Unraid-Template (Netzwerk `br0`, „Fixed IP address“).
   - `twinraid-init` erkennt beim Start die IPv4-Adressen der Netzwerkschnittstellen im Container. Nie verwendet werden Loopback (`127.0.0.0/8`), Link-Local (`169.254.0.0/16`), Multicast und `0.0.0.0`. IPv6 wird nicht erkannt; IPv6-Adressen nennt das Log nur, sie lassen sich über `web.tls.ip_addresses` ergänzen.
@@ -234,7 +237,13 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
   - Ist `web.tls.ip_addresses` gesetzt, gilt es statt der Erkennung (z. B. 127.0.0.1 für die lokale Entwicklung oder die Host-IP bei Bridge-Netzen).
   - `twinraid-init` legt die verwendeten Adressen und ihre Herkunft (erkannt mit Schnittstelle, oder konfiguriert) in `/run/twinraid-tls/info.json` ab. Der Web-Prozess übernimmt sie von dort und erkennt nichts selbst; so gilt in allen Prozessen dieselbe Entscheidung. Die Admin-CLI verwendet dieselbe Erkennung.
   - Startlog und Einstellungsseite zeigen die verwendete Adresse und ob sie erkannt oder konfiguriert ist. Die erkannte Adresse ist wie alle Konfigurationswerte nur über geschützte Routen erhältlich.
-- **Unraid Klein:** In den Docker-Einstellungen „Host access to custom networks“ aktivieren. Sonst erreicht der Container mit eigener IP seinen eigenen Host (API von Klein) nicht.
+- **Feste MAC-Adresse (ab v0.3.2):** Ohne feste Angabe vergibt Docker ab Version 28 bei jedem Start eines Containers eine neue zufällige MAC-Adresse, auch bei macvlan. Unraid 7.3 stellt die bisherige MAC nur beim Neustart des Docker-Dienstes wieder her, nicht beim Neuanlegen (Update, „Apply“). Damit eine Reservierung im Router (UniFi: feste IP per MAC) dauerhaft passt, bekommt der Container im Unraid-Template eine feste, lokal administrierte MAC im Feld „Fixed MAC address“ (ab Unraid 7.3). Unraid übergibt sie zusammen mit Netzwerk und IP an Docker (`--network=name=br0,ip=…,mac-address=…`).
+  - Die echte MAC steht wie die IP nur im Template auf Klein, nie im Repo. Das Template im Repo enthält das Feld `<MyMAC/>` leer.
+  - Erzeugt wird sie zufällig mit dem Präfix `02` (lokal administriert, Unicast), siehe `docs/EINRICHTUNG.md`.
+  - Geprüft (lokal, Docker 29.9 rootless, Bridge- und internes macvlan-Netz): Ohne feste MAC wechselt sie bei Neuanlage und bei jedem Neustart. Mit fester MAC bleibt sie erhalten, sowohl mit `--network=name=…,ip=…,mac-address=…` als auch mit `--ip` und `--mac-address`. Das Verhalten von Unraid ist aus den Release Notes 7.3.0 und dem Quellcode recherchiert, nicht auf Unraid getestet. Bei der Installation wird die MAC vor und nach einem Update verglichen.
+- **Unraid Klein: „Host access to custom networks“ bleibt aus (ab v0.3.2).** Auf Klein läuft Docker mit macvlan auf der Bridge `br0`. Laut Unraid (Release Notes 6.12.4) ist macvlan mit einer Bridge als Parent-Schnittstelle unzuverlässig und führt zu Call Traces. Empfohlen werden ipvlan oder Bridging aus mit dem Netzwerk `eth0`; beides betrifft alle Container mit eigener IP auf Klein. Host access legt auf `br0` eine weitere macvlan-Schnittstelle (`shim-br0`) an und leitet den Verkehr des Hosts darüber (`rc.docker` in Unraid 7.3). Deshalb bleibt die Einstellung aus.
+  - Folge: Container mit eigener IP auf `br0` und Klein selbst erreichen sich gegenseitig nicht (Trennung bei macvlan). Das betrifft auch Tests aus dem Unraid-Terminal von Klein, z. B. `ping` auf die IP von TwinRaid.
+  - Für den Status spielt das keine Rolle (siehe 4.1). Wie TwinRaid ab Phase 5 die Container auf Klein über die Unraid-API steuert, ist offen (E7).
 
 ### 5.2 HTTPS
 
@@ -511,9 +520,9 @@ Shares und Templates werden erst gemountet, wenn der Sync sie braucht. Vorher ha
 
 web:
   # port: 8443                 # optional, Standard 8443; nicht ändern
-  allowed_networks:            # nur Clients aus diesen Netzen dürfen zugreifen
-    - 192.168.10.0/24          # Server-Netz
-    - 192.168.20.0/24          # Client-Netz
+  allowed_networks:            # nur diese Clients dürfen zugreifen (siehe 5.1)
+    - 192.168.10.50/32         # Server-Netz: nur einzelne Geräte, z. B. der Admin-PC
+    - 192.168.20.0/24          # Client-Netz: ganz, die Router-Firewall regelt den Zugriff
   session_idle_minutes: 10     # optional, Standard 10
   default_language: de         # de | en
   tls:
@@ -578,6 +587,7 @@ Ergänzende Regeln:
 - **Pfade** (`exclude`, `protect_on_target`): relativ zu `/mnt/user`, also ohne führenden Schrägstrich. Nicht erlaubt sind `..`, `.` und leere Bestandteile, Bestandteile mit führendem Minus sowie Steuer- und unsichtbare Formatzeichen. Zusätzlich verboten sind die Platzhalterzeichen `*`, `?`, `[`, `]` und der Backslash, weil rsync sie in Filterregeln als Muster auswertet. Der erste Bestandteil muss eine konfigurierte Share sein. Eine ganze Share darf nicht ausgeschlossen werden; dafür wird sie aus `shares` entfernt.
 - **Container-Namen** in `never_stop`: nur die von Docker erlaubten Zeichen.
 - **WebGUI** (`servers.<server>.webgui`, ab Phase 3): `scheme` ist `http` oder `https`; `port` ist optional (1 bis 65535, Standard 80 bzw. 443).
+- **Erlaubte Netze** (`web.allowed_networks`): mindestens ein Eintrag. Erlaubt sind Netze in CIDR-Schreibweise und einzelne Adressen (`/32` bzw. `/128` oder ohne Maske), gemischt. Gesetzte Host-Bits wie `192.168.10.50/24` sind ein Fehler, damit ein vermeintlich einzelnes Gerät nicht still das ganze Netz freigibt.
 - **Sitzung:** `web.session_idle_minutes` ist optional (1 bis 720, Standard 10).
 - **Port** (`web.port`): optional, Standard 8443.
 - **TLS** (`web.tls`): `ip_addresses` ist optional (ohne Angabe gilt die erkannte Adresse, siehe 5.1). Ist es gesetzt, enthält es mindestens eine IP-Adresse, keine Multicast- oder unspezifizierte Adresse, ohne Duplikate. `hostnames` ist optional; erlaubt sind DNS-Namen nach RFC 1123 ohne Platzhalter, in Kleinbuchstaben gespeichert, ohne Duplikate. Die verwendeten Adressen und die Hostnamen bilden zusammen die erlaubten `Host`-Header und gehören zu den Werten, die nie öffentlich ausgeliefert werden.
@@ -588,7 +598,7 @@ Ergänzende Regeln:
 - Pflichtangabe als Umgebungsvariable des Containers: `mock` oder `real`. Es gibt **keinen Standardwert**.
 - Fehlt der Wert oder ist er ungültig, startet der Container nicht und meldet im Log klar, was fehlt und welche Werte erlaubt sind.
 - Entwicklungs-Skripte, Tests und CI setzen `mock` ausdrücklich.
-- **Mock-Modus:** Alle Integrationen mit Außenwirkung sind durch Simulationen ersetzt. Das Log warnt beim Start deutlich. Die Oberfläche zeigt dauerhaft ein auffälliges Banner „Simulationsmodus“. Die Statussimulation durchläuft einen festen Ablauf, der jeden Zustand und jede Ursache einmal zeigt; `job_running` wird mit `twinraid-admin mock-job on|off` geschaltet.
+- **Mock-Modus:** Alle Integrationen mit Außenwirkung sind durch Simulationen ersetzt. Das Log warnt beim Start deutlich. Die Oberfläche zeigt dauerhaft ein auffälliges Banner „Simulationsmodus“. Die Statussimulation durchläuft einen festen Ablauf, der jeden Zustand und jede Ursache mindestens einmal zeigt, ab v0.3.2 auch „TwinRaid läuft auf diesem Server“ (ein Test prüft die Vollständigkeit); `job_running` wird mit `twinraid-admin mock-job on|off` geschaltet.
 - **Modus `real` (ab Phase 3, nur lesend):** Erlaubt sind nur Status-Abfragen, also die TCP-Checks beider Server und der VM-Status über die Unraid-API. Alle Aktionsbefehle (`wake_target`, `shutdown_target`, `vm_start`, `vm_stop`, `vm_force_stop`, `sync_start`, `sync_cancel`, `sync_confirm_deletions`) lehnt der Worker im Modus `real` vor jeder Verarbeitung mit dem Fehlercode `not_available` ab, bis Phase 4 bzw. 5 sie freigibt. Die Oberfläche zeigt im Modus `real` das Banner „Nur Statusanzeige“.
 
 ---
@@ -660,11 +670,13 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 - [ ] Groß: Wake-on-LAN im BIOS und für die Netzwerkkarte aktivieren (ggf. per `ethtool` im Unraid-Startskript)
 - [ ] Groß: SSH aktivieren; `guard.sh` nach `/boot/config/twinraid/` kopieren; `authorized_keys`-Zeilen aus `twinraid-admin init-ssh-keys` eintragen
 - [ ] Groß: API-Key ohne Rolle mit `VMS:READ_ANY` anlegen und mit `twinraid-admin set-api-key target` hinterlegen (ab Phase 4 zusätzlich `VMS:UPDATE_ANY`, ab Phase 5 Key für Klein, siehe 5.6)
-- [ ] Klein: „Host access to custom networks“ in den Docker-Einstellungen aktivieren
+- [ ] Klein: „Host access to custom networks“ in den Docker-Einstellungen **nicht** aktivieren (siehe 5.1)
 - [ ] Klein: Container-Templates auf Pool-Pfade prüfen und auf `/mnt/user/…` umstellen
 - [ ] UniFi: feste IP für den Container, Firewall-Regel Client-Netz → Container-IP:8443
 - [ ] Klein: `/mnt/user/appdata/twinraid/data` gehört root und ist nur für root beschreibbar (siehe 5.9)
 - [ ] Feste IP nur im Template („Fixed IP address“); das Startlog zeigt `TLS address … (detected on …)` mit dieser IP
+- [ ] Feste, lokal administrierte MAC im Template („Fixed MAC address“); in UniFi die IP per MAC reservieren; MAC vor und nach einem Update vergleichen
+- [ ] `web.allowed_networks`: im Server-Netz nur einzelne Geräte als `/32`, andere Netze ganz, wenn die Router-Firewall sie regelt
 - [ ] Container installieren, Konfiguration anlegen, Passwort setzen, bei `https` Zertifikat von Groß bestätigen (`trust-api-cert`), ab Phase 4 Hostkey von Groß bestätigen
 - [ ] Geräte: CA-Zertifikat auf Windows, Linux und Android für Chrome bzw. Edge und Firefox installieren (Test in Issue #3)
 
@@ -680,6 +692,58 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 | E4 | Projektname (Arbeitstitel „TwinRaid“) | offen |
 | E5 | Prozessverwaltung im Container (s6-overlay oder supervisord) | **entschieden:** s6-overlay mit read-only Root und minimalen Capabilities (siehe 5.4) |
 | E6 | Versionen und Image-Tags | **entschieden:** SemVer, `latest` nur für Releases, `edge` für `main` (siehe 5.8) |
+| E7 | Wie steuert TwinRaid in Phase 5 die Container auf Klein, ohne dass „Host access to custom networks“ eingeschaltet wird? | **offen**, Optionen in 10.1; Entscheidung vor Beginn von Phase 5 |
+
+### 10.1 E7: Unraid-API von Klein ohne Host access erreichen
+
+**Ausgangslage:** TwinRaid hat eine eigene IP auf `br0` (macvlan mit Bridging). Ohne Host access erreichen sich Klein und der Container nicht (siehe 5.1). Der Status braucht Klein nicht mehr (siehe 4.1), der Konsistenzlauf beim Sync aber schon: Er stoppt und startet Container über die Unraid-API von Klein (siehe 3.4 und 4.3). Recherchiert am 14.10.2026 (Unraid 7.3.3, Docker 29.8.2); nichts davon ist umgesetzt oder auf Unraid getestet.
+
+**A. Bridging aus, Docker-Netzwerk auf `eth0`, Host access an (Empfehlung von Unraid 6.12.4)**
+- *So:* *Settings → Network Settings*: Bridging für `eth0` aus. Docker-Netzwerk `eth0` statt `br0` (macvlan direkt auf der Netzwerkkarte), Host access an; der Host nutzt dann `vhost0`.
+- *Vorteile:* Weg, den Unraid selbst empfiehlt; macvlan auf einer physischen Schnittstelle gilt als zuverlässig. TwinRaid behält eigene IP und MAC und erreicht Klein direkt unter `servers.source.host`. Kein zusätzlicher Code.
+- *Nachteile:* Betrifft alle Container mit eigener IP auf Klein (Netzwerk `br0` → `eth0`, Templates prüfen) und alle VMs auf Klein (Netzwerkquelle `vhost0` statt `br0`). Umbau mit kurzer Unterbrechung aller Dienste.
+
+**B. ipvlan statt macvlan**
+- *So:* *Settings → Docker → Docker custom network type* auf `ipvlan` (Standard von Unraid seit 6.11.5), dann Host access an.
+- *Vorteile:* Keine macvlan-Call-Traces, Bridging bleibt, nur eine Einstellung.
+- *Nachteile:* Alle Container teilen sich die MAC von Klein. Die feste MAC (siehe 5.1) und die Reservierung per MAC in UniFi funktionieren dann nicht mehr pro Container; UniFi sieht mehrere IPs hinter einer MAC. Unraid nennt eingeschränkte Funktion mit Netzwerkverwaltung von Ubiquiti. Betrifft ebenfalls alle Container mit eigener IP.
+
+**C. Umweg über den Router**
+- *C1 – Adresse von Klein in einem anderen VLAN, TwinRaid bleibt im Server-Netz:* Der Hinweg läuft über den Router, die Antwort aber nicht: Klein kennt das Server-Netz als direkt angeschlossen und antwortet über `br0` direkt an den Container. Wegen der macvlan-Trennung kommt die Antwort dort nicht an. Es ginge nur mit Policy-Routing auf Klein (eigene Routing-Tabelle für die VLAN-Adresse, in Unraid nur per Startskript). Fehleranfällig und schwer nachvollziehbar.
+- *C2 – TwinRaid in ein eigenes VLAN* (Docker-Netzwerk `br0.<VLAN>`, Klein ohne eigene Adresse darin): Hin- und Rückweg laufen über den Router, das funktioniert. *Vorteile:* Docker-Einstellungen von Klein und die übrigen Container bleiben unverändert; die Router-Firewall kann TwinRaid genau begrenzen. *Nachteile:* VLAN in UniFi und auf Klein einrichten (Switchport mit Tag). Der gesamte Sync-Verkehr (bis etwa 1 TB) läuft durch den Router, dessen Routing-Leistung unter 2,5 GbE liegen kann. Wake-on-LAN muss ins Server-Netz, gerichtete Broadcasts über den Router sind meist gesperrt; das bräuchte eine eigene Lösung. Abhängig vom Router. Die eigene IP im Server-Netz (5.1) entfällt.
+
+**D. Zweite Netzwerkkarte nur für Docker**
+- *So:* Klein bekommt eine zweite Netzwerkkarte (`eth1`) im Server-Netz, ohne eigene Adresse und ohne Bridging. TwinRaid hängt per macvlan an `eth1`. Der Verkehr zu Klein geht über den Switch zu `eth0`/`br0` und zurück, die macvlan-Trennung greift nicht.
+- *Vorteile:* Bridging, Host access und die übrigen Container bleiben unverändert. macvlan auf einer physischen Schnittstelle, wie Unraid es empfiehlt. Eigene IP und MAC bleiben, kein zusätzlicher Code.
+- *Nachteile:* Zweite Netzwerkkarte, Switchport und Kabel nötig. Der Sync-Verkehr läuft über diese Karte, sie sollte also ebenfalls 2,5 GbE haben. Unraid rät in 6.12.4 bei seiner `eth0`-Lösung vom Aufteilen auf zwei Karten ab; hier wäre es bewusst nur für TwinRaid.
+
+**E. Bridge-Netz mit Portfreigabe statt eigener IP**
+- *So:* Container im Docker-Netz `bridge`, Port 8443 auf der IP von Klein freigegeben. Der Container erreicht Klein über dessen IP, der Verkehr bleibt im Host.
+- *Vorteile:* Kein Umbau am Netzwerk, Unraid-Standard.
+- *Nachteile:* Keine eigene IP und MAC; die Firewall-Regel zielt auf Klein. `web.tls.ip_addresses` muss die IP von Klein enthalten, die IP steht dann an zwei Stellen (siehe 5.1). Das Wake-on-LAN-Paket aus dem NAT-Netz kommt vermutlich nicht im Server-Netz an, weil Linux Broadcasts nicht weiterleitet (in Phase 4 zu prüfen). Der SSH-Key auf Groß lässt sich nur noch auf die IP von Klein beschränken (`from=`), nicht mehr auf TwinRaid allein. Ob Netzfilter und Rate-Limit die echte Client-IP sehen, hängt von der Portweiterleitung von Docker ab und muss geprüft werden.
+
+**F. Zweites Netzwerk für den Container (`br0` plus Docker-Bridge zum Host)**
+- *So:* TwinRaid bleibt mit eigener IP und MAC auf `br0` und hängt zusätzlich an einer internen Docker-Bridge, über deren Gateway er Klein erreicht.
+- *Vorteile:* Eigene IP und MAC im Server-Netz bleiben; Unraid-Netzwerk und andere Container bleiben unverändert.
+- *Nachteile:*
+  - **IP-Erkennung:** `twinraid-init` findet dann zwei verwendbare Adressen und verweigert den Start (siehe 5.1). Lösung wäre `web.tls.ip_addresses` (die IP steht dann wieder an zwei Stellen) oder eine geänderte Erkennung, z. B. nur die Schnittstelle der Standardroute oder ausdrücklich ausgenommene Bridge-Adressen. Das wäre eine Konzeptänderung; auch die Warnung bei `172.16.0.0/12` müsste angepasst werden.
+  - Unraid 7.3.3 hat im Template kein Feld für weitere Netzwerke (`ExtraNetworks` gibt es erst im Entwicklungszweig von Unraid). Mit `--network` in den Extra Parameters übernimmt Unraid das Netzwerk nicht mehr selbst und ignoriert die Felder für IP und MAC; beides stünde dann in den Extra Parameters. Alternativ `docker network connect` nach jedem Start per Skript.
+  - Die Weboberfläche von Unraid und damit die API lauscht nur auf Schnittstellen `br*`, `bond*`, `eth*`, `wlan*` und `wg*` (`rc.library.source`). Die Docker-Bridge müsste unter *Settings → Network Settings → Interface Extra* ergänzt werden.
+  - Die Standardroute muss über `br0` bleiben (bei Docker ab 28 über `gw-priority`).
+
+**G. Unix-Socket der Unraid-API einbinden**
+- *So:* Die Unraid-API lauscht auf Klein unter `/var/run/unraid-api.sock`; nginx leitet `/graphql` dorthin weiter. Nur diese eine Datei wird in den Container eingebunden, der Worker spricht GraphQL über den Socket.
+- *Vorteile:* Kein Netzwerkweg nötig; Netzwerk von Klein und andere Container bleiben unverändert. Laut Quellcode der Unraid-API gilt am Socket dieselbe Anmeldung wie über das Netz (API-Key), die Rechte bleiben also über einen Key mit minimalen Rechten begrenzt (zu prüfen).
+- *Nachteile:* Weicht von 3.4 und 3.5 ab (API über HTTP). Interne Schnittstelle, die sich mit Unraid-Updates ändern kann. Startet die API neu, legt sie den Socket neu an, und die eingebundene Datei zeigt ins Leere; dann ist ein Neustart des Containers nötig. Der Socket liegt im selben Ordner wie `/var/run/docker.sock`: Der Ordner selbst darf nie eingebunden werden (Sicherheitsregel 1). Startprüfung und Starttest müssten sicherstellen, dass am eingebundenen Pfad wirklich die Unraid-API antwortet und nicht Docker.
+
+**H. Konsistenzlauf ohne Container-Stopp**
+- *So:* `sync.stop_containers: false`; Phase B entfällt oder kopiert nur die Templates.
+- *Vorteile:* Kein Zugriff auf Klein nötig, sofort möglich.
+- *Nachteile:* appdata laufender Container, etwa SQLite-Datenbanken, kann inkonsistent auf Groß ankommen. Das Ziel „alle Container mit dem Stand des letzten Syncs sofort starten“ (siehe 1) ist dann nur eingeschränkt erreicht. Höchstens als Übergang denkbar.
+
+**Verworfen:** Host access trotz macvlan mit Bridging einschalten (Risiko laut 5.1). Netzwerk `host` für TwinRaid: kein eigener Netzwerk-Namespace, alle Ports von Klein sichtbar, die IP-Erkennung fände viele Adressen.
+
+**Vorläufige Einschätzung (nicht entschieden):** Mit dem geringsten Eingriff kommen D aus, falls eine zweite Netzwerkkarte vorhanden ist, und G, falls sich die Prüfungen bestätigen. Die von Unraid empfohlene Dauerlösung ist A, betrifft aber alle Container und VMs mit eigener IP auf Klein.
 
 ---
 
