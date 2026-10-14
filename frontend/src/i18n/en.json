@@ -36,6 +36,7 @@
     "unknown": "Unknown",
     "reasons": {
       "unreachable": "Not reachable",
+      "runs_here": "TwinRaid runs on this server",
       "target_offline": "Server offline",
       "api_unreachable": "API not reachable",
       "api_redirected": "Unraid redirects to HTTPS – set webgui.scheme to https in twinraid.yaml",

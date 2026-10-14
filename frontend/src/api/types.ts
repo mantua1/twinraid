@@ -6,6 +6,7 @@ export type ResourceState = (typeof RESOURCE_STATES)[number];
 // Feste Liste von Ursachen (Konzept 3.5 und 4.1).
 export const STATUS_REASONS = [
   "unreachable",
+  "runs_here",
   "target_offline",
   "api_unreachable",
   "api_redirected",
