@@ -19,6 +19,8 @@ class StatusReason(StrEnum):
 
     # Server: Der TCP-Check auf den WebGUI-Port ist gescheitert.
     UNREACHABLE = "unreachable"
+    # Klein: TwinRaid läuft auf diesem Server, er gilt ohne Prüfung als online (Konzept 4.1).
+    RUNS_HERE = "runs_here"
     # VM: Groß ist offline, die VM kann nicht laufen.
     TARGET_OFFLINE = "target_offline"
     # Unraid-API (Konzept 3.5)

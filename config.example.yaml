@@ -6,9 +6,12 @@
 
 web:
   # port: 8443                 # optional, Standard 8443; bitte nicht ändern
-  allowed_networks:            # nur Clients aus diesen Netzen dürfen zugreifen
-    - 192.168.10.0/24          # Server-Netz
-    - 192.168.20.0/24          # Client-Netz
+  # Nur diese Clients dürfen zugreifen: ganze Netze oder einzelne Geräte (/32).
+  # Im eigenen Netz von TwinRaid (Server-Netz) nur einzelne Geräte eintragen,
+  # denn die Router-Firewall filtert nur zwischen Netzen (docs/EINRICHTUNG.md).
+  allowed_networks:
+    - 192.168.10.50/32         # Server-Netz: nur der Admin-PC
+    - 192.168.20.0/24          # Client-Netz: ganz, die Router-Firewall regelt den Zugriff
   session_idle_minutes: 10     # optional, Standard 10
   default_language: de         # de | en
   tls:

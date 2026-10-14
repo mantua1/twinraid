@@ -38,27 +38,45 @@ class FakeApi:
         return self.state
 
 
-def _provider(api: FakeApi, reachable: dict[str, bool]) -> RealStatusProvider:
+TARGET = "192.168.10.11"  # servers.target.host aus config.example.yaml
+RUNS_HERE = ResourceInfo(state=ResourceState.ONLINE, reason=StatusReason.RUNS_HERE)
+
+
+def _provider(
+    api: FakeApi, target_up: bool, checked: list[str] | None = None
+) -> RealStatusProvider:
     async def tcp(host: str, port: int) -> bool:
         assert port == 80  # webgui aus config.example.yaml
-        return reachable[host]
+        if checked is not None:
+            checked.append(host)
+        assert host == TARGET, "only Unraid Groß is checked over TCP"
+        return target_up
 
     return RealStatusProvider(CONFIG, api, tcp_check=tcp, clock=lambda: NOW)
 
 
 async def test_everything_online() -> None:
     api = FakeApi("RUNNING")
-    status = await _provider(api, {"192.168.10.10": True, "192.168.10.11": True}).get_status()
-    assert status.source == ResourceInfo(state=ResourceState.ONLINE)
+    status = await _provider(api, target_up=True).get_status()
+    assert status.source == RUNS_HERE
     assert status.target == ResourceInfo(state=ResourceState.ONLINE)
     assert status.vm == ResourceInfo(state=ResourceState.ONLINE)
     assert status.checked_at == NOW
     assert api.calls == ["Windows 11 Gaming"]
 
 
+async def test_source_is_online_without_a_check() -> None:
+    """TwinRaid läuft auf Klein: kein TCP-Check von Klein, auch wenn Groß offline ist."""
+    checked: list[str] = []
+    for target_up in (True, False):
+        status = await _provider(FakeApi(), target_up, checked).get_status()
+        assert status.source == RUNS_HERE
+    assert checked == [TARGET, TARGET]
+
+
 async def test_target_offline_means_vm_off_without_asking_the_api() -> None:
     api = FakeApi()
-    status = await _provider(api, {"192.168.10.10": True, "192.168.10.11": False}).get_status()
+    status = await _provider(api, target_up=False).get_status()
     assert status.target == ResourceInfo(
         state=ResourceState.OFFLINE, reason=StatusReason.UNREACHABLE
     )
@@ -84,14 +102,14 @@ async def test_target_offline_means_vm_off_without_asking_the_api() -> None:
 async def test_api_problems_are_distinguishable(reason: StatusReason) -> None:
     """Server online, aber die API scheitert: die Ursache steht beim VM-Status."""
     api = FakeApi(error=reason)
-    status = await _provider(api, {"192.168.10.10": True, "192.168.10.11": True}).get_status()
+    status = await _provider(api, target_up=True).get_status()
     assert status.target.state is ResourceState.ONLINE
     assert status.vm == ResourceInfo(state=ResourceState.UNKNOWN, reason=reason)
 
 
 async def test_vm_not_found() -> None:
     api = FakeApi(state=None)
-    status = await _provider(api, {"192.168.10.10": True, "192.168.10.11": True}).get_status()
+    status = await _provider(api, target_up=True).get_status()
     assert status.vm == ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.VM_NOT_FOUND)
 
 
@@ -143,15 +161,9 @@ async def test_mock_scenario_cycles_through_all_states() -> None:
             seen_states.add(info.state)
             if info.reason is not None:
                 seen_reasons.add(info.reason)
+    # Konzept 6.4: jeder Zustand und jede Ursache mindestens einmal.
     assert seen_states == set(ResourceState)
-    assert {
-        StatusReason.UNREACHABLE,
-        StatusReason.TARGET_OFFLINE,
-        StatusReason.API_UNREACHABLE,
-        StatusReason.API_KEY_INVALID,
-        StatusReason.API_CERT_CHANGED,
-        StatusReason.VM_PAUSED,
-    } <= seen_reasons
+    assert seen_reasons == set(StatusReason)
     # Nach einem Durchlauf beginnt der Ablauf von vorn.
     assert provider.step() == 0
 

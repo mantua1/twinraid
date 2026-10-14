@@ -6,7 +6,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { cn } from "@/lib/utils";
 
 // Ursachen, die nur informieren; alle anderen zeigen ein Problem an.
-const NEUTRAL_REASONS = new Set<StatusReason>(["target_offline", "vm_paused", "vm_suspended"]);
+const NEUTRAL_REASONS = new Set<StatusReason>([
+  "runs_here",
+  "target_offline",
+  "vm_paused",
+  "vm_suspended",
+]);
 
 interface StatusTileProps {
   title: string;

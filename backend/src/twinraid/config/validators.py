@@ -8,7 +8,7 @@ import re
 import unicodedata
 import zoneinfo
 from functools import cache
-from ipaddress import IPv4Address, IPv6Address
+from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network, ip_network
 
 # Positivliste für Share-Namen: ASCII-Buchstaben, Ziffern, Punkt, Unterstrich,
 # Bindestrich; erstes Zeichen Buchstabe oder Ziffer; höchstens 64 Zeichen.
@@ -119,6 +119,32 @@ def normalize_mac(value: str) -> str:
     if not any(octets):
         raise ValueError("MAC address must not be 00:00:00:00:00:00")
     return ":".join(f"{octet:02X}" for octet in octets)
+
+
+def parse_allowed_network(value: object) -> object:
+    """Netz oder einzelne Adresse für allowed_networks, mit verständlicher Meldung (Konzept 6.3).
+
+    Gesetzte Host-Bits (z. B. 192.168.10.50/24) sind ein Fehler: Gemeint ist meist ein
+    einzelnes Gerät, die Maske würde aber das ganze Netz freigeben.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        return ip_network(value.strip(), strict=True)
+    except ValueError:
+        pass
+    try:
+        loose: IPv4Network | IPv6Network = ip_network(value.strip(), strict=False)
+    except ValueError:
+        raise ValueError(
+            f"{value!r} is neither a network (e.g. 192.168.20.0/24) "
+            "nor a single address (e.g. 192.168.10.50/32)"
+        ) from None
+    address = value.strip().split("/", 1)[0]
+    raise ValueError(
+        f"{value} has host bits set. For this single device write "
+        f"{address}/{loose.max_prefixlen}, for the whole network write {loose}"
+    )
 
 
 def validate_host_address[A: (IPv4Address, IPv6Address)](value: A) -> A:

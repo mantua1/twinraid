@@ -10,6 +10,7 @@
   <Registry>https://github.com/mantua1/twinraid/pkgs/container/twinraid</Registry>
   <Network>br0</Network>
   <MyIP/>
+  <MyMAC/>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
   <Support>https://github.com/mantua1/twinraid/issues</Support>
@@ -22,7 +23,7 @@
   <ExtraParams>--read-only --tmpfs /run:rw,exec,nosuid,nodev,mode=0755,size=16m --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m --cap-drop=ALL --cap-add=SETUID --cap-add=SETGID --cap-add=SETPCAP --cap-add=KILL --cap-add=DAC_READ_SEARCH --security-opt=no-new-privileges</ExtraParams>
   <PostArgs/>
   <CPUset/>
-  <Requires>Eigene feste IP-Adresse im Netzwerk br0 („Fixed IP address“). Das ist die einzige Stelle für die IP: TwinRaid erkennt sie beim Start selbst. In den Docker-Einstellungen von Unraid muss „Host access to custom networks“ aktiviert sein. Vor dem ersten Start die Konfiguration anlegen (docs/EINRICHTUNG.md).</Requires>
+  <Requires>Eigene feste IP-Adresse im Netzwerk br0 („Fixed IP address“) und eine selbst erzeugte, feste MAC-Adresse („Fixed MAC address“, ab Unraid 7.3). Das ist die einzige Stelle für IP und MAC: TwinRaid erkennt die IP beim Start selbst. „Host access to custom networks“ wird nicht gebraucht und soll ausgeschaltet bleiben. Vor dem ersten Start die Konfiguration anlegen (docs/EINRICHTUNG.md).</Requires>
   <Config Name="Betriebsmodus" Target="TWINRAID_MODE" Default="mock|real" Mode="" Description="mock: Simulation ohne echte Server (zum Ausprobieren). real: echter Status der Server, Aktionen sind in dieser Version gesperrt." Type="Variable" Display="always" Required="true" Mask="false">mock</Config>
   <Config Name="Konfiguration" Target="/config" Default="/mnt/user/appdata/twinraid/config" Mode="ro" Description="Ordner mit twinraid.yaml (nur lesend eingebunden), optional tls/ für ein eigenes Zertifikat." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/twinraid/config</Config>
   <Config Name="Daten" Target="/data" Default="/mnt/user/appdata/twinraid/data" Mode="rw" Description="Datenbank, Secrets und Zertifikate. Der Ordner muss root gehören und darf nur für root beschreibbar sein (chown root:root, chmod 755)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/twinraid/data</Config>

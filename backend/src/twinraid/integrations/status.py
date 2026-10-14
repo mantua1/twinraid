@@ -1,6 +1,9 @@
-"""Statusabfragen (Konzept 3.4, 3.5 und 4.1): TCP-Checks beider Server, VM über die Unraid-API."""
+"""Statusabfragen (Konzept 3.4, 3.5 und 4.1): TCP-Check von Groß, VM über die Unraid-API.
 
-import asyncio
+Klein wird nicht geprüft: TwinRaid läuft dort, und ohne „Host access to custom
+networks“ erreicht der Container seinen eigenen Host nicht (Konzept 5.1).
+"""
+
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Protocol
@@ -38,6 +41,10 @@ _VM_STATES: dict[str, ResourceInfo] = {
 }
 
 
+# Klein ist online, solange der Worker antwortet.
+SOURCE_STATUS = ResourceInfo(state=ResourceState.ONLINE, reason=StatusReason.RUNS_HERE)
+
+
 def map_vm_state(state: str) -> ResourceInfo:
     """Übersetzt den libvirt-Zustand; NOSTATE und Unbekanntes werden zu „Unbekannt“."""
     return _VM_STATES.get(state, ResourceInfo(state=ResourceState.UNKNOWN))
@@ -54,7 +61,7 @@ def _utc_now() -> datetime:
 
 
 class RealStatusProvider:
-    """Echte Abfragen. Nur lesend: TCP-Verbindungsaufbau und eine GraphQL-Abfrage."""
+    """Echte Abfragen. Nur lesend: TCP-Verbindungsaufbau zu Groß und eine GraphQL-Abfrage."""
 
     def __init__(
         self,
@@ -69,13 +76,10 @@ class RealStatusProvider:
         self._clock = clock
 
     async def get_status(self) -> ResourceStatus:
-        source, target = self._config.servers.source, self._config.servers.target
-        source_up, target_up = await asyncio.gather(
-            self._tcp_check(str(source.host), source.webgui.effective_port),
-            self._tcp_check(str(target.host), target.webgui.effective_port),
-        )
+        target = self._config.servers.target
+        target_up = await self._tcp_check(str(target.host), target.webgui.effective_port)
         return ResourceStatus(
-            source=_server(source_up),
+            source=SOURCE_STATUS,
             target=_server(target_up),
             vm=await self._vm(target_up),
             checked_at=self._clock(),

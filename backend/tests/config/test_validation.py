@@ -131,7 +131,15 @@ INVALID_CASES: list[tuple[str, object, str]] = [
     ("web.port", "8443", "valid integer"),
     ("web.allowed_networks", [], "at least 1"),
     ("web.allowed_networks", ["192.168.10.1/24"], "allowed_networks[0]"),
-    ("web.allowed_networks", ["kein-netz"], "allowed_networks[0]"),
+    # Einzelnes Gerät mit falscher Maske gibt nicht still das ganze Netz frei.
+    (
+        "web.allowed_networks",
+        ["192.168.20.0/24", "192.168.10.50/24"],
+        "allowed_networks[1]: 192.168.10.50/24 has host bits set. For this single device "
+        "write 192.168.10.50/32, for the whole network write 192.168.10.0/24",
+    ),
+    ("web.allowed_networks", ["fd00:10::5/64"], "write fd00:10::5/128"),
+    ("web.allowed_networks", ["kein-netz"], "is neither a network"),
     ("web.default_language", "fr", "'de' or 'en'"),
     ("web.session_idle_minutes", 0, "greater than or equal to 1"),
     ("web.session_idle_minutes", 721, "less than or equal to 720"),
@@ -219,6 +227,21 @@ def test_ipv6_is_accepted(tmp_path: Path) -> None:
     assert [str(net) for net in config.web.allowed_networks] == [
         "192.168.10.0/24",
         "fd00:10::/64",
+    ]
+
+
+def test_single_addresses_and_networks_can_be_mixed(tmp_path: Path) -> None:
+    """Einzelne Geräte als /32 oder ohne Maske, gemischt mit ganzen Netzen (Konzept 6.3)."""
+    data = _with(
+        "web.allowed_networks",
+        ["192.168.10.50/32", "192.168.10.51", "192.168.20.0/24", "fd00:10::5/128"],
+    )
+    config = _load(tmp_path, data)
+    assert [str(net) for net in config.web.allowed_networks] == [
+        "192.168.10.50/32",
+        "192.168.10.51/32",
+        "192.168.20.0/24",
+        "fd00:10::5/128",
     ]
 
 

@@ -1,7 +1,7 @@
 """Simulierter Status (Konzept 6.4).
 
-Durchläuft einen festen Ablauf, der jeden Zustand und jede Ursache einmal
-zeigt. Ein Schritt dauert 20 Sekunden; der Worker prüft alle 10 Sekunden.
+Durchläuft einen festen Ablauf, der jeden Zustand und jede Ursache mindestens
+einmal zeigt. Ein Schritt dauert 20 Sekunden; der Worker prüft alle 10 Sekunden.
 """
 
 import time
@@ -25,7 +25,7 @@ def _vm(reason: StatusReason) -> ResourceInfo:
 # (Klein, Groß, VM) je Schritt.
 SCENARIO: tuple[tuple[ResourceInfo, ResourceInfo, ResourceInfo], ...] = (
     (
-        _ON,
+        ResourceInfo(state=ResourceState.ONLINE, reason=StatusReason.RUNS_HERE),
         ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.UNREACHABLE),
         _VM_TARGET_OFF,
     ),
@@ -34,12 +34,17 @@ SCENARIO: tuple[tuple[ResourceInfo, ResourceInfo, ResourceInfo], ...] = (
     (_ON, _ON, ResourceInfo(state=ResourceState.STARTING)),
     (_ON, _ON, _ON),
     (_ON, _ON, ResourceInfo(state=ResourceState.ONLINE, reason=StatusReason.VM_PAUSED)),
+    (_ON, _ON, ResourceInfo(state=ResourceState.ONLINE, reason=StatusReason.VM_SUSPENDED)),
     (_ON, _ON, ResourceInfo(state=ResourceState.STOPPING)),
     (_ON, _ON, ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.VM_CRASHED)),
     (_ON, _ON, _vm(StatusReason.API_UNREACHABLE)),
     (_ON, _ON, _vm(StatusReason.API_KEY_INVALID)),
     (_ON, _ON, _vm(StatusReason.API_FORBIDDEN)),
     (_ON, _ON, _vm(StatusReason.API_CERT_CHANGED)),
+    (_ON, _ON, _vm(StatusReason.API_CERT_UNTRUSTED)),
+    (_ON, _ON, _vm(StatusReason.API_KEY_MISSING)),
+    (_ON, _ON, _vm(StatusReason.API_REDIRECTED)),
+    (_ON, _ON, _vm(StatusReason.API_ERROR)),
     (_ON, _ON, _vm(StatusReason.VM_NOT_FOUND)),
     (_ON, ResourceInfo(state=ResourceState.STOPPING), _VM_TARGET_OFF),
 )

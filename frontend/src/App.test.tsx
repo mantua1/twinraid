@@ -219,6 +219,17 @@ describe("live status", () => {
     expect(await screen.findByText(/Zertifikat geändert/)).toBeInTheDocument();
   });
 
+  it("shows that TwinRaid runs on the source server as a neutral note", async () => {
+    installFakeApi({
+      authenticated: true,
+      status: { ...STATUS, source: { state: "online", reason: "runs_here" } },
+    });
+    render(<App />);
+    const note = await screen.findByText("TwinRaid läuft auf diesem Server");
+    expect(note).toHaveClass("text-muted-foreground");
+    expect(screen.getByText("Nicht erreichbar")).toHaveClass("text-destructive");
+  });
+
   it("shows a running copy job", async () => {
     installFakeApi({ authenticated: true, status: { ...STATUS, job_running: true } });
     render(<App />);
