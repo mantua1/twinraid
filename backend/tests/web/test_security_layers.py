@@ -2,6 +2,7 @@
 
 import asyncio
 import sqlite3
+from ipaddress import IPv4Network, IPv6Network
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from twinraid.web.app import WebApp
 from twinraid.web.security import (
     CONTENT_SECURITY_POLICY,
     BodyLimitMiddleware,
+    NetworkFilterMiddleware,
     host_from_header,
 )
 
@@ -42,14 +44,37 @@ def test_foreign_network_is_rejected_everywhere(app: WebApp, path: str) -> None:
     assert response.text == "forbidden"
 
 
-@pytest.mark.parametrize("ip", ["192.168.20.5", "192.168.10.99", "::ffff:192.168.20.5"])
+# config.example.yaml: Server-Netz nur 192.168.10.50/32, Client-Netz 192.168.20.0/24 ganz.
+@pytest.mark.parametrize(
+    "ip", ["192.168.20.5", "192.168.10.50", "::ffff:192.168.20.5", "::ffff:192.168.10.50"]
+)
 def test_allowed_networks_pass(app: WebApp, ip: str) -> None:
     assert make_client(app, ip=ip).get("/health").status_code == 200
 
 
-@pytest.mark.parametrize("ip", ["fd00::1", "testclient", "", "192.168.21.5"])
+@pytest.mark.parametrize(
+    "ip", ["fd00::1", "testclient", "", "192.168.21.5", "192.168.10.51", "192.168.10.99"]
+)
 def test_other_clients_are_rejected(app: WebApp, ip: str) -> None:
+    """Auch Nachbarn des einzeln eingetragenen Geräts im Server-Netz kommen nicht durch."""
     assert make_client(app, ip=ip).get("/health").status_code == 403
+
+
+def test_single_addresses_mixed_with_networks() -> None:
+    networks: list[IPv4Network | IPv6Network] = [
+        IPv4Network("192.168.10.50/32"),
+        IPv4Network("192.168.20.0/24"),
+        IPv6Network("fd00:10::5/128"),
+    ]
+    guard = NetworkFilterMiddleware(app=_unreachable_app, networks=networks)
+    allowed = ["192.168.10.50", "192.168.20.1", "192.168.20.254", "fd00:10::5"]
+    rejected = ["192.168.10.49", "192.168.10.51", "192.168.21.1", "fd00:10::6"]
+    assert [ip for ip in allowed if not guard.is_allowed(ip)] == []
+    assert [ip for ip in rejected if guard.is_allowed(ip)] == []
+
+
+async def _unreachable_app(scope: Scope, receive: Receive, send: Send) -> None:
+    raise AssertionError("not called")
 
 
 def test_forwarded_headers_are_ignored(app: WebApp) -> None:

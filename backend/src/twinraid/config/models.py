@@ -15,6 +15,7 @@ from pydantic import (
 
 from twinraid.config.validators import (
     normalize_mac,
+    parse_allowed_network,
     reject_duplicate_days,
     reject_duplicates,
     reject_unquoted_time,
@@ -40,6 +41,8 @@ MacAddress = Annotated[StrictStr, AfterValidator(normalize_mac)]
 HostAddress = Annotated[IPv4Address | IPv6Address, AfterValidator(validate_host_address)]
 TlsAddress = Annotated[IPv4Address | IPv6Address, AfterValidator(validate_tls_address)]
 Hostname = Annotated[StrictStr, AfterValidator(validate_hostname)]
+# Ganzes Netz oder einzelnes Gerät (/32, /128 oder ohne Maske), siehe Konzept 5.1.
+AllowedNetwork = Annotated[IPv4Network | IPv6Network, BeforeValidator(parse_allowed_network)]
 Minutes = Annotated[StrictInt, Field(ge=1, le=60)]
 Port = Annotated[StrictInt, Field(ge=1, le=65535)]
 
@@ -75,7 +78,7 @@ class TlsConfig(StrictModel):
 
 class WebConfig(StrictModel):
     port: Port = DEFAULT_WEB_PORT
-    allowed_networks: Annotated[list[IPv4Network | IPv6Network], Field(min_length=1)]
+    allowed_networks: Annotated[list[AllowedNetwork], Field(min_length=1)]
     session_idle_minutes: Annotated[StrictInt, Field(ge=1, le=720)] = DEFAULT_SESSION_IDLE_MINUTES
     default_language: Literal["de", "en"]
     tls: TlsConfig
