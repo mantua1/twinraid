@@ -7,6 +7,7 @@ from typing import Protocol
 
 from pydantic import JsonValue, ValidationError
 
+from twinraid.shared.actions import ActionBlocker, ActionName
 from twinraid.shared.ipc import (
     MAX_RESPONSE_BYTES,
     Command,
@@ -14,7 +15,12 @@ from twinraid.shared.ipc import (
     ErrorResponse,
     GetStatus,
     ProtocolError,
+    ShutdownTarget,
     VerifyPassword,
+    VmForceStop,
+    VmStart,
+    VmStop,
+    WakeTarget,
     decode_response,
     encode_command,
 )
@@ -33,15 +39,31 @@ class WorkerUnavailableError(Exception):
 class WorkerCommandError(Exception):
     """Der Worker hat den Befehl abgelehnt."""
 
-    def __init__(self, error: ErrorCode, message: str) -> None:
+    def __init__(
+        self, error: ErrorCode, message: str, blocked_by: ActionBlocker | None = None
+    ) -> None:
         super().__init__(f"{error.value}: {message}")
         self.error = error
+        # Bei Aktionen: warum sie gerade nicht möglich ist (Konzept 4.2).
+        self.blocked_by = blocked_by
 
 
 class WorkerApi(Protocol):
     async def get_status(self) -> StatusSnapshot: ...
 
     async def verify_password(self, password: str) -> VerifyOutcome: ...
+
+    async def request_action(self, action: ActionName) -> None: ...
+
+
+# Aktionen sind Befehle ohne Parameter aus der festen Liste (Konzept 3.2).
+_ACTION_COMMANDS: dict[ActionName, Command] = {
+    ActionName.WAKE_TARGET: WakeTarget(command="wake_target"),
+    ActionName.SHUTDOWN_TARGET: ShutdownTarget(command="shutdown_target"),
+    ActionName.VM_START: VmStart(command="vm_start"),
+    ActionName.VM_STOP: VmStop(command="vm_stop"),
+    ActionName.VM_FORCE_STOP: VmForceStop(command="vm_force_stop"),
+}
 
 
 class WorkerClient:
@@ -70,7 +92,7 @@ class WorkerClient:
         except ProtocolError as exc:
             raise WorkerUnavailableError("worker sent an invalid response") from exc
         if isinstance(response, ErrorResponse):
-            raise WorkerCommandError(response.error, response.message)
+            raise WorkerCommandError(response.error, response.message, response.blocked_by)
         return response.result
 
     async def get_status(self) -> StatusSnapshot:
@@ -90,3 +112,7 @@ class WorkerClient:
             return VerifyOutcome(outcome)
         except ValueError as exc:
             raise WorkerUnavailableError("worker sent an invalid answer") from exc
+
+    async def request_action(self, action: ActionName) -> None:
+        """Startet eine Aktion; der Worker antwortet sofort, der Ablauf läuft im Hintergrund."""
+        await self.send(_ACTION_COMMANDS[action])

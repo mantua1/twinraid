@@ -15,13 +15,24 @@ class DisplayNames(StrictModel):
     vm: str
 
 
+class EnabledActions(StrictModel):
+    """Freigeschaltete Aktionsgruppen; im Simulationsmodus alle (Konzept 4.2)."""
+
+    wake: bool
+    vm: bool
+    shutdown: bool
+
+
 class AppInfo(StrictModel):
     version: str
     mode: RunMode
     default_language: Literal["de", "en"]
     names: DisplayNames
-    # Modus real ohne freigegebene Aktionen: Banner „Nur Statusanzeige“ (Konzept 6.4).
+    # Modus real ohne freigeschaltete Aktionen: Banner „Nur Statusanzeige“ (Konzept 6.4).
     read_only: bool
+    actions: EnabledActions
+    # Für die Texte der Bestätigungsdialoge.
+    vm_shutdown_timeout_minutes: int
     # False bei webgui.scheme http: Hinweis auf unverschlüsselte Verbindung (Konzept 3.5).
     target_connection_encrypted: bool
 

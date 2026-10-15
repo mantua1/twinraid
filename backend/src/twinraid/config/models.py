@@ -50,6 +50,7 @@ Port = Annotated[StrictInt, Field(ge=1, le=65535)]
 DEFAULT_SESSION_IDLE_MINUTES = 10
 # Port der Weboberfläche; passt zum Unraid-Template (Konzept 6.3).
 DEFAULT_WEB_PORT = 8443
+DEFAULT_SSH_PORT = 22
 
 
 Weekday = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -115,8 +116,12 @@ class TargetServerConfig(StrictModel):
     host: HostAddress
     webgui: WebGuiConfig
     mac: MacAddress
-    wol_broadcast: IPv4Address
+    # Optional: ohne Angabe leitet der Worker die Broadcast-Adresse aus dem eigenen
+    # Netz ab, sofern Groß darin liegt (Konzept 4.2).
+    wol_broadcast: IPv4Address | None = None
     boot_timeout_minutes: Minutes
+    # SSH für Herunterfahren und VM-Shutdown mit dem Key „power“ (Konzept 5.6).
+    ssh_port: Port = DEFAULT_SSH_PORT
 
 
 class ServersConfig(StrictModel):
@@ -188,8 +193,20 @@ class SyncConfig(StrictModel):
         return self
 
 
+class ActionsConfig(StrictModel):
+    """Aktionen im Modus real einzeln freischalten (Konzept 4.2, Entscheidung E9).
+
+    Standard ist überall aus. Im Simulationsmodus sind alle Aktionen verfügbar.
+    """
+
+    wake: StrictBool = False
+    vm: StrictBool = False
+    shutdown: StrictBool = False
+
+
 class TwinRaidConfig(StrictModel):
     web: WebConfig
     servers: ServersConfig
     gaming_vm: GamingVmConfig
     sync: SyncConfig
+    actions: ActionsConfig = Field(default_factory=ActionsConfig)

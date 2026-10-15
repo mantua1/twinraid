@@ -33,6 +33,14 @@ class AuditAction(StrEnum):
     CLI_SET_API_KEY = "cli_set_api_key"
     CLI_TRUST_API_CERT = "cli_trust_api_cert"
     CA_CHANGE_NOTICE = "ca_change_notice"
+    CLI_INIT_SSH_KEYS = "cli_init_ssh_keys"
+    CLI_TRUST_HOST_KEY = "cli_trust_host_key"
+    # Anforderung einer Aktion über die Oberfläche (Konzept 5.3, ab Phase 4).
+    WAKE_TARGET = "wake_target"
+    SHUTDOWN_TARGET = "shutdown_target"
+    VM_START = "vm_start"
+    VM_STOP = "vm_stop"
+    VM_FORCE_STOP = "vm_force_stop"
 
 
 class AuditResult(StrEnum):
@@ -45,6 +53,8 @@ class AuditResult(StrEnum):
     EXPIRED = "expired"
     REJECTED = "rejected"
     ACKNOWLEDGED = "acknowledged"
+    # Der Worker hat die Aktion angenommen; wie sie ausging, steht im Aktionslog.
+    REQUESTED = "requested"
 
 
 @dataclass(frozen=True)

@@ -74,13 +74,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: shellcheck -x docker/*.sh backend/scripts/*.sh
+      - run: shellcheck -x docker/*.sh backend/scripts/*.sh host-scripts/*.sh
       - run: >-
           shellcheck --shell=sh
           docker/rootfs/etc/s6-overlay/scripts/twinraid-preflight
           docker/rootfs/etc/s6-overlay/scripts/twinraid-init
           docker/rootfs/etc/s6-overlay/s6-rc.d/*/run
           docker/rootfs/etc/s6-overlay/s6-rc.d/*/finish
+          docker/fake-target/start.sh
+          docker/fake-target/poweroff
+          docker/fake-target/virsh
 
   container:
     name: Container (build and start test)
@@ -108,6 +111,8 @@ jobs:
       - run: docker/smoke-test.sh twinraid:ci
         env:
           CHECK_EACH_CAP: "1"
+      # SSH und Aktionen gegen ein nachgebautes Unraid Groß (Konzept 5.6).
+      - run: docker/ssh-test.sh twinraid:ci
       - name: Save image for publishing
         if: github.event_name == 'push'
         run: docker save twinraid:ci | gzip -1 > twinraid-image.tar.gz

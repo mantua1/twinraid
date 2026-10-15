@@ -22,6 +22,14 @@ Object.defineProperty(window, "matchMedia", {
     }) as MediaQueryList,
 });
 
+// jsdom kennt showModal() und close() von <dialog> nicht; der Browser schon.
+HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) {
+  this.setAttribute("open", "");
+};
+HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) {
+  this.removeAttribute("open");
+};
+
 // jsdom meldet die Browsersprache en-US; die Tests prüfen standardmäßig Deutsch.
 beforeEach(async () => {
   await i18n.changeLanguage("de");

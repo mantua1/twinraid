@@ -1,0 +1,8 @@
+#!/bin/sh
+# Platzhalter für virsh: schreibt den Aufruf mit; „shutdown“ schaltet die VM aus,
+# außer /state/vm-hang existiert (VM reagiert nicht auf ACPI).
+echo "$*" >>/state/virsh.log
+if [ "${1:-}" = "shutdown" ] && [ ! -e /state/vm-hang ]; then
+  echo SHUTOFF >/state/vm-state
+fi
+echo "Domain '${3:-}' is being shutdown"

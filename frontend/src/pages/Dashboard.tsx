@@ -1,6 +1,8 @@
 import { useTranslation } from "react-i18next";
 
 import type { ResourceInfo } from "@/api/types";
+import { ActionPanel, type PanelAction } from "@/components/ActionPanel";
+import { ActivityLine } from "@/components/ActivityLine";
 import { CaChangeNotice } from "@/components/CaChangeNotice";
 import { ErrorNotice } from "@/components/ErrorNotice";
 import { HistoryTile } from "@/components/HistoryTile";
@@ -14,6 +16,59 @@ export function Dashboard({ data }: { data: DashboardData }) {
   const { t, i18n } = useTranslation();
   const { info, tls, stream } = data;
   const status = stream.status;
+  const actions = status?.actions ?? null;
+  const names = {
+    target: info?.names.target ?? t("tiles.target.fallbackTitle"),
+    vm: info?.names.vm ?? t("tiles.vm.fallbackTitle"),
+  };
+  const vmRunning = status?.vm.state === "online" || status?.vm.state === "stopping";
+
+  const targetActions: PanelAction[] = [
+    { name: "wake_target", label: t("actions.buttons.wake_target"), variant: "default" },
+    {
+      name: "shutdown_target",
+      label: t("actions.buttons.shutdown_target"),
+      confirm: vmRunning
+        ? {
+            title: t("actions.dialog.shutdownWithVm.title"),
+            description: t("actions.dialog.shutdownWithVm.description", names),
+            confirmLabel: t("actions.dialog.shutdownWithVm.confirm"),
+          }
+        : {
+            title: t("actions.dialog.shutdown.title", names),
+            description: t("actions.dialog.shutdown.description"),
+            confirmLabel: t("actions.dialog.shutdown.confirm"),
+          },
+    },
+  ];
+  const vmActions: PanelAction[] = [
+    { name: "vm_start", label: t("actions.buttons.vm_start"), variant: "default" },
+    {
+      name: "vm_stop",
+      label: t("actions.buttons.vm_stop"),
+      confirm: {
+        title: t("actions.dialog.vmStop.title", names),
+        description: t("actions.dialog.vmStop.description", {
+          count: info?.vm_shutdown_timeout_minutes ?? 0,
+        }),
+        confirmLabel: t("actions.dialog.vmStop.confirm"),
+      },
+    },
+  ];
+  // „Erzwingen“ erscheint erst, wenn ein Herunterfahren läuft oder gescheitert ist (Konzept 4.1).
+  if (actions?.force_available_at != null) {
+    vmActions.push({
+      name: "vm_force_stop",
+      label: t("actions.buttons.vm_force_stop"),
+      variant: "destructive",
+      confirm: {
+        title: t("actions.dialog.force.title", names),
+        description: t("actions.dialog.force.description"),
+        confirmLabel: t("actions.dialog.force.confirm"),
+        destructive: true,
+      },
+    });
+  }
   const checkedAt =
     status?.checked_at != null
       ? new Intl.DateTimeFormat(i18n.resolvedLanguage, { timeStyle: "medium" }).format(
@@ -57,15 +112,23 @@ export function Dashboard({ data }: { data: DashboardData }) {
           info={status?.source ?? UNKNOWN}
         />
         <StatusTile
-          title={info?.names.target ?? t("tiles.target.fallbackTitle")}
+          testId="tile-target"
+          title={names.target}
           description={t("tiles.target.description")}
           info={status?.target ?? UNKNOWN}
-        />
+        >
+          <ActivityLine activity={actions?.target} />
+          <ActionPanel actions={targetActions} snapshot={actions} onRun={data.runAction} />
+        </StatusTile>
         <StatusTile
-          title={info?.names.vm ?? t("tiles.vm.fallbackTitle")}
+          testId="tile-vm"
+          title={names.vm}
           description={t("tiles.vm.description")}
           info={status?.vm ?? UNKNOWN}
-        />
+        >
+          <ActivityLine activity={actions?.vm} />
+          <ActionPanel actions={vmActions} snapshot={actions} onRun={data.runAction} />
+        </StatusTile>
         <PlaceholderTile
           title={t("tiles.sync.title")}
           description={t("tiles.sync.description")}

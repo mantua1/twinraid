@@ -29,7 +29,11 @@ SCENARIO: tuple[tuple[ResourceInfo, ResourceInfo, ResourceInfo], ...] = (
         ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.UNREACHABLE),
         _VM_TARGET_OFF,
     ),
-    (_ON, ResourceInfo(state=ResourceState.STARTING), _VM_TARGET_OFF),
+    (
+        _ON,
+        ResourceInfo(state=ResourceState.STARTING),
+        ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.TARGET_STARTING),
+    ),
     (_ON, _ON, _OFF),
     (_ON, _ON, ResourceInfo(state=ResourceState.STARTING)),
     (_ON, _ON, _ON),

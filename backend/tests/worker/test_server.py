@@ -80,6 +80,8 @@ async def test_get_status_before_the_first_check(server: WorkerServer) -> None:
     response = await _raw(server.path, b'{"command":"get_status"}\n')
     assert isinstance(response, OkResponse)
     unknown = {"state": "unknown", "reason": None}
+    assert isinstance(response.result, dict)
+    actions = response.result.pop("actions")
     assert response.result == {
         "source": unknown,
         "target": unknown,
@@ -88,6 +90,12 @@ async def test_get_status_before_the_first_check(server: WorkerServer) -> None:
         "job_running": False,
         "password_set": True,
     }
+    # Vor der ersten Prüfung ist keine Aktion möglich (Konzept 4.2).
+    assert isinstance(actions, dict)
+    availability = actions["availability"]
+    assert isinstance(availability, dict)
+    assert set(availability.values()) == {"target_unknown"}
+    assert actions["target"] == {"running": None, "last": None}
 
 
 @pytest.mark.parametrize(
@@ -117,25 +125,37 @@ async def test_verify_password_rejects_invalid_requests(
     assert await _error_code(server.path, payload) is ErrorCode.INVALID_REQUEST
 
 
+SYNC_PAYLOADS = [
+    b'{"command":"sync_start"}\n',
+    f'{{"command":"sync_cancel","job_id":"{JOB_ID}"}}\n'.encode(),
+    f'{{"command":"sync_confirm_deletions","job_id":"{JOB_ID}"}}\n'.encode(),
+]
 ACTION_PAYLOADS = [
     b'{"command":"wake_target"}\n',
     b'{"command":"shutdown_target"}\n',
     b'{"command":"vm_start"}\n',
     b'{"command":"vm_stop"}\n',
     b'{"command":"vm_force_stop"}\n',
-    b'{"command":"sync_start"}\n',
-    f'{{"command":"sync_cancel","job_id":"{JOB_ID}"}}\n'.encode(),
-    f'{{"command":"sync_confirm_deletions","job_id":"{JOB_ID}"}}\n'.encode(),
+    *SYNC_PAYLOADS,
 ]
 
 
-@pytest.mark.parametrize("payload", ACTION_PAYLOADS)
-async def test_other_commands_are_not_implemented_yet(server: WorkerServer, payload: bytes) -> None:
+@pytest.mark.parametrize("payload", SYNC_PAYLOADS)
+async def test_sync_is_not_implemented_yet(server: WorkerServer, payload: bytes) -> None:
     assert await _error_code(server.path, payload) is ErrorCode.NOT_IMPLEMENTED
 
 
+@pytest.mark.parametrize("payload", ACTION_PAYLOADS[:5])
+async def test_actions_need_a_known_status(server: WorkerServer, payload: bytes) -> None:
+    """Vor der ersten Prüfung lehnt der Worker jede Aktion mit Grund ab (Konzept 4.2)."""
+    response = await _raw(server.path, payload)
+    assert isinstance(response, ErrorResponse)
+    assert response.error is ErrorCode.ACTION_BLOCKED
+    assert response.blocked_by == "target_unknown"
+
+
 async def test_real_mode_locks_every_action(socket_dir: Path) -> None:
-    """Konzept 6.4: Im Modus real nur lesen; jede Aktion antwortet „noch nicht verfügbar“."""
+    """Konzept 6.4: Ohne Freischaltung in actions.* antwortet jede Aktion „nicht verfügbar“."""
     worker = await _start(socket_dir / "worker.sock", os.getuid(), mode=RunMode.REAL)
     try:
         for payload in ACTION_PAYLOADS:

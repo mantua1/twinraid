@@ -1,0 +1,455 @@
+"""Aktionen im Worker: Sperrlogik, Verfügbarkeit und Abläufe (Konzept 4.2).
+
+Ressourcen sind Groß und die VM; jede Aktion belegt eine oder beide. Ein Befehl
+für eine belegte Ressource wird abgelehnt, es gibt keine Warteschlange. Die
+Abläufe laufen im Hintergrund; der Status zeigt Zwischenzustände, den aktuellen
+Schritt und das letzte Ergebnis. Jede Aktion steht im Aktionslog (Konzept 5.3).
+"""
+
+import asyncio
+import contextlib
+import logging
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
+from typing import Protocol
+
+from twinraid.config import TwinRaidConfig
+from twinraid.integrations.control import ActionControl, ActionError
+from twinraid.integrations.jobs import JobState
+from twinraid.integrations.unraid_api import VmDomain
+from twinraid.shared.actions import (
+    ActionBlocker,
+    ActionGroup,
+    ActionName,
+    ActionOutcome,
+    ActionResult,
+    ActionsSnapshot,
+    ActionStep,
+    ResourceActivity,
+    RunningAction,
+    Trigger,
+)
+from twinraid.shared.mode import RunMode
+from twinraid.shared.status import ResourceInfo, ResourceState, ResourceStatus, StatusReason
+from twinraid.worker.action_log import STARTED, ActionLog, new_action_id
+
+logger = logging.getLogger(__name__)
+
+
+class Resource(StrEnum):
+    TARGET = "target"
+    VM = "vm"
+
+
+_RESOURCES: dict[ActionName, frozenset[Resource]] = {
+    ActionName.WAKE_TARGET: frozenset({Resource.TARGET}),
+    ActionName.SHUTDOWN_TARGET: frozenset({Resource.TARGET, Resource.VM}),
+    ActionName.VM_START: frozenset({Resource.TARGET, Resource.VM}),
+    ActionName.VM_STOP: frozenset({Resource.VM}),
+    ActionName.VM_FORCE_STOP: frozenset({Resource.VM}),
+}
+
+# libvirt-Zustände laut Unraid-API.
+_VM_RUNNING = frozenset({"RUNNING", "IDLE"})
+_VM_OFF = frozenset({"SHUTOFF", "CRASHED"})
+# Groß ist erreichbar, die API aber (noch) nicht bereit: weiter warten.
+_TRANSIENT = frozenset({ActionOutcome.API_UNREACHABLE, ActionOutcome.API_ERROR})
+_TRANSIENT_VM_REASONS = frozenset(
+    {StatusReason.API_UNREACHABLE, StatusReason.API_ERROR, StatusReason.TARGET_STARTING}
+)
+# VM-Überlagerung, solange Groß nach dem Wecken bootet.
+_VM_WAITING = ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.TARGET_STARTING)
+
+
+@dataclass(frozen=True)
+class ActionTimings:
+    """Feste Zeiten der Abläufe (Konzept 4.2)."""
+
+    poll_seconds: float = 3.0
+    vm_start_confirm_seconds: float = 60.0
+    force_confirm_seconds: float = 30.0
+    shutdown_wait_seconds: float = 15 * 60.0
+
+
+class StatusSource(Protocol):
+    def current(self) -> ResourceStatus: ...
+
+    async def check_once(self) -> ResourceStatus: ...
+
+
+@dataclass
+class _Run:
+    id: str
+    action: ActionName
+    started_at: datetime
+    step: ActionStep
+    # Diese Aktion hat Groß geweckt: Groß gilt bis zur Bereitschaft als „Startet …“.
+    woke: bool = False
+    held: frozenset[Resource] = field(default_factory=frozenset)
+
+    def public(self) -> RunningAction:
+        return RunningAction(action=self.action, step=self.step, started_at=self.started_at)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+class ActionCoordinator:
+    def __init__(
+        self,
+        control: ActionControl,
+        status: StatusSource,
+        jobs: JobState,
+        config: TwinRaidConfig,
+        mode: RunMode,
+        action_log: ActionLog,
+        tour_active: Callable[[], bool] = lambda: False,
+        timings: ActionTimings | None = None,
+        clock: Callable[[], datetime] = _utc_now,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        self._control = control
+        self._status = status
+        self._jobs = jobs
+        self._config = config
+        self._mode = mode
+        self._log = action_log
+        self._tour_active = tour_active
+        self._timings = timings or ActionTimings()
+        self._clock = clock
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._running: dict[Resource, _Run] = {}
+        self._last: dict[Resource, ActionResult] = {}
+        # Zeitpunkt des letzten erfolgreich gesendeten ACPI-Signals (für Erzwingen).
+        self._stop_sent_at: datetime | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    # --- Freischaltung und Verfügbarkeit ---
+
+    def enabled(self, group: ActionGroup) -> bool:
+        """Im Simulationsmodus ist alles verfügbar; im Modus real nur actions.* (Konzept 4.2)."""
+        if self._mode is RunMode.MOCK:
+            return True
+        return bool(getattr(self._config.actions, group.value))
+
+    def enabled_groups(self) -> list[ActionGroup]:
+        return [group for group in ActionGroup if self.enabled(group)]
+
+    @property
+    def busy(self) -> bool:
+        """Läuft gerade eine Aktion?"""
+        return bool(self._running)
+
+    @property
+    def _shutdown_timeout(self) -> timedelta:
+        return timedelta(minutes=self._config.gaming_vm.shutdown_timeout_minutes)
+
+    def force_available_at(self) -> datetime | None:
+        if self._stop_sent_at is None:
+            return None
+        return self._stop_sent_at + self._shutdown_timeout
+
+    def availability(self, status: ResourceStatus) -> dict[ActionName, ActionBlocker | None]:
+        if self._tour_active():
+            return dict.fromkeys(ActionName, ActionBlocker.TOUR)
+        return {name: self._blocker(name, status) for name in ActionName}
+
+    def _blocker(self, name: ActionName, status: ResourceStatus) -> ActionBlocker | None:
+        target, vm = status.target.state, status.vm
+        on, off = ResourceState.ONLINE, ResourceState.OFFLINE
+        vm_unknown = vm.state is ResourceState.UNKNOWN
+        busy = any(resource in self._running for resource in _RESOURCES[name])
+        match name:
+            case ActionName.WAKE_TARGET:
+                checks = [
+                    (not self.enabled(ActionGroup.WAKE), ActionBlocker.NOT_ENABLED),
+                    (busy, ActionBlocker.BUSY),
+                    (target is on, ActionBlocker.TARGET_ONLINE),
+                    (target is not off, ActionBlocker.TARGET_UNKNOWN),
+                ]
+            case ActionName.SHUTDOWN_TARGET:
+                checks = [
+                    (not self.enabled(ActionGroup.SHUTDOWN), ActionBlocker.NOT_ENABLED),
+                    (busy, ActionBlocker.BUSY),
+                    (self._jobs.is_running(), ActionBlocker.SYNC_RUNNING),
+                    (target is off, ActionBlocker.TARGET_OFFLINE),
+                    (target is not on, ActionBlocker.TARGET_UNKNOWN),
+                    (vm_unknown, ActionBlocker.VM_UNKNOWN),
+                    (
+                        vm.state is not off and not self.enabled(ActionGroup.VM),
+                        ActionBlocker.NOT_ENABLED,
+                    ),
+                ]
+            case ActionName.VM_START:
+                checks = [
+                    (not self.enabled(ActionGroup.VM), ActionBlocker.NOT_ENABLED),
+                    (busy, ActionBlocker.BUSY),
+                    (
+                        target is off and not self.enabled(ActionGroup.WAKE),
+                        ActionBlocker.NOT_ENABLED,
+                    ),
+                    (target is not off and target is not on, ActionBlocker.TARGET_UNKNOWN),
+                    (
+                        target is on and vm.state not in (off, ResourceState.UNKNOWN),
+                        ActionBlocker.VM_RUNNING,
+                    ),
+                    # Gerade gestartetes Groß: Der Ablauf wartet auf die API.
+                    (
+                        target is on and vm_unknown and vm.reason not in _TRANSIENT_VM_REASONS,
+                        ActionBlocker.VM_UNKNOWN,
+                    ),
+                ]
+            case ActionName.VM_STOP | ActionName.VM_FORCE_STOP:
+                force = name is ActionName.VM_FORCE_STOP
+                available_at = self.force_available_at()
+                checks = [
+                    (not self.enabled(ActionGroup.VM), ActionBlocker.NOT_ENABLED),
+                    (busy, ActionBlocker.BUSY),
+                    (target is off, ActionBlocker.TARGET_OFFLINE),
+                    (target is not on, ActionBlocker.TARGET_UNKNOWN),
+                    (vm.state is off, ActionBlocker.VM_OFF),
+                    (vm_unknown, ActionBlocker.VM_UNKNOWN),
+                    (
+                        force and (available_at is None or self._clock() < available_at),
+                        ActionBlocker.FORCE_NOT_YET,
+                    ),
+                ]
+        return next((blocker for failed, blocker in checks if failed), None)
+
+    # --- Status ---
+
+    def snapshot(self, status: ResourceStatus) -> tuple[ResourceStatus, ActionsSnapshot]:
+        """Status mit Zwischenzuständen und der Aktionsteil von get_status."""
+        if status.vm.state is ResourceState.OFFLINE and Resource.VM not in self._running:
+            self._stop_sent_at = None
+        actions = ActionsSnapshot(
+            availability=self.availability(status),
+            target=self._activity(Resource.TARGET),
+            vm=self._activity(Resource.VM),
+            force_available_at=self.force_available_at(),
+        )
+        if self._tour_active():
+            return status, actions
+        return self._overlay(status), actions
+
+    def _activity(self, resource: Resource) -> ResourceActivity:
+        run = self._running.get(resource)
+        return ResourceActivity(
+            running=run.public() if run is not None else None, last=self._last.get(resource)
+        )
+
+    def _overlay(self, status: ResourceStatus) -> ResourceStatus:
+        target, vm = status.target, status.vm
+        target_run = self._running.get(Resource.TARGET)
+        vm_run = self._running.get(Resource.VM)
+        booting = target_run is not None and (
+            target_run.step is ActionStep.WAKING
+            or (target_run.step is ActionStep.WAITING_FOR_API and target_run.woke)
+        )
+        if booting:
+            target = ResourceInfo(state=ResourceState.STARTING)
+            if vm.state is not ResourceState.ONLINE:
+                vm = _VM_WAITING
+        elif target_run is not None and target_run.step is ActionStep.SHUTTING_DOWN:
+            target = ResourceInfo(state=ResourceState.STOPPING)
+        if vm_run is not None:
+            match vm_run.step:
+                case ActionStep.WAKING | ActionStep.WAITING_FOR_API:
+                    vm = ResourceInfo(
+                        state=ResourceState.STARTING,
+                        reason=StatusReason.TARGET_STARTING if booting else None,
+                    )
+                case ActionStep.STARTING_VM:
+                    vm = ResourceInfo(state=ResourceState.STARTING)
+                case ActionStep.STOPPING_VM | ActionStep.FORCING_VM:
+                    vm = ResourceInfo(state=ResourceState.STOPPING)
+                case ActionStep.SHUTTING_DOWN:
+                    pass
+        return status.model_copy(update={"target": target, "vm": vm})
+
+    # --- Befehle ---
+
+    async def request(self, name: ActionName) -> ActionBlocker | None:
+        """Startet eine Aktion im Hintergrund. None: angenommen; sonst der Grund der Ablehnung."""
+        blocker = self.availability(self._status.current())[name]
+        if blocker is not None:
+            return blocker
+        resources = _RESOURCES[name]
+        run = _Run(new_action_id(), name, self._clock(), _first_step(name), held=resources)
+        for resource in resources:
+            self._running[resource] = run
+        task = asyncio.create_task(self._execute(run))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return None
+
+    async def close(self) -> None:
+        """Beendet laufende Aktionen (Worker stoppt); sie stehen als interrupted im Log."""
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def _execute(self, run: _Run) -> None:
+        self._log.record(run.id, run.action, Trigger.DASHBOARD, STARTED)
+        outcome = ActionOutcome.SUCCESS
+        try:
+            await self._sequence(run)
+        except ActionError as failure:
+            outcome = failure.outcome
+        except asyncio.CancelledError:
+            self._log.record(run.id, run.action, Trigger.DASHBOARD, ActionOutcome.INTERRUPTED)
+            raise
+        except Exception:  # Eine Aktion darf den Worker nie beenden.
+            logger.exception("action %s failed unexpectedly", run.action.value)
+            outcome = ActionOutcome.INTERNAL_ERROR
+        self._log.record(run.id, run.action, Trigger.DASHBOARD, outcome)
+        result = ActionResult(action=run.action, outcome=outcome, finished_at=self._clock())
+        for resource in run.held:
+            self._last[resource] = result
+        # Erst den Status auffrischen, dann freigeben: Die Buttons passen sofort zum neuen Stand.
+        with contextlib.suppress(Exception):
+            await self._status.check_once()
+        for resource in run.held:
+            if self._running.get(resource) is run:
+                del self._running[resource]
+
+    async def _sequence(self, run: _Run) -> None:
+        match run.action:
+            case ActionName.WAKE_TARGET:
+                await self._wake(run)
+            case ActionName.VM_START:
+                await self._vm_start(run)
+            case ActionName.VM_STOP:
+                await self._stop_vm(run)
+            case ActionName.VM_FORCE_STOP:
+                await self._force_stop_vm(run)
+            case ActionName.SHUTDOWN_TARGET:
+                await self._shutdown_target(run)
+
+    @contextlib.asynccontextmanager
+    async def _part(self, run: _Run, action: ActionName) -> AsyncIterator[None]:
+        """Automatischer Teilschritt mit eigenem Eintrag im Aktionslog."""
+        self._log.record(run.id, action, Trigger.AUTOMATIC, STARTED, run.action)
+        try:
+            yield
+        except ActionError as failure:
+            self._log.record(run.id, action, Trigger.AUTOMATIC, failure.outcome, run.action)
+            raise
+        self._log.record(run.id, action, Trigger.AUTOMATIC, ActionOutcome.SUCCESS, run.action)
+
+    # --- Abläufe ---
+
+    async def _wake(self, run: _Run) -> None:
+        deadline = self._monotonic() + self._config.servers.target.boot_timeout_minutes * 60
+        run.step, run.woke = ActionStep.WAKING, True
+        await self._control.wake()
+        await self._wait_until_ready(run, deadline, need_vm=False)
+
+    async def _wait_until_ready(self, run: _Run, deadline: float, need_vm: bool) -> VmDomain | None:
+        """Wartet, bis Groß erreichbar ist und die API antwortet (höchstens bis deadline)."""
+        while True:
+            if await self._control.target_reachable():
+                run.step = ActionStep.WAITING_FOR_API
+                try:
+                    return await self._control.find_vm()
+                except ActionError as failure:
+                    if failure.outcome not in _TRANSIENT:
+                        if need_vm:
+                            raise
+                        return None
+            elif run.woke:
+                run.step = ActionStep.WAKING
+            if self._monotonic() >= deadline:
+                raise ActionError(ActionOutcome.BOOT_TIMEOUT)
+            await self._sleep(self._timings.poll_seconds)
+
+    async def _vm_start(self, run: _Run) -> None:
+        deadline = self._monotonic() + self._config.servers.target.boot_timeout_minutes * 60
+        if not await self._control.target_reachable() and self.enabled(ActionGroup.WAKE):
+            async with self._part(run, ActionName.WAKE_TARGET):
+                run.step, run.woke = ActionStep.WAKING, True
+                await self._control.wake()
+                await self._wait_until_ready(run, deadline, need_vm=False)
+        vm = await self._wait_until_ready(run, deadline, need_vm=True)
+        if vm is None or vm.state in _VM_RUNNING:
+            return
+        run.step, run.woke = ActionStep.STARTING_VM, False
+        self._stop_sent_at = None
+        await self._control.start_vm(vm)
+        await self._wait_for_vm(
+            _VM_RUNNING, self._timings.vm_start_confirm_seconds, ActionOutcome.VM_START_TIMEOUT
+        )
+
+    async def _wait_for_vm(
+        self, states: frozenset[str], seconds: float, on_timeout: ActionOutcome
+    ) -> None:
+        deadline = self._monotonic() + seconds
+        while True:
+            try:
+                vm = await self._control.find_vm()
+            except ActionError as failure:
+                if failure.outcome not in _TRANSIENT:
+                    raise
+            else:
+                if vm.state in states:
+                    return
+            if self._monotonic() >= deadline:
+                raise ActionError(on_timeout)
+            await self._sleep(self._timings.poll_seconds)
+
+    async def _stop_vm(self, run: _Run) -> None:
+        vm = await self._control.find_vm()
+        if vm.state in _VM_OFF:
+            return
+        run.step = ActionStep.STOPPING_VM
+        await self._control.shutdown_vm(vm)
+        self._stop_sent_at = self._clock()
+        await self._wait_for_vm(
+            _VM_OFF,
+            self._shutdown_timeout.total_seconds(),
+            ActionOutcome.VM_STOP_TIMEOUT,
+        )
+        self._stop_sent_at = None
+
+    async def _force_stop_vm(self, run: _Run) -> None:
+        vm = await self._control.find_vm()
+        if vm.state not in _VM_OFF:
+            run.step = ActionStep.FORCING_VM
+            await self._control.force_stop_vm(vm)
+            await self._wait_for_vm(
+                _VM_OFF, self._timings.force_confirm_seconds, ActionOutcome.VM_STOP_TIMEOUT
+            )
+        self._stop_sent_at = None
+
+    async def _shutdown_target(self, run: _Run) -> None:
+        vm = await self._control.find_vm()
+        if vm.state not in _VM_OFF:
+            # „VM zuerst herunterfahren?“ (Entscheidung E10): Bleibt sie an, bricht der Ablauf ab.
+            async with self._part(run, ActionName.VM_STOP):
+                await self._stop_vm(run)
+        run.step = ActionStep.SHUTTING_DOWN
+        await self._control.power_off()
+        deadline = self._monotonic() + self._timings.shutdown_wait_seconds
+        while await self._control.target_reachable():
+            if self._monotonic() >= deadline:
+                raise ActionError(ActionOutcome.SHUTDOWN_TIMEOUT)
+            await self._sleep(self._timings.poll_seconds)
+
+
+def _first_step(name: ActionName) -> ActionStep:
+    return {
+        ActionName.WAKE_TARGET: ActionStep.WAKING,
+        ActionName.VM_START: ActionStep.WAITING_FOR_API,
+        ActionName.VM_STOP: ActionStep.STOPPING_VM,
+        ActionName.VM_FORCE_STOP: ActionStep.FORCING_VM,
+        ActionName.SHUTDOWN_TARGET: ActionStep.SHUTTING_DOWN,
+    }[name]

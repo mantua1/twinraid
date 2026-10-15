@@ -6,7 +6,7 @@ import { act } from "react";
 
 import type { AppInfo } from "@/api/types";
 import { chooseLanguage } from "@/i18n";
-import { CSRF, installFakeApi, latestStream, PASSWORD, STATUS, TLS } from "@/test/fakeApi";
+import { CSRF, INFO, installFakeApi, latestStream, PASSWORD, STATUS, TLS } from "@/test/fakeApi";
 
 import { App } from "./App";
 
@@ -413,11 +413,4 @@ describe("settings", () => {
   });
 });
 
-const INFO_EN: AppInfo = {
-  version: "0.3.1",
-  mode: "mock",
-  default_language: "en",
-  names: { source: "Unraid Klein", target: "Unraid Groß", vm: "Gaming-VM" },
-  read_only: false,
-  target_connection_encrypted: false,
-};
+const INFO_EN: AppInfo = { ...INFO, default_language: "en" };

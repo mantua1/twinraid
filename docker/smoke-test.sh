@@ -5,7 +5,8 @@
 # nötigen Capabilities, Rechte der Prozesse und Dateien, nur HTTPS (HTTP wird
 # abgewiesen), CA und Serverzertifikat samt Fingerabdrücken (die CA ist der
 # einzige Vertrauensanker), Healthcheck, Login mit Session und CSRF, Live-Datenstrom,
-# simulierten Kopierjob, Sperre nach Fehlversuchen samt "unlock", keine
+# simulierten Kopierjob, Aktionen in der Simulation samt Aktionslog des Workers,
+# Sperre nach Fehlversuchen samt "unlock", keine
 # /api-Route ohne Login, keine Konfigurationswerte in öffentlichen Dateien,
 # Netzfilter, Host-Prüfung, Security-Header, Neustart, "renew-cert" mit und ohne
 # neue CA, den Modus real nur lesend und den Startabbruch bei Fehlern.
@@ -245,6 +246,7 @@ expect_equal "/srv/worker is 0700 root" "$(perm /srv/worker)" "700 0"
 expect_equal "/data/secrets is 0700 root" "$(perm /data/secrets)" "700 0"
 expect_equal "/data/tls is 0700 root" "$(perm /data/tls)" "700 0"
 expect_equal "/data/web is 0770 root:10001" "$(perm_group /data/web)" "770 0:10001"
+expect_equal "/data/worker is 0700 root" "$(perm /data/worker)" "700 0"
 expect_equal "web database is 0600 web user" "$(perm_group /data/web/web.sqlite)" "600 10001:10001"
 expect_equal "/run/twinraid-tls is 0750 root:10001" "$(perm_group /run/twinraid-tls)" "750 0:10001"
 expect_equal "TLS key copy is 0640 root:10001" "$(perm_group /run/twinraid-tls/key.pem)" "640 0:10001"
@@ -255,13 +257,17 @@ print(any(key in p.read_bytes() for p in pathlib.Path("/run/twinraid-tls").iterd
 expect_equal "web process gets no copy of the CA key" "$(docker exec "${main}" "${PY}" -c "${ca_key_scan}")" "False"
 expect_equal "socket dir is 0750 root:10001" "$(perm_group /run/twinraid)" "750 0:10001"
 expect_equal "socket is 0660 root:10001" "$(perm_group /run/twinraid/worker.sock)" "660 0:10001"
-for dir in /srv/worker /data/secrets /data/tls; do
+for dir in /srv/worker /data/secrets /data/tls /data/worker; do
   if docker exec -u 10001:10001 "${main}" ls "${dir}" >/dev/null 2>&1; then
     fail "web user can read ${dir}"
   else
     pass "web user cannot read ${dir}"
   fi
 done
+expect_contains "ssh client is installed" "$(docker exec "${main}" ssh -V 2>&1)" "OpenSSH_"
+expect_equal "ssh-keysign (setuid) is removed" \
+  "$(docker exec "${main}" ls /usr/lib/openssh/ssh-keysign 2>&1 >/dev/null | grep -c 'No such file')" "1"
+expect_equal "ssh-agent has no setgid bit" "$(docker exec "${main}" stat -c '%a' /usr/bin/ssh-agent)" "755"
 if docker exec "${main}" touch /app/probe >/dev/null 2>&1; then
   fail "root filesystem is writable"
 else
@@ -358,6 +364,28 @@ for _ in $(seq 1 10); do
 done
 expect_contains "status reports the running copy job" "${job_seen}" '"job_running":true'
 docker exec "${main}" twinraid-admin mock-job off >/dev/null
+# Aktionen in der interaktiven Simulation (Konzept 4.2 und 6.4)
+expect_equal "action without CSRF token is rejected" \
+  "$(status_of -b "${JAR}" -H "${ORIGIN}" -X POST "${BASE}/api/actions/wake_target")" "403"
+expect_equal "unknown action is rejected" \
+  "$(status_of -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/actions/reboot")" "422"
+expect_equal "wake is accepted" \
+  "$(status_of -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/actions/wake_target")" "202"
+expect_contains "status shows the target starting" "$(https_get -b "${JAR}" "${BASE}/api/status")" \
+  '"target":{"state":"starting","reason":null}'
+expect_equal "a second wake is rejected as busy" \
+  "$(https_get -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/actions/wake_target")" \
+  '{"detail":"busy"}'
+expect_contains "audit log lists the requested action" "$(https_get -b "${JAR}" "${BASE}/api/audit")" \
+  '"action":"wake_target","result":"requested"'
+expect_contains "action log of the worker records the action" \
+  "$(docker exec "${main}" twinraid-admin show-action-log 2>&1)" "wake_target  dashboard: started"
+expect_equal "action log is 0600 root" "$(perm /data/worker/actions.jsonl)" "600 0"
+expect_contains "mock-tour locks actions" "$(docker exec "${main}" twinraid-admin mock-tour on 2>&1)" "Actions are locked"
+docker exec "${main}" twinraid-admin mock-tour off >/dev/null
+expect_contains "mock-fault switches a simulated fault" \
+  "$(docker exec "${main}" twinraid-admin mock-fault vm-hang on 2>&1)" "'vm-hang' is now on"
+docker exec "${main}" twinraid-admin mock-fault vm-hang off >/dev/null
 expect_equal "logout without CSRF token is rejected" \
   "$(status_of -b "${JAR}" -H "${ORIGIN}" -X POST "${BASE}/api/auth/logout")" "403"
 expect_equal "logout with CSRF token" \
@@ -694,11 +722,24 @@ if wait_for_https "${real}" "$((PORT + 2))"; then
   done
   expect_contains "mock-job is refused in real mode" "$(docker exec "${real}" twinraid-admin mock-job on 2>&1 || true)" "only works in simulation mode"
   expect_not_contains "the API key never appears in the log" "$(docker logs "${real}" 2>&1)" "${real_key}"
+  expect_contains "trust-host-key explains an unreachable SSH" \
+    "$(docker exec "${real}" twinraid-admin trust-host-key target --fingerprint SHA256:x 2>&1 || true)" \
+    "Cannot read the SSH host key"
 else
   fail "container did not start with TWINRAID_MODE=real"
   docker logs "${real}" 2>&1 | tail -20
 fi
 docker rm -f "${real}" >/dev/null
+
+# Wecken freigeschaltet, aber Groß liegt nicht im Netz des Containers und
+# wol_broadcast fehlt: Der Worker verweigert den Start (Konzept 4.2).
+wake_config="${WORKDIR}/real-wake.yaml"
+grep -v '^    wol_broadcast:' "${real_config}" >"${wake_config}"
+printf 'actions:\n  wake: true\n' >>"${wake_config}"
+chmod 0644 "${wake_config}"
+refuse "wake enabled without a usable broadcast address" \
+  "[worker] twinraid.worker: cannot derive the Wake-on-LAN broadcast address" \
+  "${wake_config}" -e TWINRAID_MODE=real
 
 # --- 17. Optional: Jede Capability ist nötig ------------------------------------------------------
 if [[ "${CHECK_EACH_CAP:-0}" == "1" ]]; then

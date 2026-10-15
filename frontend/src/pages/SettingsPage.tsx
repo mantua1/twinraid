@@ -1,4 +1,4 @@
-import { ArrowLeft, Download, Lock, LockOpen, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Download, Lock, LockOpen, Power, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { CA_CERTIFICATE_URL } from "@/api/client";
@@ -141,6 +141,42 @@ function ConnectionCard({ info }: { info: AppInfo }) {
   );
 }
 
+const ACTION_GROUPS = ["wake", "vm", "shutdown"] as const;
+
+/** Welche Aktionen im Modus real freigeschaltet sind (Konzept 4.2). */
+function ActionsCard({ info }: { info: AppInfo }) {
+  const { t } = useTranslation();
+  return (
+    <Card>
+      <CardHeader>
+        <div>
+          <CardTitle className="flex items-center gap-2">
+            <Power className="size-5" aria-hidden="true" />
+            {t("settings.actions.title")}
+          </CardTitle>
+          <CardDescription>
+            {info.mode === "mock" ? t("settings.actions.mock") : t("settings.actions.description")}
+          </CardDescription>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
+          {ACTION_GROUPS.map((group) => (
+            <div key={group} className="contents">
+              <dt className="font-medium">{t(`settings.actions.groups.${group}`)}</dt>
+              <dd data-testid={`action-group-${group}`}>
+                {info.actions[group]
+                  ? t("settings.actions.enabled")
+                  : t("settings.actions.disabled")}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function SettingsPage({ info, tls, onBack }: SettingsPageProps) {
   const { t } = useTranslation();
   return (
@@ -167,6 +203,7 @@ export function SettingsPage({ info, tls, onBack }: SettingsPageProps) {
         </CardContent>
       </Card>
       {info !== null && <ConnectionCard info={info} />}
+      {info !== null && <ActionsCard info={info} />}
     </div>
   );
 }

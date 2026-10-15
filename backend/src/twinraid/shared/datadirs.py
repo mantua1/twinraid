@@ -37,6 +37,15 @@ class DataPaths:
         return self.root / "web"
 
     @property
+    def worker(self) -> Path:
+        """Aktionslog des Workers; der Web-Prozess kann es weder lesen noch ändern (Konzept 5.3)."""
+        return self.root / "worker"
+
+    @property
+    def action_log(self) -> Path:
+        return self.worker / "actions.jsonl"
+
+    @property
     def password_file(self) -> Path:
         return self.secrets / "password.argon2"
 
@@ -49,6 +58,20 @@ class DataPaths:
     def target_api_cert(self) -> Path:
         """Bestätigter SHA-256-Fingerabdruck des Zertifikats von Unraid Groß."""
         return self.secrets / "target-api-cert.sha256"
+
+    @property
+    def ssh_power_key(self) -> Path:
+        """Privater SSH-Key „power“ für Herunterfahren und VM-Shutdown (Konzept 5.6)."""
+        return self.secrets / "ssh-power"
+
+    @property
+    def ssh_power_public_key(self) -> Path:
+        return self.secrets / "ssh-power.pub"
+
+    @property
+    def target_known_hosts(self) -> Path:
+        """Bestätigter SSH-Hostkey von Unraid Groß (twinraid-admin trust-host-key target)."""
+        return self.secrets / "target-ssh-known-hosts"
 
     @property
     def tls_ca_cert(self) -> Path:
@@ -141,7 +164,7 @@ def _ensure_dir(path: Path, mode: int, owner_uid: int, group: int | None) -> lis
 
 
 def _ensure_private_files(directory: Path, owner_uid: int) -> list[str]:
-    """Dateien in secrets/ und tls/: reguläre Dateien von root mit 0600."""
+    """Dateien in secrets/, tls/ und worker/: reguläre Dateien von root mit 0600."""
     corrections: list[str] = []
     for entry in sorted(directory.iterdir()):
         info = entry.lstat()
@@ -162,6 +185,8 @@ def prepare_data_dirs(paths: DataPaths, owner_uid: int, web_gid: int) -> list[st
     corrections += _ensure_dir(paths.secrets, 0o700, owner_uid, None)
     corrections += _ensure_dir(paths.tls, 0o700, owner_uid, None)
     corrections += _ensure_dir(paths.web, 0o770, owner_uid, web_gid)
+    corrections += _ensure_dir(paths.worker, 0o700, owner_uid, None)
     corrections += _ensure_private_files(paths.secrets, owner_uid)
     corrections += _ensure_private_files(paths.tls, owner_uid)
+    corrections += _ensure_private_files(paths.worker, owner_uid)
     return corrections

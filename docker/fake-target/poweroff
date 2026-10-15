@@ -1,0 +1,5 @@
+#!/bin/sh
+# Platzhalter für /sbin/poweroff: Groß „schaltet aus“ (die API verschwindet).
+echo poweroff >>/state/poweroff.log
+echo SHUTOFF >/state/vm-state
+touch /state/power-off

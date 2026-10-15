@@ -25,8 +25,10 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from twinraid import __version__
 from twinraid.config import TwinRaidConfig
+from twinraid.shared.actions import ActionName
 from twinraid.shared.addresses import TlsAddresses
-from twinraid.shared.mode import REAL_ACTIONS_ENABLED, RunMode
+from twinraid.shared.ipc import ErrorCode
+from twinraid.shared.mode import RunMode
 from twinraid.shared.passwords import VerifyOutcome
 from twinraid.shared.status import StatusSnapshot
 from twinraid.shared.tls import (
@@ -53,6 +55,7 @@ from twinraid.web.schemas import (
     CaDetails,
     CertificateDetails,
     DisplayNames,
+    EnabledActions,
     LoginRequest,
     SessionInfo,
     TlsAddressInfo,
@@ -379,6 +382,7 @@ def _register_api_routes(
     acknowledgements: Acknowledgements,
 ) -> None:
     config = settings.config
+    enabled = enabled_actions(settings)
     info = AppInfo(
         version=__version__,
         mode=settings.mode,
@@ -388,7 +392,9 @@ def _register_api_routes(
             target=config.servers.target.name,
             vm=config.gaming_vm.display_name,
         ),
-        read_only=settings.mode is RunMode.REAL and not REAL_ACTIONS_ENABLED,
+        read_only=not (enabled.wake or enabled.vm or enabled.shutdown),
+        actions=enabled,
+        vm_shutdown_timeout_minutes=config.gaming_vm.shutdown_timeout_minutes,
         target_connection_encrypted=config.servers.target.webgui.encrypted,
     )
 
@@ -404,6 +410,27 @@ def _register_api_routes(
             raise HTTPException(status_code=503, detail="worker_unavailable") from None
         except WorkerCommandError:
             raise HTTPException(status_code=502, detail="worker_error") from None
+
+    @api.post("/api/actions/{action}")
+    async def run_action(request: Request, action: ActionName) -> Response:
+        """Fordert eine Aktion beim Worker an. Nimmt keine Daten entgegen (Konzept 4.2)."""
+        ip = client_ip(request)
+        audit_action = AuditAction(action.value)
+        try:
+            await worker.request_action(action)
+        except WorkerUnavailableError:
+            return JSONResponse({"detail": "worker_unavailable"}, status_code=503)
+        except WorkerCommandError as exc:
+            await _run(audit.record, audit_action, AuditResult.REJECTED, ip)
+            if exc.blocked_by is not None:
+                detail = exc.blocked_by.value
+            elif exc.error is ErrorCode.NOT_AVAILABLE:
+                detail = "not_enabled"
+            else:
+                detail = "rejected"
+            return JSONResponse({"detail": detail}, status_code=409)
+        await _run(audit.record, audit_action, AuditResult.REQUESTED, ip)
+        return JSONResponse({"detail": "accepted"}, status_code=202)
 
     @api.get("/api/audit")
     async def audit_entries() -> AuditList:
@@ -521,6 +548,14 @@ def _register_event_routes(
             media_type="text/event-stream",
             headers={"X-Accel-Buffering": "no"},
         )
+
+
+def enabled_actions(settings: WebSettings) -> EnabledActions:
+    """Im Simulationsmodus alles; im Modus real nur actions.* (Konzept 4.2)."""
+    if settings.mode is RunMode.MOCK:
+        return EnabledActions(wake=True, vm=True, shutdown=True)
+    actions = settings.config.actions
+    return EnabledActions(wake=actions.wake, vm=actions.vm, shutdown=actions.shutdown)
 
 
 def _frontend_file(path: Path, media_type: str) -> Response:

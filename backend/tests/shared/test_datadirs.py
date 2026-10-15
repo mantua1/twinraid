@@ -30,6 +30,9 @@ def test_creates_directories_with_modes(paths: DataPaths) -> None:
     assert _mode(paths.tls) == 0o700
     assert _mode(paths.web) == 0o770
     assert paths.web.stat().st_gid == GID
+    # Aktionslog des Workers: nur root (Konzept 5.3 und 5.9).
+    assert _mode(paths.worker) == 0o700
+    assert paths.action_log.parent == paths.worker
 
 
 def test_is_idempotent(paths: DataPaths) -> None:
@@ -43,8 +46,11 @@ def test_corrects_modes(paths: DataPaths) -> None:
     paths.web.chmod(0o777)
     (paths.secrets / "password.argon2").write_text("x")
     (paths.secrets / "password.argon2").chmod(0o644)
+    paths.action_log.write_text("{}\n")
+    paths.action_log.chmod(0o644)
     corrections = prepare_data_dirs(paths, UID, GID)
-    assert len(corrections) == 3
+    assert len(corrections) == 4
+    assert _mode(paths.action_log) == 0o600
     assert _mode(paths.secrets) == 0o700
     assert _mode(paths.web) == 0o770
     assert _mode(paths.secrets / "password.argon2") == 0o600

@@ -40,9 +40,14 @@ def socket_path(env: Mapping[str, str]) -> Path:
     return Path(env.get(SOCKET_ENV_VAR) or DEFAULT_SOCKET_PATH)
 
 
+def mock_flag_dir(env: Mapping[str, str]) -> Path:
+    """Ordner der Schalter des Simulationsmodus, neben dem Worker-Socket (nur root schreibt)."""
+    return socket_path(env).parent
+
+
 def mock_job_flag(env: Mapping[str, str]) -> Path:
     """Schalter für job_running im Simulationsmodus, neben dem Worker-Socket (nur root)."""
-    return socket_path(env).parent / "mock-job-running"
+    return mock_flag_dir(env) / "mock-job-running"
 
 
 def frontend_dir(env: Mapping[str, str]) -> Path:

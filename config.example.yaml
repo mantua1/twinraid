@@ -34,14 +34,25 @@ servers:
     webgui:
       scheme: http
       port: 80
-    mac: "AA:BB:CC:DD:EE:FF"
-    wol_broadcast: 192.168.10.255
-    boot_timeout_minutes: 5
+    mac: "AA:BB:CC:DD:EE:FF"    # für Wake-on-LAN
+    # Broadcast-Adresse für Wake-on-LAN; ohne Angabe aus dem eigenen Netz abgeleitet.
+    # Nur nötig, wenn Groß in einem anderen Netz liegt als TwinRaid.
+    # wol_broadcast: 192.168.10.255
+    boot_timeout_minutes: 5    # so lange wartet TwinRaid nach dem Wecken auf Groß
+    # ssh_port: 22             # optional, Standard 22 (Herunterfahren per SSH)
 
 gaming_vm:
   display_name: "Gaming-VM"
-  unraid_vm_name: "Windows 11 Gaming"
+  unraid_vm_name: "Windows 11 Gaming"  # genau wie im Reiter VMs von Groß
   shutdown_timeout_minutes: 3  # danach wird "Erzwingen" angeboten
+
+# Aktionen im Echtbetrieb (TWINRAID_MODE=real) einzeln freischalten. Standard: alles
+# aus. Im Simulationsmodus sind alle Aktionen verfügbar. Nach einer Änderung den
+# Container neu starten. Testreihenfolge: docs/EINRICHTUNG.md, Testprotokoll.
+actions:
+  wake: false                  # Groß wecken (Wake-on-LAN)
+  vm: false                    # VM starten, herunterfahren, erzwingen
+  shutdown: false              # Groß herunterfahren
 
 sync:
   shares:                      # identische Namen auf beiden Servern

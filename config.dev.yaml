@@ -33,7 +33,13 @@ servers:
 gaming_vm:
   display_name: "Gaming-VM"
   unraid_vm_name: "Windows 11 Gaming"
-  shutdown_timeout_minutes: 3
+  shutdown_timeout_minutes: 1
+
+# Gilt nur im Modus real; die lokale Entwicklung läuft im Simulationsmodus.
+actions:
+  wake: true
+  vm: true
+  shutdown: true
 
 sync:
   shares:

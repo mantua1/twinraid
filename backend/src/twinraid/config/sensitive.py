@@ -30,7 +30,9 @@ def sensitive_values(
 
     source = config.servers.source
     target = config.servers.target
-    values.update({str(source.host), str(target.host), str(target.wol_broadcast)})
+    values.update({str(source.host), str(target.host)})
+    if target.wol_broadcast is not None:
+        values.add(str(target.wol_broadcast))
     values.update({target.mac, target.mac.replace(":", "-"), target.mac.replace(":", "")})
     values.update({source.name, target.name})
     values.update({config.gaming_vm.display_name, config.gaming_vm.unraid_vm_name})

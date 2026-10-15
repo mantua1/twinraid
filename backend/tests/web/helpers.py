@@ -12,6 +12,7 @@ from tests.conftest import EXAMPLE_CONFIG
 from tests.support.passwords import TEST_PASSWORD
 from tests.support.tls import install_test_runtime
 from twinraid.config import load_config
+from twinraid.shared.actions import ActionBlocker, ActionName, ActionsSnapshot
 from twinraid.shared.addresses import configured, resolve_addresses
 from twinraid.shared.mode import RunMode
 from twinraid.shared.passwords import VerifyOutcome
@@ -19,7 +20,7 @@ from twinraid.shared.status import UNKNOWN, StatusSnapshot
 from twinraid.web.app import WebApp, WebSettings, create_app
 from twinraid.web.db import WebDatabase
 from twinraid.web.events import EventTimings
-from twinraid.web.worker_client import WorkerApi, WorkerUnavailableError
+from twinraid.web.worker_client import WorkerApi, WorkerCommandError, WorkerUnavailableError
 
 # Kurze Zeiten für Tests. Ein Datenstrom endet spätestens nach einer halben Sekunde,
 # damit kein Test an einer offenen Verbindung hängen bleibt.
@@ -43,6 +44,7 @@ def unknown_status(password_set: bool = True, job_running: bool = False) -> Stat
         checked_at=None,
         job_running=job_running,
         password_set=password_set,
+        actions=ActionsSnapshot.blocked(ActionBlocker.TARGET_UNKNOWN),
     )
 
 
@@ -61,6 +63,9 @@ class FakeWorker:
         self.stamp_checks = False
         self.verify_calls = 0
         self.status_calls = 0
+        # Antwort auf Aktionen: None nimmt an, sonst lehnt der Worker mit diesem Fehler ab.
+        self.action_error: WorkerCommandError | None = None
+        self.actions: list[ActionName] = []
 
     async def get_status(self) -> StatusSnapshot:
         self.calls.append("get_status")
@@ -85,6 +90,14 @@ class FakeWorker:
         if self.password is None:
             return VerifyOutcome.NOT_SET
         return VerifyOutcome.VALID if password == self.password else VerifyOutcome.INVALID
+
+    async def request_action(self, action: ActionName) -> None:
+        self.calls.append(action.value)
+        if not self.available:
+            raise WorkerUnavailableError("down")
+        if self.action_error is not None:
+            raise self.action_error
+        self.actions.append(action)
 
 
 class FakeClock:
