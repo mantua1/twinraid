@@ -8,6 +8,7 @@ export const STATUS_REASONS = [
   "unreachable",
   "runs_here",
   "target_offline",
+  "target_starting",
   "api_unreachable",
   "api_redirected",
   "api_key_missing",
@@ -30,6 +31,96 @@ export interface ResourceInfo {
   reason: StatusReason | null;
 }
 
+// Aktionen (Konzept 4.2); Spiegel von backend/src/twinraid/shared/actions.py.
+export const ACTION_NAMES = [
+  "wake_target",
+  "shutdown_target",
+  "vm_start",
+  "vm_stop",
+  "vm_force_stop",
+] as const;
+export type ActionName = (typeof ACTION_NAMES)[number];
+
+export const ACTION_BLOCKERS = [
+  "not_enabled",
+  "busy",
+  "sync_running",
+  "target_online",
+  "target_offline",
+  "target_unknown",
+  "vm_running",
+  "vm_off",
+  "vm_unknown",
+  "force_not_yet",
+  "tour",
+] as const;
+export type ActionBlocker = (typeof ACTION_BLOCKERS)[number];
+
+export const ACTION_STEPS = [
+  "waking",
+  "waiting_for_api",
+  "starting_vm",
+  "stopping_vm",
+  "forcing_vm",
+  "shutting_down",
+] as const;
+export type ActionStep = (typeof ACTION_STEPS)[number];
+
+export const ACTION_OUTCOMES = [
+  "success",
+  "wol_failed",
+  "boot_timeout",
+  "api_unreachable",
+  "api_redirected",
+  "api_key_missing",
+  "api_key_invalid",
+  "api_forbidden",
+  "api_cert_untrusted",
+  "api_cert_changed",
+  "api_error",
+  "vm_not_found",
+  "vm_start_timeout",
+  "vm_stop_timeout",
+  "ssh_key_missing",
+  "ssh_host_untrusted",
+  "ssh_host_key_mismatch",
+  "ssh_auth_failed",
+  "ssh_unreachable",
+  "ssh_denied",
+  "ssh_failed",
+  "remote_failed",
+  "shutdown_timeout",
+  "interrupted",
+  "internal_error",
+] as const;
+export type ActionOutcome = (typeof ACTION_OUTCOMES)[number];
+
+export interface RunningAction {
+  action: ActionName;
+  step: ActionStep;
+  started_at: string;
+}
+
+export interface ActionResult {
+  action: ActionName;
+  outcome: ActionOutcome;
+  finished_at: string;
+}
+
+export interface ResourceActivity {
+  running: RunningAction | null;
+  last: ActionResult | null;
+}
+
+export interface ActionsSnapshot {
+  // null: verfügbar; sonst der Grund, warum nicht.
+  availability: Record<ActionName, ActionBlocker | null>;
+  target: ResourceActivity;
+  vm: ResourceActivity;
+  // Gesetzt, sobald ein Herunterfahren der VM läuft oder gescheitert ist.
+  force_available_at: string | null;
+}
+
 export interface StatusSnapshot {
   source: ResourceInfo;
   target: ResourceInfo;
@@ -37,6 +128,7 @@ export interface StatusSnapshot {
   checked_at: string | null;
   job_running: boolean;
   password_set: boolean;
+  actions: ActionsSnapshot;
 }
 
 export interface AppInfo {
@@ -49,6 +141,9 @@ export interface AppInfo {
     vm: string;
   };
   read_only: boolean;
+  // Freigeschaltete Aktionen; im Simulationsmodus alle.
+  actions: { wake: boolean; vm: boolean; shutdown: boolean };
+  vm_shutdown_timeout_minutes: number;
   target_connection_encrypted: boolean;
 }
 
@@ -76,6 +171,9 @@ export const AUDIT_ACTIONS = [
   "cli_set_api_key",
   "cli_trust_api_cert",
   "ca_change_notice",
+  "cli_init_ssh_keys",
+  "cli_trust_host_key",
+  ...ACTION_NAMES,
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -89,6 +187,7 @@ export const AUDIT_RESULTS = [
   "expired",
   "rejected",
   "acknowledged",
+  "requested",
 ] as const;
 export type AuditResult = (typeof AUDIT_RESULTS)[number];
 

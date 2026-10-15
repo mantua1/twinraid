@@ -49,7 +49,8 @@
       "vm_not_found": "VM not found",
       "vm_paused": "Paused",
       "vm_suspended": "Suspended",
-      "vm_crashed": "Crashed"
+      "vm_crashed": "Crashed",
+      "target_starting": "Waiting for the server to be ready"
     }
   },
   "dashboard": {
@@ -149,6 +150,18 @@
       "description": "How TwinRaid talks to the Unraid API (webgui in twinraid.yaml).",
       "encrypted": "Encrypted with HTTPS; the certificate is checked against the confirmed fingerprint.",
       "unencrypted": "Connection to {{name}} unencrypted, the API key is sent in plain text."
+    },
+    "actions": {
+      "title": "Actions",
+      "description": "In real mode each group is enabled separately under actions in twinraid.yaml; restart the container afterwards.",
+      "mock": "In simulation mode all actions are available; they only affect the simulation.",
+      "enabled": "enabled",
+      "disabled": "locked",
+      "groups": {
+        "wake": "Wake (wake)",
+        "vm": "Start, shut down, force VM (vm)",
+        "shutdown": "Shut down server (shutdown)"
+      }
     }
   },
   "audit": {
@@ -163,7 +176,14 @@
       "cli_unlock": "Locks cleared (CLI)",
       "cli_set_api_key": "API key set (CLI)",
       "cli_trust_api_cert": "Unraid certificate confirmed (CLI)",
-      "ca_change_notice": "CA change notice"
+      "ca_change_notice": "CA change notice",
+      "cli_init_ssh_keys": "SSH key “power” created (CLI)",
+      "cli_trust_host_key": "SSH host key confirmed (CLI)",
+      "wake_target": "Wake server",
+      "shutdown_target": "Shut down server",
+      "vm_start": "Start VM",
+      "vm_stop": "Shut down VM",
+      "vm_force_stop": "Force VM off"
     },
     "results": {
       "success": "successful",
@@ -174,7 +194,8 @@
       "busy": "too many attempts",
       "expired": "expired",
       "rejected": "rejected",
-      "acknowledged": "acknowledged"
+      "acknowledged": "acknowledged",
+      "requested": "requested"
     },
     "unknown": "unknown",
     "from": "from {{ip}}",
@@ -182,7 +203,7 @@
   },
   "readOnlyBanner": {
     "title": "Status only",
-    "description": "In this version the servers are only queried. Actions such as wake, starting the VM or sync are not available yet."
+    "description": "No action is enabled in real mode yet. Actions are enabled one by one under actions in twinraid.yaml (see docs/EINRICHTUNG.md)."
   },
   "certificate": {
     "renewalFailed": "The automatic renewal of the TLS server certificate failed. Please check the container log.",
@@ -203,6 +224,100 @@
       "requested": "requested with twinraid-admin renew-cert --new-ca",
       "unusable": "the stored CA was unusable",
       "legacy_replaced": "the self-signed certificate of an older version was replaced"
+    }
+  },
+  "actions": {
+    "buttons": {
+      "wake_target": "Wake",
+      "shutdown_target": "Shut down",
+      "vm_start": "Start",
+      "vm_stop": "Shut down",
+      "vm_force_stop": "Force off"
+    },
+    "names": {
+      "wake_target": "Wake server",
+      "shutdown_target": "Shut down server",
+      "vm_start": "Start VM",
+      "vm_stop": "Shut down VM",
+      "vm_force_stop": "Force VM off"
+    },
+    "steps": {
+      "waking": "Magic packet sent, the server is starting …",
+      "waiting_for_api": "Waiting for Unraid to be ready …",
+      "starting_vm": "Starting the VM …",
+      "stopping_vm": "The VM is shutting down …",
+      "forcing_vm": "Switching the VM off …",
+      "shutting_down": "The server is shutting down …"
+    },
+    "blockers": {
+      "not_enabled": "not enabled under actions in twinraid.yaml",
+      "busy": "another action is running",
+      "sync_running": "locked while a sync is running",
+      "target_online": "the server is already running",
+      "target_offline": "the server is off",
+      "target_unknown": "the state of the server is not known yet",
+      "vm_running": "the VM is already running",
+      "vm_off": "the VM is off",
+      "vm_unknown": "the state of the VM is unknown",
+      "force_not_yet": "only possible after the waiting time following “Shut down”",
+      "tour": "not available during the simulation tour"
+    },
+    "outcomes": {
+      "success": "successful",
+      "wol_failed": "The magic packet could not be sent.",
+      "boot_timeout": "The server was not ready in time (boot_timeout_minutes). Check Wake-on-LAN in the BIOS and with ethtool.",
+      "api_unreachable": "The Unraid API is not reachable.",
+      "api_redirected": "Unraid redirects to HTTPS – set webgui.scheme to https in twinraid.yaml.",
+      "api_key_missing": "No API key is set (twinraid-admin set-api-key target).",
+      "api_key_invalid": "Unraid rejects the API key.",
+      "api_forbidden": "No permission: the API key may not start or switch off VMs. Add the permission VMS: Update (any) in Unraid.",
+      "api_cert_untrusted": "The certificate of Unraid is not confirmed yet (twinraid-admin trust-api-cert target).",
+      "api_cert_changed": "The certificate of Unraid has changed; TwinRaid no longer sends the API key.",
+      "api_error": "Unexpected answer from the Unraid API.",
+      "vm_not_found": "The VM was not found (gaming_vm.unraid_vm_name).",
+      "vm_start_timeout": "The VM is not running after the start.",
+      "vm_stop_timeout": "The VM did not shut down in time. “Force off” is now possible.",
+      "ssh_key_missing": "No SSH key “power” (twinraid-admin init-ssh-keys).",
+      "ssh_host_untrusted": "The SSH host key of the server is not confirmed (twinraid-admin trust-host-key target).",
+      "ssh_host_key_mismatch": "The SSH host key of the server has changed. Check it and confirm it again.",
+      "ssh_auth_failed": "The server rejects the SSH key (check Users → root → SSH authorized keys).",
+      "ssh_unreachable": "SSH on the server is not reachable (is Use SSH enabled?).",
+      "ssh_denied": "guard.sh on the server rejected the command.",
+      "ssh_failed": "The SSH connection failed.",
+      "remote_failed": "The command failed on the server.",
+      "shutdown_timeout": "The server is still reachable after 15 minutes.",
+      "interrupted": "interrupted because TwinRaid was restarted",
+      "internal_error": "Internal error – please check the container log."
+    },
+    "last": "Last: {{action}} – {{outcome}} ({{time}})",
+    "hint": "{{actions}}: {{reason}}",
+    "forceAt": "possible from {{time}}",
+    "rejected": "Not carried out: {{reason}}.",
+    "rejectedUnknown": "rejected by the server",
+    "requestFailed": "The request failed. Please try again.",
+    "dialog": {
+      "cancel": "Cancel",
+      "shutdown": {
+        "title": "Shut down {{target}}?",
+        "description": "Unraid stops containers, VMs and the array and switches the server off. Use “Wake” to switch it on again.",
+        "confirm": "Shut down"
+      },
+      "shutdownWithVm": {
+        "title": "Shut down the VM first?",
+        "description": "{{vm}} is running. TwinRaid shuts down the VM first and then {{target}}. If the VM does not react, TwinRaid stops and the server keeps running.",
+        "confirm": "Shut down VM and server"
+      },
+      "vmStop": {
+        "title": "Shut down {{vm}}?",
+        "description_one": "The VM receives the shutdown signal, like a short press of the power button. If it does not react within {{count}} minute, “Force off” becomes possible.",
+        "description_other": "The VM receives the shutdown signal, like a short press of the power button. If it does not react within {{count}} minutes, “Force off” becomes possible.",
+        "confirm": "Shut down"
+      },
+      "force": {
+        "title": "Switch {{vm}} off immediately?",
+        "description": "The VM is switched off at once, like pulling the power plug. Unsaved data in the VM is lost.",
+        "confirm": "Force off now"
+      }
     }
   }
 }

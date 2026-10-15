@@ -1,6 +1,9 @@
 // Typisierter Client für die REST-API. Anfragen gehen nur an den eigenen Server.
 import {
+  ACTION_BLOCKERS,
   LOGIN_ERRORS,
+  type ActionBlocker,
+  type ActionName,
   type AppInfo,
   type AuditEntry,
   type AuthState,
@@ -28,6 +31,17 @@ export class UnauthorizedError extends ApiError {
   constructor() {
     super(401);
     this.name = "UnauthorizedError";
+  }
+}
+
+/** Der Worker hat die Aktion abgelehnt; reason nennt den Grund (Konzept 4.2). */
+export class ActionRejectedError extends Error {
+  readonly reason: ActionBlocker | "rejected";
+
+  constructor(reason: ActionBlocker | "rejected") {
+    super(`Action rejected: ${reason}`);
+    this.name = "ActionRejectedError";
+    this.reason = reason;
   }
 }
 
@@ -113,6 +127,30 @@ async function acknowledgeCaChange(): Promise<void> {
   await request("/api/tls/ca-change/acknowledge", { method: "POST" });
 }
 
+/** Fordert eine Aktion an. Sendet keine Daten, nur das CSRF-Token (Konzept 4.2). */
+async function runAction(name: ActionName): Promise<void> {
+  const headers = new Headers({ Accept: "application/json" });
+  if (csrfToken !== null) {
+    headers.set("X-CSRF-Token", csrfToken);
+  }
+  const response = await fetch(`/api/actions/${name}`, {
+    method: "POST",
+    headers,
+    credentials: "same-origin",
+  });
+  if (response.status === 401) {
+    throw new UnauthorizedError();
+  }
+  if (response.status === 409) {
+    const body = (await response.json().catch(() => ({}))) as { detail?: unknown };
+    const known = (ACTION_BLOCKERS as readonly unknown[]).includes(body.detail);
+    throw new ActionRejectedError(known ? (body.detail as ActionBlocker) : "rejected");
+  }
+  if (!response.ok) {
+    throw new ApiError(response.status);
+  }
+}
+
 async function session(signal?: AbortSignal): Promise<SessionInfo> {
   const info = await getJson<SessionInfo>("/api/auth/session", signal);
   setCsrfToken(info.csrf_token);
@@ -129,4 +167,5 @@ export const api = {
     (await getJson<{ entries: AuditEntry[] }>("/api/audit", signal)).entries,
   tls: (signal?: AbortSignal) => getJson<TlsInfo>("/api/tls", signal),
   acknowledgeCaChange,
+  runAction,
 };

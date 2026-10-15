@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { api, UnauthorizedError } from "@/api/client";
-import type { AppInfo, AuditEntry, TlsInfo } from "@/api/types";
+import { ActionRejectedError, api, UnauthorizedError } from "@/api/client";
+import type { ActionBlocker, ActionName, AppInfo, AuditEntry, TlsInfo } from "@/api/types";
 import { useStatusStream, type StatusStream } from "@/hooks/useStatusStream";
+
+export type ActionRequestResult =
+  | { kind: "accepted" }
+  | { kind: "rejected"; reason: ActionBlocker | "rejected" }
+  | { kind: "failed" };
 
 export interface DashboardData {
   info: AppInfo | null;
@@ -13,6 +18,8 @@ export interface DashboardData {
   infoFailed: boolean;
   // Bestätigt den Hinweis zum CA-Wechsel und lädt Zertifikat und Verlauf neu.
   acknowledgeCaChange: () => Promise<void>;
+  // Fordert eine Aktion an; Fortschritt und Ergebnis kommen über den Live-Status.
+  runAction: (name: ActionName) => Promise<ActionRequestResult>;
 }
 
 interface StaticData {
@@ -79,5 +86,35 @@ export function useDashboardData(onUnauthorized: () => void): DashboardData {
     }
   }, [onUnauthorized]);
 
-  return { ...data, stream, acknowledgeCaChange };
+  const refreshAudit = useCallback(() => {
+    void api
+      .audit()
+      .then((audit) => {
+        setData((previous) => ({ ...previous, audit }));
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const runAction = useCallback(
+    async (name: ActionName): Promise<ActionRequestResult> => {
+      try {
+        await api.runAction(name);
+        refreshAudit();
+        return { kind: "accepted" };
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          onUnauthorized();
+          return { kind: "failed" };
+        }
+        if (error instanceof ActionRejectedError) {
+          refreshAudit();
+          return { kind: "rejected", reason: error.reason };
+        }
+        return { kind: "failed" };
+      }
+    },
+    [onUnauthorized, refreshAudit],
+  );
+
+  return { ...data, stream, acknowledgeCaChange, runAction };
 }

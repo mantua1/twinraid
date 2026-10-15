@@ -1,7 +1,16 @@
 // Simulierter TwinRaid-Server für Komponenten-Tests.
 import { vi } from "vitest";
 
-import type { AppInfo, AuditEntry, RunMode, StatusSnapshot, TlsInfo } from "@/api/types";
+import type {
+  ActionBlocker,
+  ActionName,
+  ActionsSnapshot,
+  AppInfo,
+  AuditEntry,
+  RunMode,
+  StatusSnapshot,
+  TlsInfo,
+} from "@/api/types";
 
 export const PASSWORD = "richtiges-passwort";
 export const CSRF = "csrf-token-123";
@@ -12,8 +21,31 @@ export const INFO: AppInfo = {
   default_language: "de",
   names: { source: "Unraid Klein", target: "Unraid Groß", vm: "Gaming-VM" },
   read_only: false,
+  actions: { wake: true, vm: true, shutdown: true },
+  vm_shutdown_timeout_minutes: 3,
   target_connection_encrypted: false,
 };
+
+/** Aktionsteil des Status; availability überschreibt einzelne Gründe. */
+export function actionsSnapshot(
+  availability: Partial<Record<ActionName, ActionBlocker | null>> = {},
+  extra: Partial<ActionsSnapshot> = {},
+): ActionsSnapshot {
+  return {
+    availability: {
+      wake_target: null,
+      shutdown_target: "target_offline",
+      vm_start: null,
+      vm_stop: "target_offline",
+      vm_force_stop: "target_offline",
+      ...availability,
+    },
+    target: { running: null, last: null },
+    vm: { running: null, last: null },
+    force_available_at: null,
+    ...extra,
+  };
+}
 
 export const STATUS: StatusSnapshot = {
   source: { state: "online", reason: null },
@@ -22,6 +54,21 @@ export const STATUS: StatusSnapshot = {
   checked_at: "2026-10-13T12:00:05Z",
   job_running: false,
   password_set: true,
+  actions: actionsSnapshot(),
+};
+
+/** Groß und VM laufen: Herunterfahren ist möglich, Erzwingen noch nicht. */
+export const STATUS_VM_RUNNING: StatusSnapshot = {
+  ...STATUS,
+  target: { state: "online", reason: null },
+  vm: { state: "online", reason: null },
+  actions: actionsSnapshot({
+    wake_target: "target_online",
+    shutdown_target: null,
+    vm_start: "vm_running",
+    vm_stop: null,
+    vm_force_stop: "force_not_yet",
+  }),
 };
 
 export const TLS: TlsInfo = {
@@ -113,6 +160,9 @@ export interface FakeServer {
   failAuthState: boolean;
   // Status, den der Live-Datenstrom direkt nach dem Verbinden sendet; null: keiner.
   status: StatusSnapshot | null;
+  // Antwort auf eine Aktion: null nimmt an, sonst Ablehnung mit diesem Grund (409).
+  actionRejection: string | null;
+  actions: string[];
   calls: { url: string; method: string; headers: Headers }[];
 }
 
@@ -137,6 +187,8 @@ export function installFakeApi(overrides: Partial<FakeServer> = {}): FakeServer 
     loginFailure: { status: 401, body: { detail: "invalid_password" } },
     failAuthState: false,
     status: STATUS,
+    actionRejection: null,
+    actions: [],
     calls: [],
     ...overrides,
   };
@@ -207,6 +259,16 @@ export function installFakeApi(overrides: Partial<FakeServer> = {}): FakeServer 
         }
         server.tls = { ...server.tls, ca_change: null };
         return Promise.resolve(json({ detail: "acknowledged" }));
+      }
+      if (url.startsWith("/api/actions/") && method === "POST") {
+        if (headers.get("X-CSRF-Token") !== CSRF) {
+          return Promise.resolve(json({ detail: "csrf_rejected" }, 403));
+        }
+        if (server.actionRejection !== null) {
+          return Promise.resolve(json({ detail: server.actionRejection }, 409));
+        }
+        server.actions.push(url.slice("/api/actions/".length));
+        return Promise.resolve(json({ detail: "accepted" }, 202));
       }
       if (url === "/api/auth/logout" && method === "POST") {
         if (headers.get("X-CSRF-Token") !== CSRF) {

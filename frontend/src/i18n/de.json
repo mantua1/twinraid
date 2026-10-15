@@ -49,7 +49,8 @@
       "vm_not_found": "VM nicht gefunden",
       "vm_paused": "Pausiert",
       "vm_suspended": "Im Ruhezustand",
-      "vm_crashed": "Abgestürzt"
+      "vm_crashed": "Abgestürzt",
+      "target_starting": "Wartet, bis der Server bereit ist"
     }
   },
   "dashboard": {
@@ -149,6 +150,18 @@
       "description": "So spricht TwinRaid die Unraid-API an (webgui in twinraid.yaml).",
       "encrypted": "Verschlüsselt per HTTPS, Zertifikat über den bestätigten Fingerabdruck geprüft.",
       "unencrypted": "Verbindung zu {{name}} unverschlüsselt, API-Key wird im Klartext übertragen."
+    },
+    "actions": {
+      "title": "Aktionen",
+      "description": "Im Echtbetrieb wird jede Gruppe in twinraid.yaml unter actions einzeln freigeschaltet; danach den Container neu starten.",
+      "mock": "Im Simulationsmodus sind alle Aktionen verfügbar; sie wirken nur auf die Simulation.",
+      "enabled": "freigeschaltet",
+      "disabled": "gesperrt",
+      "groups": {
+        "wake": "Wecken (wake)",
+        "vm": "VM starten, herunterfahren, erzwingen (vm)",
+        "shutdown": "Server herunterfahren (shutdown)"
+      }
     }
   },
   "audit": {
@@ -163,7 +176,14 @@
       "cli_unlock": "Sperren aufgehoben (CLI)",
       "cli_set_api_key": "API-Key gesetzt (CLI)",
       "cli_trust_api_cert": "Unraid-Zertifikat bestätigt (CLI)",
-      "ca_change_notice": "Hinweis zum CA-Wechsel"
+      "ca_change_notice": "Hinweis zum CA-Wechsel",
+      "cli_init_ssh_keys": "SSH-Key „power“ erzeugt (CLI)",
+      "cli_trust_host_key": "SSH-Hostkey bestätigt (CLI)",
+      "wake_target": "Server wecken",
+      "shutdown_target": "Server herunterfahren",
+      "vm_start": "VM starten",
+      "vm_stop": "VM herunterfahren",
+      "vm_force_stop": "VM erzwingen"
     },
     "results": {
       "success": "erfolgreich",
@@ -174,7 +194,8 @@
       "busy": "zu viele Versuche",
       "expired": "abgelaufen",
       "rejected": "abgewiesen",
-      "acknowledged": "bestätigt"
+      "acknowledged": "bestätigt",
+      "requested": "angefordert"
     },
     "unknown": "unbekannt",
     "from": "von {{ip}}",
@@ -182,7 +203,7 @@
   },
   "readOnlyBanner": {
     "title": "Nur Statusanzeige",
-    "description": "In dieser Version werden die Server nur abgefragt. Aktionen wie Wecken, VM starten oder Sync sind noch nicht verfügbar."
+    "description": "Im Echtbetrieb ist noch keine Aktion freigeschaltet. Aktionen werden in twinraid.yaml unter actions einzeln freigeschaltet (siehe docs/EINRICHTUNG.md)."
   },
   "certificate": {
     "renewalFailed": "Die automatische Erneuerung des TLS-Serverzertifikats ist fehlgeschlagen. Bitte das Container-Log prüfen.",
@@ -203,6 +224,100 @@
       "requested": "mit twinraid-admin renew-cert --new-ca angefordert",
       "unusable": "die gespeicherte CA war unbrauchbar",
       "legacy_replaced": "das selbstsignierte Zertifikat einer älteren Version wurde ersetzt"
+    }
+  },
+  "actions": {
+    "buttons": {
+      "wake_target": "Wecken",
+      "shutdown_target": "Herunterfahren",
+      "vm_start": "Starten",
+      "vm_stop": "Herunterfahren",
+      "vm_force_stop": "Erzwingen"
+    },
+    "names": {
+      "wake_target": "Server wecken",
+      "shutdown_target": "Server herunterfahren",
+      "vm_start": "VM starten",
+      "vm_stop": "VM herunterfahren",
+      "vm_force_stop": "VM erzwingen"
+    },
+    "steps": {
+      "waking": "Magic Packet gesendet, der Server startet …",
+      "waiting_for_api": "Wartet, bis Unraid bereit ist …",
+      "starting_vm": "Die VM wird gestartet …",
+      "stopping_vm": "Die VM fährt herunter …",
+      "forcing_vm": "Die VM wird ausgeschaltet …",
+      "shutting_down": "Der Server fährt herunter …"
+    },
+    "blockers": {
+      "not_enabled": "in twinraid.yaml unter actions nicht freigeschaltet",
+      "busy": "eine andere Aktion läuft gerade",
+      "sync_running": "gesperrt, solange ein Sync läuft",
+      "target_online": "der Server läuft bereits",
+      "target_offline": "der Server ist aus",
+      "target_unknown": "der Zustand des Servers ist noch unbekannt",
+      "vm_running": "die VM läuft bereits",
+      "vm_off": "die VM ist aus",
+      "vm_unknown": "der Zustand der VM ist unbekannt",
+      "force_not_yet": "erst nach Ablauf der Wartezeit nach „Herunterfahren“ möglich",
+      "tour": "im Rundlauf der Simulation nicht verfügbar"
+    },
+    "outcomes": {
+      "success": "erfolgreich",
+      "wol_failed": "Das Magic Packet konnte nicht gesendet werden.",
+      "boot_timeout": "Der Server war nicht rechtzeitig bereit (boot_timeout_minutes). Wake-on-LAN im BIOS und mit ethtool prüfen.",
+      "api_unreachable": "Die Unraid-API ist nicht erreichbar.",
+      "api_redirected": "Unraid leitet auf HTTPS um – in twinraid.yaml webgui.scheme auf https stellen.",
+      "api_key_missing": "Kein API-Key gesetzt (twinraid-admin set-api-key target).",
+      "api_key_invalid": "Unraid lehnt den API-Key ab.",
+      "api_forbidden": "Keine Berechtigung: Der API-Key darf VMs nicht starten oder ausschalten. In Unraid die Berechtigung VMS: Update (any) ergänzen.",
+      "api_cert_untrusted": "Zertifikat von Unraid noch nicht bestätigt (twinraid-admin trust-api-cert target).",
+      "api_cert_changed": "Das Zertifikat von Unraid hat sich geändert; den API-Key sendet TwinRaid nicht mehr.",
+      "api_error": "Unerwartete Antwort der Unraid-API.",
+      "vm_not_found": "Die VM wurde nicht gefunden (gaming_vm.unraid_vm_name).",
+      "vm_start_timeout": "Die VM läuft nach dem Start nicht.",
+      "vm_stop_timeout": "Die VM hat sich nicht rechtzeitig heruntergefahren. „Erzwingen“ ist jetzt möglich.",
+      "ssh_key_missing": "Kein SSH-Key „power“ (twinraid-admin init-ssh-keys).",
+      "ssh_host_untrusted": "Der SSH-Hostkey des Servers ist nicht bestätigt (twinraid-admin trust-host-key target).",
+      "ssh_host_key_mismatch": "Der SSH-Hostkey des Servers hat sich geändert. Prüfen und neu bestätigen.",
+      "ssh_auth_failed": "Der Server lehnt den SSH-Key ab (Users → root → SSH authorized keys prüfen).",
+      "ssh_unreachable": "SSH auf dem Server ist nicht erreichbar (Use SSH eingeschaltet?).",
+      "ssh_denied": "guard.sh auf dem Server hat den Befehl abgelehnt.",
+      "ssh_failed": "Die SSH-Verbindung ist fehlgeschlagen.",
+      "remote_failed": "Der Befehl ist auf dem Server fehlgeschlagen.",
+      "shutdown_timeout": "Der Server ist nach 15 Minuten noch erreichbar.",
+      "interrupted": "abgebrochen, weil TwinRaid neu gestartet wurde",
+      "internal_error": "Interner Fehler – bitte das Container-Log prüfen."
+    },
+    "last": "Zuletzt: {{action}} – {{outcome}} ({{time}})",
+    "hint": "{{actions}}: {{reason}}",
+    "forceAt": "möglich ab {{time}}",
+    "rejected": "Nicht ausgeführt: {{reason}}.",
+    "rejectedUnknown": "vom Server abgelehnt",
+    "requestFailed": "Die Anfrage ist fehlgeschlagen. Bitte erneut versuchen.",
+    "dialog": {
+      "cancel": "Abbrechen",
+      "shutdown": {
+        "title": "{{target}} herunterfahren?",
+        "description": "Unraid stoppt Container, VMs und das Array und schaltet den Server aus. Wieder einschalten lässt er sich mit „Wecken“.",
+        "confirm": "Herunterfahren"
+      },
+      "shutdownWithVm": {
+        "title": "VM zuerst herunterfahren?",
+        "description": "{{vm}} läuft. TwinRaid fährt zuerst die VM herunter und danach {{target}}. Reagiert die VM nicht, bricht TwinRaid ab und der Server läuft weiter.",
+        "confirm": "VM und Server herunterfahren"
+      },
+      "vmStop": {
+        "title": "{{vm}} herunterfahren?",
+        "description_one": "Die VM bekommt das Signal zum Herunterfahren, wie bei einem kurzen Druck auf den Netzschalter. Reagiert sie nicht innerhalb von {{count}} Minute, ist „Erzwingen“ möglich.",
+        "description_other": "Die VM bekommt das Signal zum Herunterfahren, wie bei einem kurzen Druck auf den Netzschalter. Reagiert sie nicht innerhalb von {{count}} Minuten, ist „Erzwingen“ möglich.",
+        "confirm": "Herunterfahren"
+      },
+      "force": {
+        "title": "{{vm}} sofort ausschalten?",
+        "description": "Die VM wird sofort ausgeschaltet, wie beim Ziehen des Netzsteckers. Nicht gespeicherte Daten in der VM gehen verloren.",
+        "confirm": "Jetzt erzwingen"
+      }
     }
   }
 }

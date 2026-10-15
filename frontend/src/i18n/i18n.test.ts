@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  ACTION_BLOCKERS,
+  ACTION_NAMES,
+  ACTION_OUTCOMES,
+  ACTION_STEPS,
   AUDIT_ACTIONS,
   AUDIT_RESULTS,
   CA_CHANGE_REASONS,
@@ -66,6 +70,26 @@ describe("translations", () => {
     }
     for (const reason of CA_CHANGE_REASONS) {
       expect(german.has(`caChange.reasons.${reason}`), reason).toBe(true);
+    }
+  });
+});
+
+describe("action texts", () => {
+  const german = flatten(de);
+
+  it("cover every action, step, blocker and outcome", () => {
+    for (const name of ACTION_NAMES) {
+      expect(german.has(`actions.buttons.${name}`), name).toBe(true);
+      expect(german.has(`actions.names.${name}`), name).toBe(true);
+    }
+    for (const step of ACTION_STEPS) {
+      expect(german.has(`actions.steps.${step}`), step).toBe(true);
+    }
+    for (const blocker of ACTION_BLOCKERS) {
+      expect(german.has(`actions.blockers.${blocker}`), blocker).toBe(true);
+    }
+    for (const outcome of ACTION_OUTCOMES) {
+      expect(german.has(`actions.outcomes.${outcome}`), outcome).toBe(true);
     }
   });
 });
