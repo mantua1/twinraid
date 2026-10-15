@@ -1,0 +1,168 @@
+"""Interaktive Simulation von Unraid Groß und der Gaming-VM (Konzept 6.4, Entscheidung E11).
+
+Groß und die VM starten ausgeschaltet. Aktionen wirken mit festen Wartezeiten.
+Mit twinraid-admin mock-fault lassen sich Fehler einschalten, mit mock-tour
+der feste Rundlauf durch alle Zustände (MockStatusProvider).
+
+Die Schalter sind Dateien neben dem Worker-Socket. Nur root kann sie anlegen;
+der Web-Prozess kann sie nicht umlegen.
+"""
+
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+from twinraid.integrations.control import ActionError
+from twinraid.integrations.mocks.status import MockStatusProvider
+from twinraid.integrations.status import SOURCE_STATUS, map_vm_state
+from twinraid.integrations.unraid_api import VmDomain
+from twinraid.shared.actions import ActionOutcome
+from twinraid.shared.status import ResourceInfo, ResourceState, ResourceStatus, StatusReason
+
+# Simulierte Fehler (twinraid-admin mock-fault <Name> on|off).
+FAULTS = ("vm-hang", "api-forbidden", "ssh-denied", "no-boot")
+MOCK_SERVER_ID = "5a1b2c3d"
+MOCK_VM_UUID = "6d0b8f4e-1c2a-4b3d-9e8f-0123456789ab"
+
+
+def fault_flag(directory: Path, name: str) -> Path:
+    if name not in FAULTS:
+        raise ValueError(f"unknown fault {name!r}")
+    return directory / f"mock-fault-{name}"
+
+
+def tour_flag(directory: Path) -> Path:
+    return directory / "mock-tour"
+
+
+def set_flag(path: Path, on: bool) -> None:
+    if on:
+        path.touch(mode=0o600)
+    else:
+        path.unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class LabTimings:
+    boot_seconds: float = 20.0
+    api_ready_seconds: float = 10.0
+    vm_start_seconds: float = 3.0
+    vm_stop_seconds: float = 8.0
+    shutdown_seconds: float = 15.0
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+class MockLab:
+    """Simuliertes Groß: Status für den Monitor und ActionControl für die Abläufe."""
+
+    def __init__(
+        self,
+        vm_name: str,
+        flag_dir: Path,
+        timings: LabTimings | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
+        clock: Callable[[], datetime] = _utc_now,
+    ) -> None:
+        self._vm_name = vm_name
+        self._flag_dir = flag_dir
+        self._timings = timings or LabTimings()
+        self._monotonic = monotonic
+        self._clock = clock
+        self._tour = MockStatusProvider(monotonic=monotonic, clock=clock)
+        # Groß: off, booting, on, shutting_down; seit wann.
+        self._power = "off"
+        self._since = monotonic()
+        self._vm_state = "SHUTOFF"
+        # Geplanter Wechsel der VM (Ziel, Zeitpunkt).
+        self._vm_change: tuple[str, float] | None = None
+
+    def fault(self, name: str) -> bool:
+        return fault_flag(self._flag_dir, name).exists()
+
+    def tour_active(self) -> bool:
+        return tour_flag(self._flag_dir).exists()
+
+    def _advance(self) -> None:
+        now = self._monotonic()
+        timings = self._timings
+        if self._power == "booting" and now >= self._since + timings.boot_seconds:
+            self._power, self._since = "on", self._since + timings.boot_seconds
+        if self._power == "shutting_down" and now >= self._since + timings.shutdown_seconds:
+            self._power, self._since = "off", now
+            self._vm_state, self._vm_change = "SHUTOFF", None
+        if self._vm_change is not None and now >= self._vm_change[1]:
+            self._vm_state, self._vm_change = self._vm_change[0], None
+
+    def _target_up(self) -> bool:
+        self._advance()
+        return self._power in ("on", "shutting_down")
+
+    def _api_ready(self) -> bool:
+        if not self._target_up():
+            return False
+        if self._power == "shutting_down":
+            return True
+        return self._monotonic() >= self._since + self._timings.api_ready_seconds
+
+    # --- Status (wie RealStatusProvider) ---
+
+    async def get_status(self) -> ResourceStatus:
+        if self.tour_active():
+            return await self._tour.get_status()
+        if not self._target_up():
+            target = ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.UNREACHABLE)
+            vm = ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.TARGET_OFFLINE)
+        elif not self._api_ready():
+            target = ResourceInfo(state=ResourceState.ONLINE)
+            vm = ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.API_UNREACHABLE)
+        else:
+            target = ResourceInfo(state=ResourceState.ONLINE)
+            vm = map_vm_state(self._vm_state)
+        return ResourceStatus(source=SOURCE_STATUS, target=target, vm=vm, checked_at=self._clock())
+
+    # --- ActionControl ---
+
+    async def target_reachable(self) -> bool:
+        return self._target_up()
+
+    async def find_vm(self) -> VmDomain:
+        if not self._api_ready():
+            raise ActionError(ActionOutcome.API_UNREACHABLE)
+        return VmDomain(
+            f"{MOCK_SERVER_ID}:{MOCK_VM_UUID}", MOCK_VM_UUID, self._vm_name, self._vm_state
+        )
+
+    async def wake(self) -> None:
+        # Das Magic Packet ist „gesendet“; bei no-boot reagiert Groß nicht.
+        if self._power == "off" and not self.fault("no-boot"):
+            self._power, self._since = "booting", self._monotonic()
+
+    async def start_vm(self, vm: VmDomain) -> None:
+        if self.fault("api-forbidden"):
+            raise ActionError(ActionOutcome.API_FORBIDDEN)
+        if self._vm_state != "SHUTOFF":
+            raise ActionError(ActionOutcome.API_ERROR)
+        self._vm_change = ("RUNNING", self._monotonic() + self._timings.vm_start_seconds)
+
+    async def shutdown_vm(self, vm: VmDomain) -> None:
+        if self.fault("ssh-denied"):
+            raise ActionError(ActionOutcome.SSH_DENIED)
+        if self.fault("vm-hang") or self._vm_state == "SHUTOFF":
+            return
+        self._vm_change = ("SHUTOFF", self._monotonic() + self._timings.vm_stop_seconds)
+
+    async def force_stop_vm(self, vm: VmDomain) -> None:
+        if self.fault("api-forbidden"):
+            raise ActionError(ActionOutcome.API_FORBIDDEN)
+        self._vm_state, self._vm_change = "SHUTOFF", None
+
+    async def power_off(self) -> None:
+        if self.fault("ssh-denied"):
+            raise ActionError(ActionOutcome.SSH_DENIED)
+        if self._target_up():
+            self._power, self._since = "shutting_down", self._monotonic()

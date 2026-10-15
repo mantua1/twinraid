@@ -9,9 +9,11 @@ import pytest
 
 from tests.conftest import EXAMPLE_CONFIG
 from twinraid.config import load_config
-from twinraid.integrations.factory import build_job_state, build_status_provider
+from twinraid.integrations.control import RealControl
+from twinraid.integrations.factory import build_integrations, build_job_state
 from twinraid.integrations.jobs import NoJobs
 from twinraid.integrations.mocks.jobs import MockJobSwitch
+from twinraid.integrations.mocks.lab import MockLab
 from twinraid.integrations.mocks.status import SCENARIO, STEP_SECONDS, MockStatusProvider
 from twinraid.integrations.network import tcp_reachable
 from twinraid.integrations.status import RealStatusProvider, map_vm_state
@@ -181,8 +183,16 @@ def test_mock_job_switch(tmp_path: Path) -> None:
 
 def test_factory_by_mode(tmp_path: Path) -> None:
     paths = DataPaths(tmp_path)
-    assert isinstance(build_status_provider(RunMode.MOCK, CONFIG, paths), MockStatusProvider)
-    assert isinstance(build_status_provider(RunMode.REAL, CONFIG, paths), RealStatusProvider)
+    mock = build_integrations(RunMode.MOCK, CONFIG, paths, tmp_path, None)
+    assert isinstance(mock.status, MockLab)
+    assert mock.control is mock.status
+    real = build_integrations(RunMode.REAL, CONFIG, paths, tmp_path, None)
+    assert isinstance(real.status, RealStatusProvider)
+    assert isinstance(real.control, RealControl)
+    # Den Rundlauf gibt es nur in der Simulation.
+    (tmp_path / "mock-tour").touch()
+    assert mock.tour_active() is True
+    assert real.tour_active() is False
     assert isinstance(build_job_state(RunMode.MOCK, tmp_path / "flag"), MockJobSwitch)
     # Im Modus real läuft bis Phase 5 nie ein Kopierjob, auch wenn die Datei existiert.
     (tmp_path / "flag").touch()

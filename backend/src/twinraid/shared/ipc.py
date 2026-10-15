@@ -13,6 +13,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, ValidationError
 
+from twinraid.shared.actions import ActionBlocker
 from twinraid.shared.base import StrictModel
 
 # Obergrenzen schützen den Worker vor übergroßen Nachrichten. Ein Passwort mit
@@ -100,17 +101,20 @@ COMMAND_NAMES: frozenset[str] = frozenset(
 )
 
 
-# Befehle mit Außenwirkung. Im Modus real sind sie gesperrt, bis die jeweilige
-# Phase sie freigibt (Konzept 6.4).
+# Befehle mit Außenwirkung (Konzept 4.2 und 6.4).
 ACTION_COMMANDS: frozenset[str] = COMMAND_NAMES - {"get_status", "verify_password"}
+# Der Sync folgt in Phase 5; bis dahin sind diese Befehle gesperrt.
+SYNC_COMMANDS: frozenset[str] = frozenset({"sync_start", "sync_cancel", "sync_confirm_deletions"})
 
 
 class ErrorCode(StrEnum):
     INVALID_REQUEST = "invalid_request"
     FORBIDDEN = "forbidden"
     NOT_IMPLEMENTED = "not_implemented"
-    # Im Modus real noch gesperrt („noch nicht verfügbar“).
+    # Im Modus real nicht freigeschaltet („nicht verfügbar“).
     NOT_AVAILABLE = "not_available"
+    # Die Aktion ist gerade nicht möglich; blocked_by nennt den Grund.
+    ACTION_BLOCKED = "action_blocked"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -123,6 +127,8 @@ class ErrorResponse(StrictModel):
     ok: Literal[False] = False
     error: ErrorCode
     message: str
+    # Bei abgelehnten Aktionen der Grund aus der festen Liste (Konzept 4.2).
+    blocked_by: ActionBlocker | None = None
 
 
 Response = Annotated[OkResponse | ErrorResponse, Field(discriminator="ok")]

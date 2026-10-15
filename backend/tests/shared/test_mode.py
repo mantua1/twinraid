@@ -3,7 +3,6 @@
 import pytest
 
 from twinraid.shared.mode import (
-    REAL_ACTIONS_ENABLED,
     RunMode,
     RunModeError,
     parse_run_mode,
@@ -39,8 +38,7 @@ def test_very_long_value_is_truncated_in_message() -> None:
     assert len(str(excinfo.value)) < 200
 
 
-def test_real_is_supported_read_only() -> None:
-    """Seit Phase 3 ist real zugelassen, aber Aktionen bleiben gesperrt (Konzept 6.4)."""
+def test_real_is_supported() -> None:
+    """Seit Phase 3 ist real zugelassen; Aktionen schaltet actions.* frei (Konzept 6.4)."""
     assert parse_run_mode({"TWINRAID_MODE": "real"}) is RunMode.REAL
     assert resolve_run_mode({"TWINRAID_MODE": "real"}) is RunMode.REAL
-    assert REAL_ACTIONS_ENABLED is False

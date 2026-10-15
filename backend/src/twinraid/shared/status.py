@@ -3,6 +3,7 @@
 from datetime import datetime
 from enum import StrEnum
 
+from twinraid.shared.actions import ActionsSnapshot
 from twinraid.shared.base import StrictModel
 
 
@@ -23,6 +24,8 @@ class StatusReason(StrEnum):
     RUNS_HERE = "runs_here"
     # VM: Groß ist offline, die VM kann nicht laufen.
     TARGET_OFFLINE = "target_offline"
+    # VM: Groß wurde geweckt und ist noch nicht bereit (Konzept 4.2).
+    TARGET_STARTING = "target_starting"
     # Unraid-API (Konzept 3.5)
     API_UNREACHABLE = "api_unreachable"
     API_REDIRECTED = "api_redirected"
@@ -61,8 +64,10 @@ NOT_CHECKED = ResourceStatus(source=UNKNOWN, target=UNKNOWN, vm=UNKNOWN, checked
 
 
 class StatusSnapshot(ResourceStatus):
-    """Antwort auf get_status: Ressourcen, Kopierjob und Zustand der Anmeldung."""
+    """Antwort auf get_status: Ressourcen, Kopierjob, Anmeldung und Aktionen."""
 
     # Kopierjob läuft (Konzept 4.1 und 5.3). Ab Phase 5 vom echten Sync.
     job_running: bool
     password_set: bool
+    # Verfügbarkeit, laufende Aktionen und letzte Ergebnisse (Konzept 4.2).
+    actions: ActionsSnapshot

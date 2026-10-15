@@ -7,13 +7,16 @@ import os
 import signal
 from pathlib import Path
 
-from twinraid.config import ConfigError, load_config
-from twinraid.integrations.factory import build_job_state, build_status_provider
+from twinraid.config import ConfigError, TwinRaidConfig, load_config
+from twinraid.integrations.factory import build_integrations, build_job_state
+from twinraid.integrations.wol import BroadcastError, WolTarget, resolve_wol_target
 from twinraid.shared import runtime
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.logs import configure_logging, warn_if_mock
 from twinraid.shared.mode import RunMode, RunModeError, resolve_run_mode
 from twinraid.shared.passwords import PasswordStore
+from twinraid.worker.action_log import ActionLog
+from twinraid.worker.actions import ActionCoordinator
 from twinraid.worker.handler import CommandHandler
 from twinraid.worker.monitor import StatusMonitor
 from twinraid.worker.password_check import PasswordCheck
@@ -45,20 +48,65 @@ def main() -> int:
         logger.error("%s", exc.render())
         return EXIT_STARTUP_ERROR
 
+    try:
+        wol = wake_on_lan(config, mode)
+    except BroadcastError as exc:
+        logger.error("%s", exc)
+        return EXIT_STARTUP_ERROR
+
     paths = DataPaths(runtime.data_dir(env))
     password_check = PasswordCheck(PasswordStore(paths.password_file))
-    monitor = StatusMonitor(build_status_provider(mode, config, paths))
+    integrations = build_integrations(mode, config, paths, runtime.mock_flag_dir(env), wol)
+    monitor = StatusMonitor(integrations.status)
     jobs = build_job_state(mode, runtime.mock_job_flag(env))
-    handler = CommandHandler(monitor, password_check, jobs, mode)
+    actions = ActionCoordinator(
+        integrations.control,
+        monitor,
+        jobs,
+        config,
+        mode,
+        ActionLog(paths.action_log),
+        tour_active=integrations.tour_active,
+    )
+    handler = CommandHandler(monitor, password_check, jobs, mode, actions)
     server = WorkerServer(runtime.socket_path(env), allowed_uid, handler)
-    if mode is RunMode.REAL:
-        logger.info("Read-only real mode: status checks only, all actions are locked.")
+    log_enabled_actions(actions, mode)
     try:
-        asyncio.run(_serve(server, password_check, monitor))
+        asyncio.run(_serve(server, password_check, monitor, actions))
     except SocketPathError as exc:
         logger.error("%s", exc)
         return EXIT_STARTUP_ERROR
     return 0
+
+
+def wake_on_lan(config: TwinRaidConfig, mode: RunMode) -> WolTarget | None:
+    """Broadcast-Adresse für Wake-on-LAN (Konzept 4.2).
+
+    Lässt sie sich nicht ableiten, startet der Worker nur dann nicht, wenn Wecken im
+    Modus real freigeschaltet ist; sonst gibt es eine Warnung.
+    """
+    if mode is RunMode.MOCK:
+        return None
+    try:
+        wol = resolve_wol_target(config.servers.target)
+    except BroadcastError as exc:
+        if config.actions.wake:
+            raise
+        logger.warning("Wake-on-LAN is not available: %s", exc)
+        return None
+    logger.info("Wake-on-LAN broadcast address: %s (%s)", wol.broadcast, wol.origin)
+    return wol
+
+
+def log_enabled_actions(actions: ActionCoordinator, mode: RunMode) -> None:
+    if mode is not RunMode.REAL:
+        return
+    enabled = actions.enabled_groups()
+    if not enabled:
+        logger.info("Read-only real mode: status checks only, all actions are locked.")
+        return
+    names = ", ".join(group.value for group in enabled)
+    logger.warning("Real mode: these actions are enabled in twinraid.yaml: %s", names)
 
 
 def _touch(path: Path) -> None:
@@ -74,7 +122,10 @@ async def heartbeat(path: Path, interval: float = HEARTBEAT_INTERVAL_SECONDS) ->
 
 
 async def _serve(
-    server: WorkerServer, password_check: PasswordCheck, monitor: StatusMonitor
+    server: WorkerServer,
+    password_check: PasswordCheck,
+    monitor: StatusMonitor,
+    actions: ActionCoordinator,
 ) -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -96,6 +147,7 @@ async def _serve(
     try:
         await stop.wait()
     finally:
+        await actions.close()
         for task in tasks:
             task.cancel()
         for task in tasks:
