@@ -15,7 +15,7 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/mantua1/twinraid/issues</Support>
   <Project>https://github.com/mantua1/twinraid</Project>
-  <Overview>Steuert zwei Unraid-Server über eine Weboberfläche: Wake-on-LAN, Status, Gaming-VM und Spiegel-Backup. Läuft auf dem stromsparenden Server mit eigener IP im Netzwerk br0. Diese Version zeigt nur den Status an; Aktionen folgen. Einrichtung: docs/EINRICHTUNG.md im Repository.</Overview>
+  <Overview>Steuert zwei Unraid-Server über eine Weboberfläche: Wake-on-LAN, Status, Gaming-VM und Spiegel-Backup. Läuft auf dem stromsparenden Server mit eigener IP im Netzwerk br0. Diese Version zeigt den Status und weckt bzw. fährt Unraid Groß und die Gaming-VM herunter; die Aktionen werden einzeln in twinraid.yaml freigeschaltet. Der Sync folgt. Einrichtung: docs/EINRICHTUNG.md im Repository.</Overview>
   <Category>Tools: Network:Management</Category>
   <WebUI>https://[IP]:[PORT:8443]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/mantua1/twinraid/main/docker/unraid-template.xml</TemplateURL>
@@ -24,7 +24,7 @@
   <PostArgs/>
   <CPUset/>
   <Requires>Eigene feste IP-Adresse im Netzwerk br0 („Fixed IP address“) und eine selbst erzeugte, feste MAC-Adresse („Fixed MAC address“, ab Unraid 7.3). Das ist die einzige Stelle für IP und MAC: TwinRaid erkennt die IP beim Start selbst. „Host access to custom networks“ wird nicht gebraucht und soll ausgeschaltet bleiben. Vor dem ersten Start die Konfiguration anlegen (docs/EINRICHTUNG.md).</Requires>
-  <Config Name="Betriebsmodus" Target="TWINRAID_MODE" Default="mock|real" Mode="" Description="mock: Simulation ohne echte Server (zum Ausprobieren). real: echter Status der Server, Aktionen sind in dieser Version gesperrt." Type="Variable" Display="always" Required="true" Mask="false">mock</Config>
+  <Config Name="Betriebsmodus" Target="TWINRAID_MODE" Default="mock|real" Mode="" Description="mock: Simulation ohne echte Server (zum Ausprobieren). real: echte Server; Aktionen nur, wenn sie in twinraid.yaml unter actions freigeschaltet sind." Type="Variable" Display="always" Required="true" Mask="false">mock</Config>
   <Config Name="Konfiguration" Target="/config" Default="/mnt/user/appdata/twinraid/config" Mode="ro" Description="Ordner mit twinraid.yaml (nur lesend eingebunden), optional tls/ für ein eigenes Zertifikat." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/twinraid/config</Config>
   <Config Name="Daten" Target="/data" Default="/mnt/user/appdata/twinraid/data" Mode="rw" Description="Datenbank, Secrets und Zertifikate. Der Ordner muss root gehören und darf nur für root beschreibbar sein (chown root:root, chmod 755)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/twinraid/data</Config>
   <Config Name="WebUI-Port" Target="8443" Default="8443" Mode="tcp" Description="Port der Weboberfläche (Standard 8443, nicht ändern). Mit eigener IP auf br0 ist keine Portweiterleitung nötig." Type="Port" Display="advanced" Required="false" Mask="false">8443</Config>

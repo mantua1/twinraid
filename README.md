@@ -2,7 +2,7 @@
 
 Weboberfläche in einem einzigen Docker-Container, die zwei Unraid-Server steuert: Wake-on-LAN, Statusanzeige, Gaming-VM und Spiegel-Backup per rsync.
 
-> **Stand: Phase 3 (Status).** Dashboard mit Live-Status beider Server und der Gaming-VM, eigene CA für HTTPS, Login und alle Schutzmaßnahmen aus Phase 2. Im Modus `real` liest TwinRaid nur den Status; Aktionen wie Wecken oder Sync folgen in späteren Phasen.
+> **Stand: Phase 4 (Aktionen).** Dashboard mit Live-Status beider Server und der Gaming-VM, eigene CA für HTTPS, Login und alle Schutzmaßnahmen aus Phase 2. Dazu Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Im Modus `real` werden die Aktionen einzeln in `twinraid.yaml` unter `actions` freigeschaltet; der Sync folgt in Phase 5.
 
 - Konzept (verbindlich): [docs/KONZEPT.md](docs/KONZEPT.md)
 - Installation auf Unraid: [docs/EINRICHTUNG.md](docs/EINRICHTUNG.md)
@@ -50,7 +50,17 @@ cd backend && ./scripts/dev-admin.sh set-password
 
 Danach im Browser: <https://127.0.0.1:8443>. Die Zertifikatswarnung einmal bestätigen oder die CA aus `.run/tls/ca.pem` im Browser importieren (Fingerabdruck mit dem Log vergleichen). Für Änderungen am Frontend mit sofortiger Vorschau zusätzlich `cd frontend && npm run dev` starten und <https://127.0.0.1:5173> öffnen.
 
-Die Simulation durchläuft alle Zustände und Ursachen, ein Schritt dauert 20 Sekunden. Einen laufenden Kopierjob täuschst du mit `./scripts/dev-admin.sh mock-job on` vor (`off` beendet ihn).
+Die Simulation ist interaktiv: Groß und die VM starten ausgeschaltet, die Buttons wirken mit festen Wartezeiten (Groß bootet 20 s, die API braucht weitere 10 s). Weitere Schalter im zweiten Terminal (`off` schaltet jeweils wieder aus):
+
+```bash
+./scripts/dev-admin.sh mock-job on                # laufenden Kopierjob vortäuschen
+./scripts/dev-admin.sh mock-tour on               # Rundlauf durch alle Zustände und Ursachen
+./scripts/dev-admin.sh mock-fault vm-hang on      # VM reagiert nicht auf Herunterfahren
+./scripts/dev-admin.sh mock-fault api-forbidden on  # API-Key ohne VMS:UPDATE_ANY
+./scripts/dev-admin.sh mock-fault ssh-denied on   # guard.sh lehnt ab
+./scripts/dev-admin.sh mock-fault no-boot on      # Groß reagiert nicht auf Wake-on-LAN
+./scripts/dev-admin.sh show-action-log            # Aktionslog des Workers
+```
 
 ### Container lokal
 
@@ -59,11 +69,31 @@ docker/run-local.sh                    # bauen und starten, https://127.0.0.1:84
 docker exec -it twinraid-dev twinraid-admin set-password   # zweites Terminal
 docker/smoke-test.sh                   # Starttest mit allen Sicherheitsprüfungen
 CHECK_EACH_CAP=1 docker/smoke-test.sh  # zusätzlich: jede Capability ist nötig
+docker/ssh-test.sh                     # SSH und Aktionen gegen ein nachgebautes Groß
 ```
 
-Alle Befehle der Admin-CLI stehen in [docs/EINRICHTUNG.md, Abschnitt 14](docs/EINRICHTUNG.md#14-befehle-der-admin-cli).
+Alle Befehle der Admin-CLI stehen in [docs/EINRICHTUNG.md, Abschnitt 15](docs/EINRICHTUNG.md#15-befehle-der-admin-cli).
 
-Tests sprechen nie echte Server an: Eine Sperre in `backend/tests/conftest.py` lässt nur Verbindungen zu `127.0.0.1` und zum nie gerouteten Testnetz `192.0.2.0/24` zu. Der Starttest prüft den Modus `real` ebenfalls nur mit Adressen aus diesem Testnetz.
+Tests sprechen nie echte Server an: Eine Sperre in `backend/tests/conftest.py` lässt nur Verbindungen (auch UDP wie Wake-on-LAN) zu `127.0.0.1` und zum nie gerouteten Testnetz `192.0.2.0/24` zu. Der Starttest prüft den Modus `real` ebenfalls nur mit Adressen aus diesem Testnetz. `docker/ssh-test.sh` startet ein nachgebautes Unraid Groß als Wegwerf-Container (`docker/fake-target`) in einem eigenen Docker-Netz und prüft dagegen `guard.sh`, die Einschränkungen der `authorized_keys`-Zeile, die strikte Hostkey-Prüfung und alle Aktionen.
+
+### openssh-client aktualisieren
+
+Das Image enthält `openssh-client` aus Debian in einer exakt gepinnten Version (`ARG OPENSSH_VERSION` in `docker/Dockerfile`). Debian bietet nach einem Sicherheitsupdate oft nur noch die neue Version an. Dann bricht der Build mit einer Meldung wie dieser ab:
+
+```text
+ERROR: openssh-client 1:10.0p1-7+deb13u4 is no longer available from Debian.
+ERROR: Debian now offers openssh-client 1:10.0p1-7+deb13u5.
+ERROR: Set OPENSSH_VERSION=1:10.0p1-7+deb13u5 in docker/Dockerfile (see README).
+```
+
+So hebst du die Version an:
+
+1. Einen Branch anlegen: `git switch -c update-openssh`
+2. In `docker/Dockerfile` die Zeile `ARG OPENSSH_VERSION=…` auf die gemeldete Version ändern. Der SSH-Test übernimmt sie automatisch für das nachgebaute Groß.
+3. Lokal prüfen: `docker build -f docker/Dockerfile -t twinraid:dev .`, danach `docker/smoke-test.sh` und `docker/ssh-test.sh`.
+4. Committen (`git commit -am "build(docker): update openssh-client to …"`), pushen und einen Pull Request öffnen. Gemergt wird erst mit grüner CI.
+
+Die aktuell angebotene Version zeigt auch: `docker run --rm python:3.14-slim-trixie sh -c 'apt-get update -qq && apt-cache policy openssh-client'`.
 
 ## Release veröffentlichen
 
