@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from tests.support.fake_unraid import (
+    READ,
+    SERVER_ID,
+    UPDATE,
     FakeUnraid,
+    FakeVm,
+    FakeVmHost,
     Reply,
     graphql_error,
     graphql_reply,
@@ -19,6 +24,7 @@ from twinraid.integrations.unraid_api import (
     Credentials,
     UnraidApi,
     UnraidApiError,
+    VmDomain,
     normalize_fingerprint,
     presented_fingerprint,
 )
@@ -202,3 +208,94 @@ def test_invalid_fingerprints(value: str) -> None:
 def test_endpoint_url() -> None:
     assert ApiEndpoint("192.168.10.11", 80, False).url == "http://192.168.10.11:80/graphql"
     assert ApiEndpoint("fd00::11", 443, True).url == "https://[fd00::11]:443/graphql"
+
+
+GAMING_UUID = "0b5c4e1a-2f3d-4c5b-8a9e-112233445566"
+OTHER_UUID = "9f8e7d6c-5b4a-4321-9876-aabbccddeeff"
+READ_ONLY_KEY = "readOnlyKey_0123456789"
+
+
+def _vm_host(state: str = "SHUTOFF") -> FakeVmHost:
+    return FakeVmHost(
+        [FakeVm(GAMING_UUID, "Windows 11 Gaming", state), FakeVm(OTHER_UUID, "Andere VM")],
+        {KEY: {READ, UPDATE}, READ_ONLY_KEY: {READ}},
+    )
+
+
+def test_vm_domains_carry_id_and_uuid(plain: FakeUnraid, credentials: Credentials) -> None:
+    plain.responder = _vm_host()
+    domains = _api(plain, credentials).vm_domains()
+    assert domains[0] == VmDomain(
+        f"{SERVER_ID}:{GAMING_UUID}", GAMING_UUID, "Windows 11 Gaming", "SHUTOFF"
+    )
+    assert json.loads(plain.received[0].body) == {
+        "query": "query TwinRaidVmList { vms { domains { id name state } } }"
+    }
+
+
+def test_vm_domains_skip_unexpected_ids(plain: FakeUnraid, credentials: Credentials) -> None:
+    plain.reply = graphql_reply(
+        [
+            {"id": "x:not-a-uuid", "name": "A", "state": "RUNNING"},
+            {"id": f"bad id:{GAMING_UUID}", "name": "B", "state": "RUNNING"},
+            {"id": GAMING_UUID.upper(), "name": "C", "state": "RUNNING"},
+            {"id": GAMING_UUID, "name": "D", "state": "RUNNING"},
+        ]
+    )
+    assert [d.name for d in _api(plain, credentials).vm_domains()] == ["D"]
+
+
+@pytest.mark.anyio
+async def test_start_and_force_stop(plain: FakeUnraid, credentials: Credentials) -> None:
+    host = _vm_host()
+    plain.responder = host
+    api = _api(plain, credentials)
+    vm = await api.find_vm("Windows 11 Gaming")
+    assert vm is not None
+    assert await api.find_vm("gibt es nicht") is None
+    await api.start_vm(vm)
+    assert host.vms[0].state == "RUNNING"
+    await api.force_stop_vm(vm)
+    assert host.vms[0].state == "SHUTOFF"
+    assert host.mutations == [("start", GAMING_UUID), ("forceStop", GAMING_UUID)]
+    start = json.loads(plain.received[-2].body)
+    assert start == {
+        "query": "mutation TwinRaidVmStart($id: PrefixedID!) { vm { start(id: $id) } }",
+        "variables": {"id": f"{SERVER_ID}:{GAMING_UUID}"},
+    }
+
+
+@pytest.mark.anyio
+async def test_read_only_key_cannot_start(plain: FakeUnraid, tmp_path: Path) -> None:
+    """Rechtetest (unraid/api #1723): Ein Key nur mit VMS:READ_ANY wird abgewiesen."""
+    host = _vm_host()
+    plain.responder = host
+    creds = Credentials(tmp_path / "ro-key", tmp_path / "ro.sha256")
+    creds.save_api_key(READ_ONLY_KEY)
+    api = _api(plain, creds)
+    vm = await api.find_vm("Windows 11 Gaming")
+    assert vm is not None
+    with pytest.raises(UnraidApiError) as excinfo:
+        await api.start_vm(vm)
+    assert excinfo.value.reason is StatusReason.API_FORBIDDEN
+    assert host.vms[0].state == "SHUTOFF"
+    assert host.mutations == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        Reply(body=b'{"data": {"vm": {"start": false}}}'),
+        Reply(body=b'{"data": {"vm": null}}'),
+        graphql_error(None, "Failed to set VM state: Invalid state transition"),
+    ],
+)
+async def test_unsuccessful_start_is_an_api_error(
+    plain: FakeUnraid, credentials: Credentials, reply: Reply
+) -> None:
+    plain.reply = reply
+    vm = VmDomain(GAMING_UUID, GAMING_UUID, "Windows 11 Gaming", "SHUTOFF")
+    with pytest.raises(UnraidApiError) as excinfo:
+        await _api(plain, credentials).start_vm(vm)
+    assert excinfo.value.reason is StatusReason.API_ERROR

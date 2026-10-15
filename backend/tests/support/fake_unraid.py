@@ -45,11 +45,67 @@ class Received:
     body: bytes
 
 
+# Server-ID der Unraid-API; sie steht vor der UUID in jeder VM-ID (PrefixedID).
+SERVER_ID = "c0ffee42"
+READ = "READ_ANY"
+UPDATE = "UPDATE_ANY"
+
+
+@dataclass
+class FakeVm:
+    uuid: str
+    name: str
+    state: str = "SHUTOFF"
+
+    @property
+    def id(self) -> str:
+        return f"{SERVER_ID}:{self.uuid}"
+
+
+class FakeVmHost:
+    """Unraid-API mit VMs: Abfrage, vm.start und vm.forceStop, Rechte je API-Key (VMS:…)."""
+
+    def __init__(self, vms: list[FakeVm], keys: dict[str, set[str]]) -> None:
+        self.vms = vms
+        self.keys = keys
+        self.mutations: list[tuple[str, str]] = []
+
+    def __call__(self, request: Received) -> Reply:
+        permissions = self.keys.get(request.headers.get("x-api-key", ""))
+        if permissions is None:
+            return graphql_error("UNAUTHENTICATED", "API key validation failed")
+        document = json.loads(request.body)
+        query = str(document["query"])
+        if query.startswith("query"):
+            if READ not in permissions:
+                return graphql_error("FORBIDDEN", "Forbidden resource")
+            return graphql_reply(
+                [{"id": vm.id, "name": vm.name, "state": vm.state} for vm in self.vms]
+            )
+        field_name = "forceStop" if "forceStop" in query else "start"
+        if UPDATE not in permissions:
+            return graphql_error("FORBIDDEN", "Forbidden resource")
+        uuid = str(document["variables"]["id"]).split(":")[-1]
+        vm = next((vm for vm in self.vms if vm.uuid == uuid), None)
+        if vm is None:
+            return graphql_error(None, "Failed to set VM state: Domain not found")
+        self.mutations.append((field_name, uuid))
+        if field_name == "start":
+            if vm.state != "SHUTOFF":
+                return graphql_error(None, "Failed to set VM state: Invalid state transition")
+            vm.state = "RUNNING"
+        else:
+            vm.state = "SHUTOFF"
+        return Reply(body=json.dumps({"data": {"vm": {field_name: True}}}).encode())
+
+
 class FakeUnraid:
     """Antwortet auf POST /graphql mit einer festgelegten Antwort und merkt sich jede Anfrage."""
 
     def __init__(self, tmp_path: Path, tls: bool = False) -> None:
         self.reply: Reply | Callable[[], Reply] = graphql_reply([])
+        # Wenn gesetzt, entscheidet er anhand der Anfrage (z. B. FakeVmHost).
+        self.responder: Callable[[Received], Reply] | None = None
         self.received: list[Received] = []
         self.certificate_fingerprint: str | None = None
         fake = self
@@ -58,10 +114,14 @@ class FakeUnraid:
             def do_POST(self) -> None:
                 length = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(length)
-                fake.received.append(
-                    Received(self.path, {k.lower(): v for k, v in self.headers.items()}, body)
+                received = Received(
+                    self.path, {k.lower(): v for k, v in self.headers.items()}, body
                 )
-                reply = fake.reply() if callable(fake.reply) else fake.reply
+                fake.received.append(received)
+                if fake.responder is not None:
+                    reply = fake.responder(received)
+                else:
+                    reply = fake.reply() if callable(fake.reply) else fake.reply
                 self.send_response(reply.status)
                 for name, value in reply.headers.items():
                     self.send_header(name, value)

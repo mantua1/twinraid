@@ -13,7 +13,7 @@ import socket
 import struct
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from ipaddress import IPv4Address, IPv6Address, ip_address, ip_network
+from ipaddress import IPv4Address, IPv4Interface, IPv6Address, ip_address, ip_network
 from pathlib import Path
 from typing import Literal
 
@@ -27,6 +27,7 @@ AddressOrigin = Literal["detected", "configured"]
 DOCKER_INTERNAL = ip_network("172.16.0.0/12")
 
 _SIOCGIFCONF = 0x8912
+_SIOCGIFNETMASK = 0x891B
 # struct ifreq unter Linux (64 Bit): 16 Byte Name, 24 Byte Union; die IPv4-Adresse
 # steht in sockaddr_in ab Byte 20.
 _IFREQ_SIZE = 40
@@ -42,6 +43,14 @@ class AddressError(Exception):
 class InterfaceAddress:
     interface: str
     address: IpAddress
+
+
+@dataclass(frozen=True)
+class InterfaceNetwork:
+    """IPv4-Adresse einer Schnittstelle samt Netzmaske."""
+
+    interface: str
+    network: IPv4Interface
 
 
 @dataclass(frozen=True)
@@ -106,6 +115,25 @@ def interface_addresses() -> list[InterfaceAddress]:
         name = data[offset : offset + 16].split(b"\0", 1)[0].decode(errors="replace")
         raw = data[offset + 20 : offset + 24]
         found.append(InterfaceAddress(name, IPv4Address(raw)))
+    return found
+
+
+def interface_networks() -> list[InterfaceNetwork]:
+    """IPv4-Netze der Schnittstellen (ioctl SIOCGIFNETMASK), z. B. für Wake-on-LAN (Konzept 4.2)."""
+    found: list[InterfaceNetwork] = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        for entry in interface_addresses():
+            if not isinstance(entry.address, IPv4Address):
+                continue
+            request = struct.pack("16s24x", entry.interface.encode()[:15])
+            try:
+                result = fcntl.ioctl(sock.fileno(), _SIOCGIFNETMASK, request)
+            except OSError:
+                continue
+            mask = IPv4Address(result[20:24])
+            found.append(
+                InterfaceNetwork(entry.interface, IPv4Interface(f"{entry.address}/{mask}"))
+            )
     return found
 
 

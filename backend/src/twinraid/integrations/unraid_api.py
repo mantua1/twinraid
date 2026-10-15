@@ -1,4 +1,4 @@
-"""Unraid-GraphQL-API (Konzept 3.5). In Phase 3 nur lesend: VM-Status von Groß.
+"""Unraid-GraphQL-API (Konzept 3.5): VM-Status von Groß, ab Phase 4 VM starten und erzwingen.
 
 Anfragen gehen per POST an <scheme>://<host>:<port>/graphql mit dem Key im
 Header x-api-key. Bei https wird statt einer Zertifikatskette der bestätigte
@@ -23,13 +23,36 @@ from twinraid.shared.status import StatusReason
 from twinraid.shared.tls import der_fingerprint
 
 TIMEOUT_SECONDS = 5.0
+# Das Starten einer VM mit durchgereichter Grafikkarte kann dauern (Konzept 3.5).
+ACTION_TIMEOUT_SECONDS = 60.0
 MAX_RESPONSE_BYTES = 256 * 1024
 GRAPHQL_PATH = "/graphql"
 VM_QUERY = "query TwinRaidVmStatus { vms { domains { name state } } }"
+VM_LIST_QUERY = "query TwinRaidVmList { vms { domains { id name state } } }"
+VM_START_MUTATION = "mutation TwinRaidVmStart($id: PrefixedID!) { vm { start(id: $id) } }"
+VM_FORCE_STOP_MUTATION = (
+    "mutation TwinRaidVmForceStop($id: PrefixedID!) { vm { forceStop(id: $id) } }"
+)
+# PrefixedID der Unraid-API: "<Server-ID>:<UUID>"; die UUID geht an guard.sh (Konzept 5.6).
+_VM_ID_PATTERN = re.compile(
+    r"(?:[A-Za-z0-9._-]{1,128}:)?"
+    r"(?P<uuid>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+    re.ASCII,
+)
 # Zeichen wie bei Unraid (header.strategy.ts); die Länge begrenzen wir zusätzlich.
 API_KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,512}", re.ASCII)
 _FINGERPRINT_PATTERN = re.compile(r"(?:[0-9A-F]{2}:){31}[0-9A-F]{2}", re.ASCII)
 _REDIRECTS = frozenset({301, 302, 303, 307, 308})
+
+
+@dataclass(frozen=True)
+class VmDomain:
+    """Eine VM laut Unraid-API. id geht an die API, uuid an guard.sh."""
+
+    id: str
+    uuid: str
+    name: str
+    state: str
 
 
 class UnraidApiError(Exception):
@@ -184,15 +207,60 @@ class UnraidApi:
                     states[name] = state
         return states
 
-    def _connection(self) -> http.client.HTTPConnection:
+    def vm_domains(self) -> list[VmDomain]:
+        """Alle VMs mit ID; Einträge mit unerwartetem Aufbau werden übersprungen."""
+        data = self._query(VM_LIST_QUERY)
+        vms = data.get("vms")
+        domains = vms.get("domains") if isinstance(vms, dict) else None
+        if not isinstance(domains, list):
+            raise UnraidApiError(StatusReason.API_ERROR, "unexpected answer to the VM query")
+        found: list[VmDomain] = []
+        for domain in domains:
+            if not isinstance(domain, dict):
+                continue
+            domain_id, name, state = domain.get("id"), domain.get("name"), domain.get("state")
+            if not (
+                isinstance(domain_id, str) and isinstance(name, str) and isinstance(state, str)
+            ):
+                continue
+            match = _VM_ID_PATTERN.fullmatch(domain_id)
+            if match is not None:
+                found.append(VmDomain(domain_id, match["uuid"], name, state))
+        return found
+
+    async def find_vm(self, vm_name: str) -> VmDomain | None:
+        """Die VM mit genau diesem Namen; None, wenn es sie nicht gibt."""
+        domains = await asyncio.to_thread(self.vm_domains)
+        return next((domain for domain in domains if domain.name == vm_name), None)
+
+    async def start_vm(self, vm: VmDomain) -> None:
+        """Braucht VMS:UPDATE_ANY (Konzept 3.4)."""
+        await asyncio.to_thread(self._vm_mutation, VM_START_MUTATION, "start", vm)
+
+    async def force_stop_vm(self, vm: VmDomain) -> None:
+        """Schaltet die VM sofort aus (libvirt destroy). Braucht VMS:UPDATE_ANY."""
+        await asyncio.to_thread(self._vm_mutation, VM_FORCE_STOP_MUTATION, "forceStop", vm)
+
+    def _vm_mutation(self, mutation: str, field_name: str, vm: VmDomain) -> None:
+        data = self._query(mutation, {"id": vm.id}, ACTION_TIMEOUT_SECONDS)
+        result = data.get("vm")
+        if not isinstance(result, dict) or result.get(field_name) is not True:
+            raise UnraidApiError(StatusReason.API_ERROR, f"vm.{field_name} did not succeed")
+
+    def _connection(self, timeout: float) -> http.client.HTTPConnection:
         endpoint = self.endpoint
         if endpoint.encrypted:
             return http.client.HTTPSConnection(
-                endpoint.host, endpoint.port, timeout=self._timeout, context=_tls_context()
+                endpoint.host, endpoint.port, timeout=timeout, context=_tls_context()
             )
-        return http.client.HTTPConnection(endpoint.host, endpoint.port, timeout=self._timeout)
+        return http.client.HTTPConnection(endpoint.host, endpoint.port, timeout=timeout)
 
-    def _query(self, query: str) -> dict[str, object]:
+    def _query(
+        self,
+        query: str,
+        variables: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, object]:
         key = self._credentials.api_key()
         if key is None:
             raise UnraidApiError(StatusReason.API_KEY_MISSING, "no API key is set")
@@ -201,7 +269,7 @@ class UnraidApi:
             pin = self._credentials.pinned_fingerprint()
             if pin is None:
                 raise UnraidApiError(StatusReason.API_CERT_UNTRUSTED, "fingerprint not confirmed")
-        connection = self._connection()
+        connection = self._connection(timeout or self._timeout)
         try:
             try:
                 connection.connect()
@@ -211,15 +279,22 @@ class UnraidApi:
                 presented = der_fingerprint(_peer_certificate(connection))
                 if not hmac.compare_digest(presented, pin):
                     raise UnraidApiError(StatusReason.API_CERT_CHANGED, "fingerprint differs")
-            status, body = self._post(connection, key, query)
+            status, body = self._post(connection, key, query, variables)
         finally:
             connection.close()
         return self._parse(status, body)
 
     def _post(
-        self, connection: http.client.HTTPConnection, key: str, query: str
+        self,
+        connection: http.client.HTTPConnection,
+        key: str,
+        query: str,
+        variables: dict[str, str] | None,
     ) -> tuple[int, bytes]:
-        payload = json.dumps({"query": query}).encode()
+        document: dict[str, object] = {"query": query}
+        if variables is not None:
+            document["variables"] = variables
+        payload = json.dumps(document).encode()
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",

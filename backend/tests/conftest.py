@@ -2,8 +2,8 @@
 
 import logging
 import socket
-from collections.abc import Iterator
-from ipaddress import ip_address, ip_network
+from collections.abc import Callable, Iterator
+from ipaddress import IPv4Interface, ip_address, ip_network
 from pathlib import Path
 
 import pytest
@@ -41,18 +41,20 @@ REAL_INTERFACE_ADDRESSES = addresses.interface_addresses
 # Simulierte Netzwerkschnittstellen des Containers: Loopback und genau eine eigene
 # Adresse, passend zu config.example.yaml (Client-Netz, BASE_URL der Web-Tests).
 TEST_INTERFACES = [
-    ("lo", "127.0.0.1"),
-    ("eth0", "192.168.10.20"),
+    ("lo", "127.0.0.1/8"),
+    ("eth0", "192.168.10.20/24"),
 ]
 
 
 @pytest.fixture(autouse=True)
 def _fixed_interfaces(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tests hängen nie von den echten Schnittstellen des Rechners ab."""
-    found = [
-        addresses.InterfaceAddress(name, ip_address(address)) for name, address in TEST_INTERFACES
+    networks = [
+        addresses.InterfaceNetwork(name, IPv4Interface(value)) for name, value in TEST_INTERFACES
     ]
+    found = [addresses.InterfaceAddress(entry.interface, entry.network.ip) for entry in networks]
     monkeypatch.setattr(addresses, "interface_addresses", lambda: list(found))
+    monkeypatch.setattr(addresses, "interface_networks", lambda: list(networks))
     monkeypatch.setattr(addresses, "ipv6_addresses", lambda *_args: [])
 
 
@@ -78,8 +80,19 @@ def _no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
             raise RealNetworkError(f"test tried to connect to {address!r}")
         return original_connect_ex(self, address)  # type: ignore[arg-type]
 
+    # Callable[..., int]: socket.sendto hat Überladungen mit und ohne flags.
+    original_sendto: Callable[..., int] = socket.socket.sendto
+
+    def sendto(self: socket.socket, data: bytes, *args: object) -> int:
+        # Auch UDP (z. B. Wake-on-LAN) nur an Loopback oder TEST-NET-1.
+        address = args[-1]
+        if not _allowed(address):
+            raise RealNetworkError(f"test tried to send to {address!r}")
+        return original_sendto(self, data, *args)
+
     monkeypatch.setattr(socket.socket, "connect", connect)
     monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+    monkeypatch.setattr(socket.socket, "sendto", sendto)
 
 
 @pytest.fixture(autouse=True)
