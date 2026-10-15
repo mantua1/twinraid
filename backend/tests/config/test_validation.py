@@ -175,6 +175,9 @@ INVALID_CASES: list[tuple[str, object, str]] = [
     ("servers.target.mac", "00:00:00:00:00:00", "must not be 00:00:00:00:00:00"),
     ("servers.target.wol_broadcast", "2001:db8::ff", "valid IPv4 address"),
     ("servers.target.boot_timeout_minutes", 0, "greater than or equal to 1"),
+    ("servers.target.ssh_port", 0, "greater than or equal to 1"),
+    ("servers.target.ssh_port", 65536, "less than or equal to 65535"),
+    ("servers.target.ssh_port", "22", "valid integer"),
     ("servers.source.name", "", "must not be empty"),
     # --- WebGUI ---
     ("servers.target.webgui", _DELETE, "servers.target.webgui: required key is missing"),
@@ -191,6 +194,12 @@ INVALID_CASES: list[tuple[str, object, str]] = [
     ("gaming_vm.unraid_vm_name", "x" * 129, "longer than 128"),
     ("gaming_vm.unraid_vm_name", "Win‮11", "control or invisible"),
     ("gaming_vm.shutdown_timeout_minutes", 61, "less than or equal to 60"),
+    # --- Aktionen (Konzept 4.2) ---
+    ("actions.wake", "yes", "valid boolean"),
+    ("actions.vm", 1, "valid boolean"),
+    ("actions.shutdown", None, "valid boolean"),
+    ("actions.sync", True, "actions.sync: unknown key"),
+    ("actions", ["wake"], "valid dictionary"),
     # --- Unbekannte und fehlende Schlüssel ---
     ("web.prot", 8443, "web.prot: unknown key"),
     ("sync.schedule.cron", "0 3 * * 0", "sync.schedule.cron: unknown key"),
@@ -349,3 +358,27 @@ def test_ip_addresses_and_port_are_optional() -> None:
     web = load_config(EXAMPLE_CONFIG).web
     assert web.tls.ip_addresses is None
     assert web.port == 8443
+
+
+def test_actions_are_off_by_default(tmp_path: Path) -> None:
+    """Ohne Abschnitt actions ist im Modus real keine Aktion freigeschaltet (Konzept 4.2)."""
+    actions = _load(tmp_path, _with("actions", _DELETE)).actions
+    assert (actions.wake, actions.vm, actions.shutdown) == (False, False, False)
+    assert load_config(EXAMPLE_CONFIG).actions == actions
+
+
+def test_actions_can_be_enabled_one_by_one(tmp_path: Path) -> None:
+    actions = _load(tmp_path, _with("actions", {"vm": True})).actions
+    assert (actions.wake, actions.vm, actions.shutdown) == (False, True, False)
+
+
+def test_wol_broadcast_and_ssh_port_are_optional() -> None:
+    """Die Broadcast-Adresse wird ohne Angabe abgeleitet, SSH nutzt Port 22 (Konzept 6.3)."""
+    target = load_config(EXAMPLE_CONFIG).servers.target
+    assert target.wol_broadcast is None
+    assert target.ssh_port == 22
+
+
+def test_wol_broadcast_can_be_set(tmp_path: Path) -> None:
+    target = _load(tmp_path, _with("servers.target.wol_broadcast", "192.168.10.255")).servers.target
+    assert str(target.wol_broadcast) == "192.168.10.255"
