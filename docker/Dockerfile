@@ -8,6 +8,9 @@
 # kann. Das Python-Image kommt dreimal vor und muss überall gleich sein.
 
 ARG S6_OVERLAY_VERSION=3.2.3.2
+# SSH-Client für Herunterfahren und VM-Shutdown (Konzept 3.3 und 5.6). Exakt gepinnt;
+# Anheben der Version: README, Abschnitt „openssh-client aktualisieren“.
+ARG OPENSSH_VERSION=1:10.0p1-7+deb13u4
 
 FROM ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 AS uv
 
@@ -57,6 +60,26 @@ LABEL org.opencontainers.image.title="TwinRaid" \
       org.opencontainers.image.licenses="MIT"
 
 COPY --from=s6 /s6root/ /
+
+# openssh-client in genau der gepinnten Version. Bietet Debian sie nicht mehr an
+# (meist nach einem Sicherheitsupdate), bricht der Build mit der neuen Version ab.
+# ssh-keysign (setuid, Host-basierte Anmeldung) braucht TwinRaid nicht und wird
+# entfernt; ssh-agent verliert sein setgid-Bit (TwinRaid nutzt keinen Agent).
+ARG OPENSSH_VERSION
+RUN <<EOF
+set -eu
+apt-get update
+if ! apt-get install -y --no-install-recommends "openssh-client=${OPENSSH_VERSION}"; then
+  available="$(apt-cache policy openssh-client | sed -n 's/^ *Candidate: //p')"
+  echo "ERROR: openssh-client ${OPENSSH_VERSION} is no longer available from Debian." >&2
+  echo "ERROR: Debian now offers openssh-client ${available:-(none)}." >&2
+  echo "ERROR: Set OPENSSH_VERSION=${available:-?} in docker/Dockerfile (see README)." >&2
+  exit 1
+fi
+rm -f /usr/lib/openssh/ssh-keysign
+chmod g-s /usr/bin/ssh-agent
+rm -rf /var/lib/apt/lists/*
+EOF
 
 # Web-Benutzer und Verzeichnisse (Konzept 3.2 und 5.4):
 # /srv/worker gehört root mit 0700; dort hängen Shares und Templates.
