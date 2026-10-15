@@ -38,17 +38,23 @@ const EXPLAINED = new Set<ActionBlocker>([
 export function ActionPanel({ actions, snapshot, onRun }: ActionPanelProps) {
   const { t, i18n } = useTranslation();
   const [pending, setPending] = useState<ActionName | null>(null);
+  // Stand beim Absenden einer angenommenen Aktion: Bis der Live-Status ihn ersetzt,
+  // bleiben die Buttons gesperrt (sonst wären sie bis zu 2 s lang wieder klickbar).
+  const [sentWith, setSentWith] = useState<ActionsSnapshot | null>(null);
   const [confirming, setConfirming] = useState<PanelAction | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
+  const waiting = pending !== null || (sentWith !== null && sentWith === snapshot);
   const blockerOf = (name: ActionName): ActionBlocker | null =>
     snapshot === null ? "target_unknown" : snapshot.availability[name];
 
   const run = (name: ActionName) => {
+    const current = snapshot;
     setPending(name);
     setMessage(null);
     void onRun(name)
       .then((result) => {
+        setSentWith(result.kind === "accepted" ? current : null);
         if (result.kind === "rejected") {
           setMessage(
             t("actions.rejected", {
@@ -78,8 +84,9 @@ export function ActionPanel({ actions, snapshot, onRun }: ActionPanelProps) {
   };
 
   // Gleiche Gründe zusammenfassen: „Wecken, Herunterfahren: nicht freigeschaltet“.
+  // Vor dem ersten Live-Status gibt es keine Hinweise; die Buttons sind dann gesperrt.
   const hints = new Map<string, string[]>();
-  for (const action of actions) {
+  for (const action of snapshot === null ? [] : actions) {
     const blocker = blockerOf(action.name);
     if (blocker !== null && EXPLAINED.has(blocker)) {
       const text = hint(blocker);
@@ -95,7 +102,7 @@ export function ActionPanel({ actions, snapshot, onRun }: ActionPanelProps) {
             key={action.name}
             size="sm"
             variant={action.variant ?? "outline"}
-            disabled={pending !== null || blockerOf(action.name) !== null}
+            disabled={waiting || blockerOf(action.name) !== null}
             data-action={action.name}
             onClick={() => {
               if (action.confirm) {

@@ -60,6 +60,16 @@ describe("actions", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("keeps the buttons locked until the live status follows", async () => {
+    const { server, user, target } = await openDashboard();
+    await within(target).findByText("Nicht erreichbar");
+    await user.click(button(target, "Wecken"));
+    expect(server.actions).toEqual(["wake_target"]);
+    expect(button(target, "Wecken")).toBeDisabled();
+    emit({ ...STATUS, actions: actionsSnapshot() });
+    expect(button(target, "Wecken")).toBeEnabled();
+  });
+
   it("asks to shut down the VM first when it is running", async () => {
     const { server, user, target } = await openDashboard({ status: STATUS_VM_RUNNING });
     await user.click(await within(target).findByRole("button", { name: "Herunterfahren" }));
