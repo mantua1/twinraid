@@ -8,6 +8,7 @@ from pathlib import Path
 from cryptography import x509
 from fastapi.testclient import TestClient
 
+from tests.conftest import EXAMPLE_CONFIG
 from tests.web.helpers import (
     TEST_ADDRESSES,
     FakeClock,
@@ -44,6 +45,8 @@ def test_info_contains_mode_and_names(tmp_path: Path) -> None:
         "default_language": "de",
         "names": {"source": "Unraid Klein", "target": "Unraid Groß", "vm": "Gaming-VM"},
         "read_only": False,
+        "actions": {"wake": True, "vm": True, "shutdown": True},
+        "vm_shutdown_timeout_minutes": 3,
         "target_connection_encrypted": False,
     }
 
@@ -54,13 +57,28 @@ def test_info_in_real_mode_is_read_only(tmp_path: Path) -> None:
     info = client.get("/api/info").json()
     assert info["mode"] == "real"
     assert info["read_only"] is True
+    assert info["actions"] == {"wake": False, "vm": False, "shutdown": False}
+
+
+def test_info_in_real_mode_shows_enabled_actions(tmp_path: Path) -> None:
+    """Freischaltung über actions.* (Konzept 4.2): kein Banner „Nur Statusanzeige“ mehr."""
+    text = EXAMPLE_CONFIG.read_text().replace("  vm: false ", "  vm: true  ")
+    config = tmp_path / "config.yaml"
+    config.write_text(text)
+    client = make_client(make_app(tmp_path, mode=RunMode.REAL, config_path=config))
+    login(client)
+    info = client.get("/api/info").json()
+    assert info["read_only"] is False
+    assert info["actions"] == {"wake": False, "vm": True, "shutdown": False}
 
 
 def test_status_from_worker(tmp_path: Path) -> None:
     response = _client(tmp_path).get("/api/status")
     assert response.status_code == 200
     unknown = {"state": "unknown", "reason": None}
-    assert response.json() == {
+    body = response.json()
+    assert body.pop("actions")["availability"]["vm_start"] == "target_unknown"
+    assert body == {
         "source": unknown,
         "target": unknown,
         "vm": unknown,

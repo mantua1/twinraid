@@ -69,17 +69,25 @@ def test_every_other_route_rejects_requests_without_session(app: WebApp) -> None
     assert checked >= 7
 
 
+# Gültige Werte für Pfadparameter, damit jede Route einmal erfolgreich aufgerufen wird.
+PATH_SAMPLES = {"{action}": "vm_start"}
+
+
 def test_every_api_route_works_with_session(app: WebApp) -> None:
     client = make_client(app)
     csrf = login(client)
     for route in app.api.routes:
         if is_public_route(route) or not isinstance(route, APIRoute):
             continue
+        path = route.path
+        for placeholder, sample in PATH_SAMPLES.items():
+            path = path.replace(placeholder, sample)
         for method in sorted(route.methods or ()):
             if method == "HEAD":
                 continue
-            response = client.request(method, route.path, headers={"X-CSRF-Token": csrf})
-            assert response.status_code == 200, f"{method} {route.path}: {response.text}"
+            response = client.request(method, path, headers={"X-CSRF-Token": csrf})
+            # 202: Der Worker hat eine Aktion angenommen.
+            assert response.status_code in (200, 202), f"{method} {path}: {response.text}"
             if route.path == "/api/auth/logout":
                 csrf = login(client)
 
