@@ -59,6 +59,7 @@ Die Simulation ist interaktiv: Groß und die VM starten ausgeschaltet, die Butto
 ./scripts/dev-admin.sh mock-fault api-forbidden on  # API-Key ohne VMS:UPDATE_ANY
 ./scripts/dev-admin.sh mock-fault ssh-denied on   # guard.sh lehnt ab
 ./scripts/dev-admin.sh mock-fault no-boot on      # Groß reagiert nicht auf Wake-on-LAN
+./scripts/dev-admin.sh mock-fault other-vm on     # auf Groß läuft eine weitere VM
 ./scripts/dev-admin.sh show-action-log            # Aktionslog des Workers
 ```
 

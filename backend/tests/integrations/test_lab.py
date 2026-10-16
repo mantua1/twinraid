@@ -90,7 +90,7 @@ async def test_faults(tmp_path: Path) -> None:
 
 
 def test_fault_names_are_fixed(tmp_path: Path) -> None:
-    assert FAULTS == ("vm-hang", "api-forbidden", "ssh-denied", "no-boot")
+    assert FAULTS == ("vm-hang", "api-forbidden", "ssh-denied", "no-boot", "other-vm")
     with pytest.raises(ValueError, match="unknown fault"):
         fault_flag(tmp_path, "../etc")
 
@@ -104,3 +104,16 @@ async def test_tour_replaces_the_simulation(tmp_path: Path) -> None:
     assert (status.source, status.target, status.vm) == (source, target, vm)
     set_flag(tour_flag(tmp_path), False)
     assert lab.tour_active() is False
+
+
+async def test_other_vm_fault(tmp_path: Path) -> None:
+    clock = Clock()
+    lab = _lab(tmp_path, clock)
+    assert (await lab.get_status()).other_vms_running is None
+    await lab.wake()
+    clock.now = 30
+    assert (await lab.get_status()).other_vms_running == ()
+    assert await lab.other_running_vms() == ()
+    set_flag(fault_flag(tmp_path, "other-vm"), True)
+    assert (await lab.get_status()).other_vms_running == ("Test-VM",)
+    assert await lab.other_running_vms() == ("Test-VM",)

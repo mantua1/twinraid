@@ -22,6 +22,11 @@ export function Dashboard({ data }: { data: DashboardData }) {
     vm: info?.names.vm ?? t("tiles.vm.fallbackTitle"),
   };
   const vmRunning = status?.vm.state === "online" || status?.vm.state === "stopping";
+  // Für die Begründung „Auf <Server> laufen noch weitere VMs: <Namen> …“ (Konzept 4.2).
+  const blockerValues = {
+    target: names.target,
+    vms: (status?.other_vms_running ?? []).join(", "),
+  };
   const shortTime = (value: string) =>
     new Intl.DateTimeFormat(i18n.resolvedLanguage, { timeStyle: "short" }).format(new Date(value));
 
@@ -140,7 +145,12 @@ export function Dashboard({ data }: { data: DashboardData }) {
             tile="target"
             vmName={names.vm}
           />
-          <ActionPanel actions={targetActions} snapshot={actions} onRun={data.runAction} />
+          <ActionPanel
+            actions={targetActions}
+            snapshot={actions}
+            onRun={data.runAction}
+            blockerValues={blockerValues}
+          />
         </StatusTile>
         <StatusTile
           testId="tile-vm"
@@ -149,7 +159,12 @@ export function Dashboard({ data }: { data: DashboardData }) {
           info={status?.vm ?? UNKNOWN}
         >
           <ActivityLine activity={actions?.vm} status={status} tile="vm" vmName={names.vm} />
-          <ActionPanel actions={vmActions} snapshot={actions} onRun={data.runAction} />
+          <ActionPanel
+            actions={vmActions}
+            snapshot={actions}
+            onRun={data.runAction}
+            blockerValues={blockerValues}
+          />
         </StatusTile>
         <PlaceholderTile
           title={t("tiles.sync.title")}

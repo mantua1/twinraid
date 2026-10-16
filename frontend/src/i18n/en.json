@@ -264,7 +264,8 @@
       "vm_unknown": "the state of the VM is unknown",
       "force_not_yet": "only possible after the waiting time following “Shut down”",
       "tour": "not available during the simulation tour",
-      "not_offered": "only possible shortly after a server shutdown failed at the VM"
+      "not_offered": "only possible shortly after a server shutdown failed at the VM",
+      "other_vms_running": "Other VMs are still running on {{target}}: {{vms}}. Please shut them down in the Unraid web interface first. For safety, TwinRaid does not switch the server off while other VMs are running, so that no data is lost."
     },
     "outcomes": {
       "success": "successful",
@@ -291,12 +292,13 @@
       "remote_failed": "The command failed on the server.",
       "shutdown_timeout": "The server was still reachable after 15 minutes.",
       "interrupted": "interrupted because TwinRaid was restarted",
-      "internal_error": "Internal error – please check the container log."
+      "internal_error": "Internal error – please check the container log.",
+      "other_vms_running": "The server was not switched off because other VMs were still running."
     },
     "last": "Last: {{action}} – {{outcome}} ({{time}})",
     "hint": "{{actions}}: {{reason}}",
     "forceAt": "possible from {{time}}",
-    "rejected": "Not carried out: {{reason}}.",
+    "rejected": "Not carried out: {{reason}}",
     "rejectedUnknown": "rejected by the server",
     "requestFailed": "The request failed. Please try again.",
     "dialog": {

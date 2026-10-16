@@ -6,6 +6,7 @@ Nur für Tests. Zustand in /state:
   power-off       vorhanden: Groß ist „aus“ (Port 80 geschlossen)
   mutations.log   ausgeführte VM-Befehle der API
   wol.log         empfangene Magic Packets mit der erwarteten MAC
+  other-vm        vorhanden: eine zweite VM läuft (sonst ist sie aus)
 """
 
 import json
@@ -20,6 +21,8 @@ STATE = Path("/state")
 SERVER_ID = "f00dcafe"
 VM_UUID = os.environ["FAKE_VM_UUID"]
 VM_NAME = os.environ["FAKE_VM_NAME"]
+OTHER_VM_UUID = "7c6b5a49-3827-4161-9504-f3e2d1c0b9a8"
+OTHER_VM_NAME = "Second VM"
 MAC = bytes.fromhex(os.environ["FAKE_MAC"].replace(":", ""))
 BOOT_SECONDS = 3.0
 
@@ -70,7 +73,9 @@ def answer(body: dict[str, object], permissions: list[str] | None) -> dict[str, 
         if "READ_ANY" not in permissions:
             return error("FORBIDDEN", "Forbidden resource")
         domain = {"id": f"{SERVER_ID}:{VM_UUID}", "name": VM_NAME, "state": read("vm-state", "SHUTOFF")}
-        return {"data": {"vms": {"domains": [domain]}}}
+        other_state = "RUNNING" if (STATE / "other-vm").exists() else "SHUTOFF"
+        other = {"id": f"{SERVER_ID}:{OTHER_VM_UUID}", "name": OTHER_VM_NAME, "state": other_state}
+        return {"data": {"vms": {"domains": [domain, other]}}}
     if "UPDATE_ANY" not in permissions:
         return error("FORBIDDEN", "Forbidden resource")
     field = "forceStop" if "forceStop" in query else "start"

@@ -48,6 +48,8 @@ class ActionBlocker(StrEnum):
     FORCE_NOT_YET = "force_not_yet"
     # Kein gültiges Angebot für „Erzwingen und danach Server herunterfahren“.
     NOT_OFFERED = "not_offered"
+    # Auf Groß laufen außer der Gaming-VM weitere VMs (ab v0.4.2).
+    OTHER_VMS_RUNNING = "other_vms_running"
     # Simulationsmodus: Der feste Rundlauf ist eingeschaltet (twinraid-admin mock-tour).
     TOUR = "tour"
 
@@ -92,6 +94,8 @@ class ActionOutcome(StrEnum):
     # Der Befehl lief auf Groß, ist dort aber gescheitert (z. B. virsh).
     REMOTE_FAILED = "remote_failed"
     SHUTDOWN_TIMEOUT = "shutdown_timeout"
+    # Groß wurde nicht ausgeschaltet, weil weitere VMs liefen (ab v0.4.2).
+    OTHER_VMS_RUNNING = "other_vms_running"
     # Der Worker wurde beendet, während die Aktion lief (nur im Aktionslog).
     INTERRUPTED = "interrupted"
     INTERNAL_ERROR = "internal_error"

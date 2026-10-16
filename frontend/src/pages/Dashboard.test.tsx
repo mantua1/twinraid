@@ -391,3 +391,71 @@ describe("force off, then shut down", () => {
     ).toBeNull();
   });
 });
+
+describe("other running VMs", () => {
+  const blocked: StatusSnapshot = {
+    ...STATUS_VM_RUNNING,
+    other_vms_running: ["Test-VM", "Linux"],
+    actions: actionsSnapshot({
+      ...STATUS_VM_RUNNING.actions.availability,
+      shutdown_target: "other_vms_running",
+    }),
+  };
+
+  it("locks shutting down Groß and names the running VMs", async () => {
+    const { target } = await openDashboard({ status: blocked });
+    expect(await within(target).findByRole("button", { name: "Herunterfahren" })).toBeDisabled();
+    expect(within(target).getByTestId("action-hint")).toHaveTextContent(
+      "Herunterfahren: Auf Unraid Groß laufen noch weitere VMs: Test-VM, Linux. Bitte fahre sie zuerst über die Unraid-Oberfläche herunter. Zur Sicherheit schaltet TwinRaid den Server nicht aus, solange andere VMs laufen, damit keine Daten verloren gehen.",
+    );
+  });
+
+  it("explains it in English", async () => {
+    const { user, target } = await openDashboard({ status: blocked });
+    await within(target).findByTestId("action-hint");
+    await user.click(screen.getByRole("button", { name: "Englisch" }));
+    expect(within(target).getByTestId("action-hint")).toHaveTextContent(
+      "Shut down: Other VMs are still running on Unraid Groß: Test-VM, Linux. Please shut them down in the Unraid web interface first.",
+    );
+  });
+
+  it("shows an aborted shutdown red while other VMs run and grey afterwards", async () => {
+    const aborted = {
+      running: null,
+      last: {
+        action: "shutdown_target" as const,
+        outcome: "other_vms_running" as const,
+        finished_at: "2026-10-13T12:05:00Z",
+      },
+    };
+    const { target } = await openDashboard({
+      status: { ...blocked, actions: { ...blocked.actions, target: aborted } },
+    });
+    const result = await within(target).findByTestId("action-result");
+    expect(result).toHaveTextContent(
+      "Zuletzt: Server herunterfahren – Der Server wurde nicht ausgeschaltet, weil noch weitere VMs liefen.",
+    );
+    expect(result.querySelector("p")).toHaveClass("text-destructive");
+    emit({
+      ...STATUS_VM_RUNNING,
+      actions: actionsSnapshot({ ...STATUS_VM_RUNNING.actions.availability }, { target: aborted }),
+    });
+    expect(within(target).getByTestId("action-result").querySelector("p")).toHaveClass(
+      "text-muted-foreground",
+    );
+    expect(within(target).queryByTestId("action-hint")).toBeNull();
+  });
+
+  it("names the VMs when a request is rejected for this reason", async () => {
+    const { user, target } = await openDashboard({
+      status: { ...STATUS_VM_RUNNING, other_vms_running: ["Test-VM"] },
+      actionRejection: "other_vms_running",
+    });
+    await user.click(await within(target).findByRole("button", { name: "Herunterfahren" }));
+    await user.click(screen.getByRole("button", { name: "VM und Server herunterfahren" }));
+    expect(await within(target).findByRole("alert")).toHaveTextContent(
+      "Nicht ausgeführt: Auf Unraid Groß laufen noch weitere VMs: Test-VM. Bitte fahre sie zuerst",
+    );
+    expect(within(target).getByRole("alert").textContent).not.toMatch(/\.\.$/);
+  });
+});

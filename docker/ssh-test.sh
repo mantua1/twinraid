@@ -10,8 +10,9 @@
 # trust-host-key mit Verbindungstest, guard.sh lehnt fremde Befehle ab, kein Terminal,
 # keine Weiterleitung, der Key gilt nur von der Adresse von TwinRaid, strikte
 # Hostkey-Prüfung; dazu die Abläufe: Rechtetest mit Lese-Key, VM starten, herunterfahren
-# und erzwingen, Groß herunterfahren (VM zuerst) und wecken, sowie „Erzwingen und danach
-# Server herunterfahren“ nach einem an der VM gescheiterten Herunterfahren.
+# und erzwingen, Groß herunterfahren (VM zuerst) und wecken, „Erzwingen und danach
+# Server herunterfahren“ nach einem an der VM gescheiterten Herunterfahren, und dass
+# Groß nie ausgeschaltet wird, solange eine weitere VM läuft.
 #
 # Aufruf aus dem Repo-Hauptordner:   docker/ssh-test.sh [IMAGE]   (Standard: twinraid:dev)
 set -euo pipefail
@@ -255,6 +256,25 @@ expect_equal "guard.sh ran poweroff once more" "$(fake_read poweroff.log | wc -l
 wait_for_status "target is reported as offline after force-and-shutdown" \
   '"target":{"state":"offline","reason":"unreachable"}'
 run_action wake_target success
+
+# --- 8b. Weitere VMs auf Groß: kein Ausschalten (Konzept 4.2, ab v0.4.2) -------------------------
+fake touch /state/other-vm
+wait_for_status "status lists the other running VM" '"other_vms_running":["Second VM"]'
+expect_contains "shutdown is locked while another VM runs" \
+  "$(worker shutdown_target)" '"blocked_by":"other_vms_running"'
+fake rm /state/other-vm
+wait_for_status "the other VM is off again" '"other_vms_running":[]'
+# Die zweite VM startet, während die Gaming-VM herunterfährt: Prüfung vor poweroff.
+run_action vm_start success
+fake touch /state/other-vm-on-shutdown
+run_action shutdown_target other_vms_running
+expect_equal "Groß was not switched off" "$(fake_read poweroff.log | wc -l | tr -d ' ')" "2"
+expect_equal "the gaming VM was shut down first" "$(fake_read vm-state)" "SHUTOFF"
+expect_contains "the check before poweroff is in the action log" "$(admin show-action-log --lines 5)" \
+  "shutdown_target  dashboard: other_vms_running"
+expect_not_contains "VM names never appear in the container log" "$(docker logs "${APP}" 2>&1)" "Second VM"
+fake rm /state/other-vm-on-shutdown /state/other-vm
+wait_for_status "no other VM runs any more" '"other_vms_running":[]'
 
 # --- 9. Einschränkungen der authorized_keys-Zeile ------------------------------------------------
 denied="$(ssh_from_app "root@${target_ip}" id 2>&1 || true)"

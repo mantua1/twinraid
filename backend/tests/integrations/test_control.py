@@ -157,3 +157,20 @@ def test_every_api_reason_has_an_outcome(reason: StatusReason) -> None:
         assert outcome.value == reason.value
     else:
         assert outcome is ActionOutcome.API_ERROR
+
+
+async def test_other_running_vms(parts: Parts, unraid: FakeUnraid) -> None:
+    assert isinstance(unraid.responder, FakeVmHost)
+    control = parts.control()
+    assert await control.other_running_vms() == ()
+    unraid.responder.vms.append(FakeVm("1a2b3c4d-0000-4000-8000-000000000001", "Test-VM", "PAUSED"))
+    unraid.responder.vms.append(FakeVm("1a2b3c4d-0000-4000-8000-000000000002", "Alt", "SHUTOFF"))
+    assert await control.other_running_vms() == ("Test-VM",)
+
+
+async def test_other_running_vms_needs_a_readable_list(parts: Parts, unraid: FakeUnraid) -> None:
+    assert isinstance(unraid.responder, FakeVmHost)
+    unraid.responder.keys[KEY] = set()
+    with pytest.raises(ActionError) as excinfo:
+        await parts.control().other_running_vms()
+    assert excinfo.value.outcome is ActionOutcome.API_FORBIDDEN

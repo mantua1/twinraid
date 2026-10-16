@@ -54,6 +54,7 @@ export const ACTION_BLOCKERS = [
   "vm_unknown",
   "force_not_yet",
   "not_offered",
+  "other_vms_running",
   "tour",
 ] as const;
 export type ActionBlocker = (typeof ACTION_BLOCKERS)[number];
@@ -92,6 +93,7 @@ export const ACTION_OUTCOMES = [
   "ssh_failed",
   "remote_failed",
   "shutdown_timeout",
+  "other_vms_running",
   "interrupted",
   "internal_error",
 ] as const;
@@ -133,6 +135,8 @@ export interface StatusSnapshot {
   job_running: boolean;
   password_set: boolean;
   actions: ActionsSnapshot;
+  // Weitere laufende VMs auf Groß (bereinigte Namen); null: unbekannt (Konzept 4.2).
+  other_vms_running: string[] | null;
 }
 
 export interface AppInfo {
