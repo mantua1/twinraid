@@ -19,7 +19,6 @@ from typing import Protocol
 from twinraid.config import TwinRaidConfig
 from twinraid.integrations.control import ActionControl, ActionError
 from twinraid.integrations.jobs import JobState
-from twinraid.integrations.unraid_api import VmDomain
 from twinraid.shared.actions import (
     ActionBlocker,
     ActionGroup,
@@ -53,13 +52,27 @@ _RESOURCES: dict[ActionName, frozenset[Resource]] = {
     ActionName.VM_FORCE_STOP: frozenset({Resource.VM}),
 }
 
-# libvirt-Zustände laut Unraid-API.
+# libvirt-Zustände, wie guard.sh sie meldet (Konzept 3.5).
 _VM_RUNNING = frozenset({"RUNNING", "IDLE"})
 _VM_OFF = frozenset({"SHUTOFF", "CRASHED"})
-# Groß ist erreichbar, die API aber (noch) nicht bereit: weiter warten.
-_TRANSIENT = frozenset({ActionOutcome.API_UNREACHABLE, ActionOutcome.API_ERROR})
+# Groß ist erreichbar, aber sshd, die Sitzung vm-watch oder der VM-Dienst sind (noch)
+# nicht bereit: weiter warten.
+_TRANSIENT = frozenset(
+    {
+        ActionOutcome.WATCH_INTERRUPTED,
+        ActionOutcome.VM_SERVICE_UNAVAILABLE,
+        ActionOutcome.SSH_UNREACHABLE,
+        ActionOutcome.SSH_FAILED,
+    }
+)
+# VM starten bleibt mit diesen Ursachen möglich; der Ablauf wartet auf den VM-Dienst.
 _TRANSIENT_VM_REASONS = frozenset(
-    {StatusReason.API_UNREACHABLE, StatusReason.API_ERROR, StatusReason.TARGET_STARTING}
+    {
+        StatusReason.TARGET_STARTING,
+        StatusReason.WATCH_CONNECTING,
+        StatusReason.WATCH_INTERRUPTED,
+        StatusReason.VM_SERVICE_UNAVAILABLE,
+    }
 )
 # VM-Überlagerung, solange Groß nach dem Wecken bootet.
 _VM_WAITING = ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.TARGET_STARTING)
@@ -227,7 +240,7 @@ class ActionCoordinator:
                         target is on and vm.state not in (off, ResourceState.UNKNOWN),
                         ActionBlocker.VM_RUNNING,
                     ),
-                    # Gerade gestartetes Groß: Der Ablauf wartet auf die API.
+                    # Gerade gestartetes Groß: Der Ablauf wartet auf den VM-Dienst.
                     (
                         target is on and vm_unknown and vm.reason not in _TRANSIENT_VM_REASONS,
                         ActionBlocker.VM_UNKNOWN,
@@ -288,7 +301,7 @@ class ActionCoordinator:
         vm_run = self._running.get(Resource.VM)
         booting = target_run is not None and (
             target_run.step is ActionStep.WAKING
-            or (target_run.step is ActionStep.WAITING_FOR_API and target_run.woke)
+            or (target_run.step is ActionStep.WAITING_FOR_VM_SERVICE and target_run.woke)
         )
         if booting:
             target = ResourceInfo(state=ResourceState.STARTING)
@@ -298,7 +311,7 @@ class ActionCoordinator:
             target = ResourceInfo(state=ResourceState.STOPPING)
         if vm_run is not None:
             match vm_run.step:
-                case ActionStep.WAKING | ActionStep.WAITING_FOR_API:
+                case ActionStep.WAKING | ActionStep.WAITING_FOR_VM_SERVICE:
                     vm = ResourceInfo(
                         state=ResourceState.STARTING,
                         reason=StatusReason.TARGET_STARTING if booting else None,
@@ -399,13 +412,17 @@ class ActionCoordinator:
         await self._control.wake()
         await self._wait_until_ready(run, deadline, need_vm=False)
 
-    async def _wait_until_ready(self, run: _Run, deadline: float, need_vm: bool) -> VmDomain | None:
-        """Wartet, bis Groß erreichbar ist und die API antwortet (höchstens bis deadline)."""
+    async def _wait_until_ready(self, run: _Run, deadline: float, need_vm: bool) -> str | None:
+        """Wartet, bis Groß erreichbar ist und der VM-Dienst antwortet (höchstens bis deadline).
+
+        Gibt den Zustand der VM zurück; None, wenn need_vm aus ist und guard.sh einen
+        Fehler meldet, der kein Warten behebt (z. B. power.conf fehlt).
+        """
         while True:
             if await self._control.target_reachable():
-                run.step = ActionStep.WAITING_FOR_API
+                run.step = ActionStep.WAITING_FOR_VM_SERVICE
                 try:
-                    return await self._control.find_vm()
+                    return await self._control.vm_state()
                 except ActionError as failure:
                     if failure.outcome not in _TRANSIENT:
                         if need_vm:
@@ -424,12 +441,12 @@ class ActionCoordinator:
                 run.step, run.woke = ActionStep.WAKING, True
                 await self._control.wake()
                 await self._wait_until_ready(run, deadline, need_vm=False)
-        vm = await self._wait_until_ready(run, deadline, need_vm=True)
-        if vm is None or vm.state in _VM_RUNNING:
+        state = await self._wait_until_ready(run, deadline, need_vm=True)
+        if state is None or state in _VM_RUNNING:
             return
         run.step, run.woke = ActionStep.STARTING_VM, False
         self._stop_sent_at = None
-        await self._control.start_vm(vm)
+        await self._control.start_vm()
         await self._wait_for_vm(
             _VM_RUNNING, self._timings.vm_start_confirm_seconds, ActionOutcome.VM_START_TIMEOUT
         )
@@ -440,23 +457,22 @@ class ActionCoordinator:
         deadline = self._monotonic() + seconds
         while True:
             try:
-                vm = await self._control.find_vm()
+                state = await self._control.vm_state()
             except ActionError as failure:
                 if failure.outcome not in _TRANSIENT:
                     raise
             else:
-                if vm.state in states:
+                if state in states:
                     return
             if self._monotonic() >= deadline:
                 raise ActionError(on_timeout)
             await self._sleep(self._timings.poll_seconds)
 
     async def _stop_vm(self, run: _Run) -> None:
-        vm = await self._control.find_vm()
-        if vm.state in _VM_OFF:
+        if await self._control.vm_state() in _VM_OFF:
             return
         run.step = ActionStep.STOPPING_VM
-        await self._control.shutdown_vm(vm)
+        await self._control.shutdown_vm()
         self._stop_sent_at = self._clock()
         await self._wait_for_vm(
             _VM_OFF,
@@ -466,10 +482,9 @@ class ActionCoordinator:
         self._stop_sent_at = None
 
     async def _force_stop_vm(self, run: _Run) -> None:
-        vm = await self._control.find_vm()
-        if vm.state not in _VM_OFF:
+        if await self._control.vm_state() not in _VM_OFF:
             run.step = ActionStep.FORCING_VM
-            await self._control.force_stop_vm(vm)
+            await self._control.force_stop_vm()
             await self._wait_for_vm(
                 _VM_OFF, self._timings.force_confirm_seconds, ActionOutcome.VM_STOP_TIMEOUT
             )
@@ -477,8 +492,7 @@ class ActionCoordinator:
 
     async def _shutdown_target(self, run: _Run) -> None:
         await self._ensure_no_other_vms()
-        vm = await self._control.find_vm()
-        if vm.state not in _VM_OFF:
+        if await self._control.vm_state() not in _VM_OFF:
             # „VM zuerst herunterfahren?“ (Entscheidung E10): Bleibt sie an, bricht der Ablauf ab.
             async with self._part(run, ActionName.VM_STOP):
                 await self._stop_vm(run)
@@ -499,7 +513,7 @@ class ActionCoordinator:
     async def _ensure_no_other_vms(self) -> None:
         """Groß nie ausschalten, solange weitere VMs laufen (Konzept 4.2, ab v0.4.2).
 
-        Ist die Liste nicht lesbar, bricht der Ablauf mit der Ursache der API ab.
+        Ist die Liste nicht lesbar, bricht der Ablauf mit der Ursache aus vm-watch ab.
         """
         if await self._control.other_running_vms():
             raise ActionError(ActionOutcome.OTHER_VMS_RUNNING)
@@ -507,6 +521,7 @@ class ActionCoordinator:
     async def _power_off(self, run: _Run) -> None:
         run.step = ActionStep.SHUTTING_DOWN
         # Unmittelbar vor dem Ausschalten erneut prüfen, auch nach dem Herunterfahren der VM.
+        # guard.sh prüft danach selbst noch einmal (Konzept 3.5).
         await self._ensure_no_other_vms()
         await self._control.power_off()
         deadline = self._monotonic() + self._timings.shutdown_wait_seconds
@@ -519,7 +534,7 @@ class ActionCoordinator:
 def _first_step(name: ActionName) -> ActionStep:
     return {
         ActionName.WAKE_TARGET: ActionStep.WAKING,
-        ActionName.VM_START: ActionStep.WAITING_FOR_API,
+        ActionName.VM_START: ActionStep.WAITING_FOR_VM_SERVICE,
         ActionName.VM_STOP: ActionStep.STOPPING_VM,
         ActionName.VM_FORCE_STOP: ActionStep.FORCING_VM,
         ActionName.SHUTDOWN_TARGET: ActionStep.SHUTTING_DOWN,

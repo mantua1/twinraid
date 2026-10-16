@@ -1,23 +1,17 @@
-"""Weitere laufende VMs: Auswahl und bereinigte Namen (Konzept 3.5 und 4.2)."""
+"""Weitere laufende VMs: bereinigte Namen (Konzept 3.5 und 4.2)."""
 
 import pytest
 
-from twinraid.integrations.vm_list import MAX_NAMES, display_name, other_running_vms
+from twinraid.integrations.vm_list import MAX_NAMES, display_name, display_names
 
 
-def test_only_shutoff_counts_as_off() -> None:
-    states = {"Gaming": "RUNNING", "B": "SHUTOFF", "A": "PAUSED", "C": "CRASHED"}
-    assert other_running_vms(states, "Gaming") == ("A", "C")
+def test_names_are_sorted() -> None:
+    assert display_names(["Zweite", "Erste", "Ärger"]) == ("Erste", "Zweite", "Ärger")
+    assert display_names([]) == ()
 
 
-def test_own_vm_is_never_listed() -> None:
-    assert other_running_vms({"Gaming": "RUNNING"}, "Gaming") == ()
-    assert other_running_vms({}, "Gaming") == ()
-
-
-def test_at_most_twenty_names_but_still_running() -> None:
-    states = {f"VM {i:02d}": "RUNNING" for i in range(30)}
-    names = other_running_vms(states, "Gaming")
+def test_at_most_twenty_names() -> None:
+    names = display_names(f"VM {i:02d}" for i in range(30))
     assert len(names) == MAX_NAMES
     assert names[0] == "VM 00"
 
@@ -29,6 +23,7 @@ def test_at_most_twenty_names_but_still_running() -> None:
         ("Linux\nVM", "Linux?VM"),
         ("Böse\u202eVM", "Böse?VM"),
         ("Null\x00Byte", "Null?Byte"),
+        ("Ersatz\ufffdZeichen", "Ersatz\ufffdZeichen"),
         ("   ", "?"),
         ("x" * 80, "x" * 63 + "…"),
     ],

@@ -29,20 +29,36 @@ class StatusReason(StrEnum):
     TARGET_OFFLINE = "target_offline"
     # VM: Groß wurde geweckt und ist noch nicht bereit (Konzept 4.2).
     TARGET_STARTING = "target_starting"
-    # Unraid-API (Konzept 3.5)
-    API_UNREACHABLE = "api_unreachable"
-    API_REDIRECTED = "api_redirected"
-    API_KEY_MISSING = "api_key_missing"
-    API_KEY_INVALID = "api_key_invalid"
-    API_FORBIDDEN = "api_forbidden"
-    API_CERT_UNTRUSTED = "api_cert_untrusted"
-    API_CERT_CHANGED = "api_cert_changed"
-    API_ERROR = "api_error"
-    # VM-Zustände mit Hinweis
+    # Sitzung vm-watch mit dem Key „status“ (Konzept 3.5, ab v0.4.3).
+    WATCH_CONNECTING = "watch_connecting"
+    WATCH_INTERRUPTED = "watch_interrupted"
+    SSH_KEY_MISSING = "ssh_key_missing"
+    SSH_HOST_UNTRUSTED = "ssh_host_untrusted"
+    SSH_HOST_KEY_MISMATCH = "ssh_host_key_mismatch"
+    SSH_AUTH_FAILED = "ssh_auth_failed"
+    SSH_UNREACHABLE = "ssh_unreachable"
+    SSH_DENIED = "ssh_denied"
+    SSH_FAILED = "ssh_failed"
+    GUARD_OUTDATED = "guard_outdated"
+    # Meldungen von guard.sh zur VM
+    VM_NOT_CONFIGURED = "vm_not_configured"
     VM_NOT_FOUND = "vm_not_found"
+    VM_SERVICE_UNAVAILABLE = "vm_service_unavailable"
+    # VM-Zustände mit Hinweis
     VM_PAUSED = "vm_paused"
     VM_SUSPENDED = "vm_suspended"
     VM_CRASHED = "vm_crashed"
+
+
+class StatusNotice(StrEnum):
+    """Feste Hinweise zu einer Kachel; sie ändern weder Zustand noch Aktionen (Konzept 4.1)."""
+
+    # Auf Groß ist das Plugin Unraid Connect installiert (Konzept 3.5).
+    TARGET_CONNECT_PLUGIN = "target_connect_plugin"
+    # Auf Groß ist Flash Backup von Unraid Connect aktiv.
+    TARGET_FLASH_BACKUP = "target_flash_backup"
+    # Die VM aus power.conf heißt anders als gaming_vm.unraid_vm_name.
+    VM_NAME_MISMATCH = "vm_name_mismatch"
 
 
 class ResourceInfo(StrictModel):
@@ -64,6 +80,8 @@ class ResourceStatus(StrictModel):
     # Weitere laufende VMs auf Groß außer der Gaming-VM, bereinigt (Konzept 3.5 und 4.2).
     # None: unbekannt, weil Groß aus ist oder die VM-Liste nicht lesbar war.
     other_vms_running: tuple[str, ...] | None = None
+    # Hinweise zu den Kacheln (ab v0.4.3).
+    notices: tuple[StatusNotice, ...] = ()
 
 
 NOT_CHECKED = ResourceStatus(source=UNKNOWN, target=UNKNOWN, vm=UNKNOWN, checked_at=None)

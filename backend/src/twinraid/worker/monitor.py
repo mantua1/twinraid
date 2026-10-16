@@ -1,10 +1,12 @@
 """Regelmäßige Statusprüfung im Worker (Konzept 4.1).
 
 Prüft alle 10 Sekunden und merkt sich das Ergebnis. get_status liefert
-sofort den zuletzt geprüften Stand, ohne selbst Server anzusprechen.
+sofort den zuletzt geprüften Stand, ohne selbst Server anzusprechen. Meldet
+die Sitzung vm-watch eine Änderung, prüft der Monitor sofort (Konzept 3.5).
 """
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -32,10 +34,12 @@ class StatusMonitor:
         provider: StatusProvider,
         interval: float = CHECK_INTERVAL_SECONDS,
         clock: Callable[[], datetime] = _utc_now,
+        changes: asyncio.Event | None = None,
     ) -> None:
         self._provider = provider
         self._interval = interval
         self._clock = clock
+        self._changes = changes
         self._current = NOT_CHECKED
 
     def current(self) -> ResourceStatus:
@@ -55,8 +59,19 @@ class StatusMonitor:
 
     async def run(self) -> None:
         while True:
+            if self._changes is not None:
+                self._changes.clear()
             await self.check_once()
+            await self._wait()
+
+    async def _wait(self) -> None:
+        """Bis zur nächsten regulären Prüfung, oder früher bei einer gemeldeten Änderung."""
+        if self._changes is None:
             await asyncio.sleep(self._interval)
+            return
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(self._interval):
+                await self._changes.wait()
 
     @staticmethod
     def _log_changes(before: ResourceStatus, after: ResourceStatus) -> None:
@@ -66,3 +81,6 @@ class StatusMonitor:
             new: ResourceInfo = getattr(after, name)
             if old != new:
                 logger.info("status %s: %s -> %s", name, _describe(old), _describe(new))
+        if before.notices != after.notices:
+            notices = ", ".join(notice.value for notice in after.notices) or "none"
+            logger.info("status notices: %s", notices)

@@ -33,8 +33,6 @@ class AppInfo(StrictModel):
     actions: EnabledActions
     # Für die Texte der Bestätigungsdialoge.
     vm_shutdown_timeout_minutes: int
-    # False bei webgui.scheme http: Hinweis auf unverschlüsselte Verbindung (Konzept 3.5).
-    target_connection_encrypted: bool
 
 
 class AuthState(StrictModel):

@@ -26,7 +26,7 @@ def make_handler(
     control: ActionControl | None = None,
 ) -> CommandHandler:
     config = config or load_config(EXAMPLE_CONFIG)
-    lab = MockLab(config.gaming_vm.unraid_vm_name, directory)
+    lab = MockLab(directory)
     monitor = status or StatusMonitor(lab)
     job_state = jobs or MockJobSwitch(directory / "mock-job-running")
     actions = ActionCoordinator(

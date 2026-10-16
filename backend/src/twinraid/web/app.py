@@ -395,7 +395,6 @@ def _register_api_routes(
         read_only=not (enabled.wake or enabled.vm or enabled.shutdown),
         actions=enabled,
         vm_shutdown_timeout_minutes=config.gaming_vm.shutdown_timeout_minutes,
-        target_connection_encrypted=config.servers.target.webgui.encrypted,
     )
 
     @api.get("/api/info")

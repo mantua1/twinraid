@@ -47,7 +47,6 @@ def test_info_contains_mode_and_names(tmp_path: Path) -> None:
         "read_only": False,
         "actions": {"wake": True, "vm": True, "shutdown": True},
         "vm_shutdown_timeout_minutes": 3,
-        "target_connection_encrypted": False,
     }
 
 
@@ -79,6 +78,7 @@ def test_status_from_worker(tmp_path: Path) -> None:
     body = response.json()
     assert body.pop("actions")["availability"]["vm_start"] == "target_unknown"
     assert body.pop("other_vms_running") is None
+    assert body.pop("notices") == []
     assert body == {
         "source": unknown,
         "target": unknown,

@@ -58,7 +58,8 @@ class ActionStep(StrEnum):
     """Was eine laufende Aktion gerade tut (Zwischenzustände, Konzept 4.2)."""
 
     WAKING = "waking"
-    WAITING_FOR_API = "waiting_for_api"
+    # Groß ist erreichbar; es fehlt noch eine Antwort des VM-Dienstes über vm-watch.
+    WAITING_FOR_VM_SERVICE = "waiting_for_vm_service"
     STARTING_VM = "starting_vm"
     STOPPING_VM = "stopping_vm"
     FORCING_VM = "forcing_vm"
@@ -71,19 +72,13 @@ class ActionOutcome(StrEnum):
     SUCCESS = "success"
     WOL_FAILED = "wol_failed"
     BOOT_TIMEOUT = "boot_timeout"
-    # Ursachen der Unraid-API, gleichnamig mit StatusReason (Konzept 3.5).
-    API_UNREACHABLE = "api_unreachable"
-    API_REDIRECTED = "api_redirected"
-    API_KEY_MISSING = "api_key_missing"
-    API_KEY_INVALID = "api_key_invalid"
-    API_FORBIDDEN = "api_forbidden"
-    API_CERT_UNTRUSTED = "api_cert_untrusted"
-    API_CERT_CHANGED = "api_cert_changed"
-    API_ERROR = "api_error"
+    # Meldungen von guard.sh zur VM, gleichnamig mit StatusReason (Konzept 3.5).
     VM_NOT_FOUND = "vm_not_found"
+    VM_NOT_CONFIGURED = "vm_not_configured"
+    VM_SERVICE_UNAVAILABLE = "vm_service_unavailable"
     VM_START_TIMEOUT = "vm_start_timeout"
     VM_STOP_TIMEOUT = "vm_stop_timeout"
-    # SSH mit dem Key „power“ (Konzept 5.6).
+    # SSH mit den Keys „status“ und „power“ (Konzept 5.6).
     SSH_KEY_MISSING = "ssh_key_missing"
     SSH_HOST_UNTRUSTED = "ssh_host_untrusted"
     SSH_HOST_KEY_MISMATCH = "ssh_host_key_mismatch"
@@ -91,9 +86,14 @@ class ActionOutcome(StrEnum):
     SSH_UNREACHABLE = "ssh_unreachable"
     SSH_DENIED = "ssh_denied"
     SSH_FAILED = "ssh_failed"
+    GUARD_OUTDATED = "guard_outdated"
+    # Die Sitzung vm-watch lieferte gerade keinen Stand.
+    WATCH_INTERRUPTED = "watch_interrupted"
     # Der Befehl lief auf Groß, ist dort aber gescheitert (z. B. virsh).
     REMOTE_FAILED = "remote_failed"
     SHUTDOWN_TIMEOUT = "shutdown_timeout"
+    # guard.sh lehnte poweroff ab, weil die Gaming-VM lief (ab v0.4.3).
+    VM_RUNNING = "vm_running"
     # Groß wurde nicht ausgeschaltet, weil weitere VMs liefen (ab v0.4.2).
     OTHER_VMS_RUNNING = "other_vms_running"
     # Der Worker wurde beendet, während die Aktion lief (nur im Aktionslog).

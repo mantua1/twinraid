@@ -26,7 +26,7 @@ from twinraid.shared.addresses import (
 )
 from twinraid.shared.datadirs import DataDirError, DataPaths, prepare_data_dirs
 from twinraid.shared.logs import configure_logging
-from twinraid.shared.mode import RunMode, RunModeError, resolve_run_mode
+from twinraid.shared.mode import RunModeError, resolve_run_mode
 from twinraid.shared.tls import (
     CA_EXPIRY_WARNING,
     FIRST_CA_REASON,
@@ -124,14 +124,24 @@ def log_certificate(active: ActiveCertificate, now: datetime, quiet: bool = Fals
         logger.warning("The TLS server certificate expires in %d days.", server.days_left(now))
 
 
-def log_unencrypted_api(config: TwinRaidConfig, mode: RunMode) -> None:
-    """Deutlicher Hinweis, solange die Unraid-API von Groß per http angesprochen wird."""
-    target = config.servers.target
-    if mode is RunMode.REAL and not target.webgui.encrypted:
+def remove_legacy_api_secrets(paths: DataPaths, config: TwinRaidConfig) -> None:
+    """API-Key und Fingerabdruck von Groß aus v0.4.2 löschen (Konzept 3.5, E22)."""
+    removed = False
+    for path in (paths.legacy_target_api_key, paths.legacy_target_api_cert):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("Could not remove %s: %s", path, exc)
+            continue
+        removed = True
+    if removed:
         logger.warning(
-            "The connection to %s is unencrypted (webgui.scheme: http): the API key is sent "
-            "in plain text through the server network.",
-            target.name,
+            "Removed the Unraid API key of %s: since v0.4.3 TwinRaid reads the VM through "
+            "guard.sh over SSH. Delete the key in Unraid too (Settings → Management Access → "
+            "API Keys).",
+            config.servers.target.name,
         )
 
 
@@ -174,7 +184,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     env = os.environ
     now = datetime.now(UTC)
     try:
-        mode = resolve_run_mode(env)
+        resolve_run_mode(env)
         config = load_config(runtime.config_path(env))
         if args.refresh_tls:
             return _refresh(config, now)
@@ -204,7 +214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     log_certificate(active, now)
     for host in uncovered_hosts(active.info, active.addresses):
         logger.warning("The active certificate does not cover %s.", host)
-    log_unencrypted_api(config, mode)
+    remove_legacy_api_secrets(paths, config)
     if not paths.password_file.exists():
         logger.warning("No password is set. Run inside the container: twinraid-admin set-password")
     return 0

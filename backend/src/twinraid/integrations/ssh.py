@@ -1,8 +1,9 @@
-"""SSH zu Unraid Groß mit dem Key „power“ (Konzept 3.4 und 5.6).
+"""SSH zu Unraid Groß mit den Keys „status“ und „power“ (Konzept 3.5 und 5.6).
 
-Auf Groß erzwingt authorized_keys den Aufruf von guard.sh; der hier gesendete
-Text landet dort nur in SSH_ORIGINAL_COMMAND und wird mit festen Mustern
-verglichen. Erlaubt sind "check", "poweroff" und "vm-shutdown <UUID>".
+Auf Groß erzwingt authorized_keys den Aufruf von guard.sh im passenden Modus; der
+hier gesendete Text landet dort nur in SSH_ORIGINAL_COMMAND und wird mit festen
+Texten verglichen. Parameter gibt es nicht: Welche VM gemeint ist, steht nur in
+power.conf auf Groß.
 
 Externe Programme laufen ausschließlich mit Argumentlisten, nie über eine Shell
 (CLAUDE.md, Regel 3). Die Ausgabe von ssh wird nur einer Ursache aus einer
@@ -16,6 +17,7 @@ import hashlib
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -30,20 +32,33 @@ from twinraid.shared.files import write_file_atomic
 SSH_BINARY = Path("/usr/bin/ssh")
 SSH_KEYSCAN_BINARY = Path("/usr/bin/ssh-keyscan")
 CONNECT_TIMEOUT_SECONDS = 5
+# Zeitlimits je Anfrage: die Grenze von guard.sh für virsh (Konzept 3.5) plus 15 s.
 COMMAND_TIMEOUT_SECONDS = 30.0
+VM_START_TIMEOUT_SECONDS = 105.0
+VM_FORCE_STOP_TIMEOUT_SECONDS = 75.0
+VM_SHUTDOWN_TIMEOUT_SECONDS = 45.0
 KEYSCAN_TIMEOUT_SECONDS = 15.0
 REMOTE_USER = "root"
 KEY_TYPE = "ssh-ed25519"
-POWER_KEY_COMMENT = "twinraid-power"
-GUARD_COMMAND = "/bin/bash /boot/config/twinraid/guard.sh power"
-# guard.sh antwortet auf "check" mit "twinraid-guard <Version> power ok".
-GUARD_CHECK_PATTERN = re.compile(r"twinraid-guard (\d+) power ok", re.ASCII)
-# Exit-Code von guard.sh für abgelehnte Anfragen; ssh selbst meldet Fehler mit 255.
+GUARD_PATH = "/boot/config/twinraid/guard.sh"
+# TwinRaid 0.4.3 braucht guard.sh Version 2 (Modus status, Befehle ohne Parameter).
+REQUIRED_GUARD_VERSION = 2
+# guard.sh antwortet auf "check" mit "twinraid-guard <Version> <Modus> ok".
+GUARD_CHECK_PATTERN = re.compile(r"twinraid-guard (\d+) (status|power) ok", re.ASCII)
+# Exit-Codes von guard.sh: 2 abgelehnt, 3 erlaubt, aber von einer Prüfung abgewiesen.
+# ssh selbst meldet Fehler mit 255.
 GUARD_DENIED_EXIT = 2
+GUARD_REFUSED_EXIT = 3
 SSH_ERROR_EXIT = 255
-_UUID_PATTERN = re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.ASCII
-)
+_REFUSAL_PATTERN = re.compile(r"twinraid-guard: refused ([a-z-]+)", re.ASCII)
+_REFUSALS: dict[str, ActionOutcome] = {
+    "vm-not-configured": ActionOutcome.VM_NOT_CONFIGURED,
+    "vm-running": ActionOutcome.VM_RUNNING,
+    "other-vms-running": ActionOutcome.OTHER_VMS_RUNNING,
+    "vm-state-unknown": ActionOutcome.VM_SERVICE_UNAVAILABLE,
+    # Auf Groß laufen schon zwei vm-watch-Schleifen; eine alte endet bald.
+    "watch-busy": ActionOutcome.WATCH_INTERRUPTED,
+}
 _MAX_OUTPUT_BYTES = 64 * 1024
 # Feste Meldungen von OpenSSH (LC_ALL=C) und ihre Bedeutung.
 _HOST_KEY_MESSAGES = ("Host key verification failed", "REMOTE HOST IDENTIFICATION HAS CHANGED")
@@ -56,6 +71,32 @@ _UNREACHABLE_MESSAGES = (
     "Could not resolve",
 )
 _CLOSED_MESSAGES = ("closed by remote host", "Connection closed")
+# Feste Umgebung: englische Meldungen für classify(), keine geerbten Variablen.
+SSH_ENVIRONMENT = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
+
+
+class GuardKey(StrEnum):
+    """Die SSH-Keys von TwinRaid; jeder erzwingt auf Groß den gleichnamigen Modus von guard.sh."""
+
+    # Nur check und vm-watch, verändert nichts (ab v0.4.3).
+    STATUS = "status"
+    # VM starten, herunterfahren, erzwingen und Groß ausschalten.
+    POWER = "power"
+
+    @property
+    def comment(self) -> str:
+        return f"twinraid-{self.value}"
+
+    @property
+    def guard_command(self) -> str:
+        return f"/bin/bash {GUARD_PATH} {self.value}"
+
+
+def key_files(paths: DataPaths, key: GuardKey) -> tuple[Path, Path]:
+    """Privater und öffentlicher Teil eines Keys in /data/secrets."""
+    if key is GuardKey.STATUS:
+        return paths.ssh_status_key, paths.ssh_status_public_key
+    return paths.ssh_power_key, paths.ssh_power_public_key
 
 
 class SshError(Exception):
@@ -79,9 +120,18 @@ class SshTarget:
     known_hosts: Path
 
     @classmethod
-    def of(cls, config: TwinRaidConfig, paths: DataPaths) -> SshTarget:
+    def of(cls, config: TwinRaidConfig, paths: DataPaths, key: GuardKey) -> SshTarget:
         target = config.servers.target
-        return cls(str(target.host), target.ssh_port, paths.ssh_power_key, paths.target_known_hosts)
+        private, _public = key_files(paths, key)
+        return cls(str(target.host), target.ssh_port, private, paths.target_known_hosts)
+
+    def missing(self) -> SshError | None:
+        """Fehlt der Key oder der bestätigte Hostkey, wird keine Verbindung versucht."""
+        if not self.key.is_file():
+            return SshError(ActionOutcome.SSH_KEY_MISSING, "no SSH key")
+        if not self.known_hosts.is_file():
+            return SshError(ActionOutcome.SSH_HOST_UNTRUSTED, "host key not confirmed")
+        return None
 
 
 def ssh_arguments(
@@ -125,6 +175,12 @@ def classify(returncode: int, stderr: str) -> SshError | None:
         return None
     if returncode == GUARD_DENIED_EXIT:
         return SshError(ActionOutcome.SSH_DENIED, "guard.sh rejected the request")
+    if returncode == GUARD_REFUSED_EXIT:
+        match = _REFUSAL_PATTERN.search(stderr)
+        outcome = _REFUSALS.get(match.group(1)) if match is not None else None
+        if outcome is not None:
+            return SshError(outcome, "guard.sh refused the request")
+        return SshError(ActionOutcome.REMOTE_FAILED, "remote exit code 3")
     if returncode != SSH_ERROR_EXIT:
         return SshError(ActionOutcome.REMOTE_FAILED, f"remote exit code {returncode}")
     if any(message in stderr for message in _HOST_KEY_MESSAGES):
@@ -143,8 +199,7 @@ async def _run(arguments: list[str], time_limit: float) -> tuple[int, str, str]:
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        # Feste Umgebung: englische Meldungen für classify(), keine geerbten Variablen.
-        env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
+        env=SSH_ENVIRONMENT,
     )
     try:
         async with asyncio.timeout(time_limit):
@@ -163,8 +218,8 @@ async def _run(arguments: list[str], time_limit: float) -> tuple[int, str, str]:
     )
 
 
-class SshPower:
-    """Die drei Anfragen an guard.sh im Modus "power"."""
+class GuardClient:
+    """Einzelne Anfragen an guard.sh; jede ist eine eigene Anmeldung mit genau einem Key."""
 
     def __init__(
         self,
@@ -178,26 +233,16 @@ class SshPower:
 
     async def check(self) -> str:
         """Verbindungstest ohne Wirkung; gibt die erste Zeile der Antwort zurück."""
-        stdout = await self._request(["check"])
+        stdout = await self._request("check", self._timeout)
         return stdout.strip().splitlines()[0] if stdout.strip() else ""
 
-    async def poweroff(self) -> None:
-        await self._request(["poweroff"])
-
-    async def vm_shutdown(self, uuid: str) -> None:
-        """ACPI-Signal an die VM (virsh shutdown); erzwingt nichts."""
-        if _UUID_PATTERN.fullmatch(uuid) is None:
-            raise SshError(ActionOutcome.INTERNAL_ERROR, "invalid VM UUID")
-        await self._request(["vm-shutdown", uuid])
-
-    async def _request(self, request: list[str]) -> str:
-        if not self.target.key.is_file():
-            raise SshError(ActionOutcome.SSH_KEY_MISSING, "no SSH key 'power'")
-        if not self.target.known_hosts.is_file():
-            raise SshError(ActionOutcome.SSH_HOST_UNTRUSTED, "host key not confirmed")
-        arguments = ssh_arguments(self.target, request, self._binary)
+    async def _request(self, request: str, time_limit: float) -> str:
+        missing = self.target.missing()
+        if missing is not None:
+            raise missing
+        arguments = ssh_arguments(self.target, [request], self._binary)
         try:
-            returncode, stdout, stderr = await _run(arguments, self._timeout)
+            returncode, stdout, stderr = await _run(arguments, time_limit)
         except TimeoutError:
             raise SshError(ActionOutcome.SSH_UNREACHABLE, "ssh timed out") from None
         except OSError:
@@ -206,6 +251,24 @@ class SshPower:
         if error is not None:
             raise error
         return stdout
+
+
+class SshPower(GuardClient):
+    """Die Aktionen im Modus "power"; die VM bestimmt power.conf auf Groß."""
+
+    async def vm_start(self) -> None:
+        await self._request("vm-start", max(self._timeout, VM_START_TIMEOUT_SECONDS))
+
+    async def vm_shutdown(self) -> None:
+        """ACPI-Signal an die VM (virsh shutdown); erzwingt nichts (E8)."""
+        await self._request("vm-shutdown", max(self._timeout, VM_SHUTDOWN_TIMEOUT_SECONDS))
+
+    async def vm_force_stop(self) -> None:
+        await self._request("vm-force-stop", max(self._timeout, VM_FORCE_STOP_TIMEOUT_SECONDS))
+
+    async def poweroff(self) -> None:
+        """guard.sh schaltet Groß nur aus, wenn keine VM läuft (Konzept 3.5)."""
+        await self._request("poweroff", self._timeout)
 
 
 # --- Hostkey und Schlüssel (für twinraid-admin) -------------------------------------
@@ -274,24 +337,24 @@ def save_known_hosts(path: Path, host_key: HostKey) -> None:
     write_file_atomic(path, host_key.known_hosts_line.encode("ascii") + b"\n", 0o600)
 
 
-def generate_power_key(private_path: Path, public_path: Path) -> str:
-    """Erzeugt den ed25519-Key „power“ (beide Dateien 0600); gibt den öffentlichen Teil zurück."""
-    key = Ed25519PrivateKey.generate()
-    private = key.private_bytes(
+def generate_key(private_path: Path, public_path: Path, key: GuardKey) -> str:
+    """Erzeugt einen ed25519-Key (beide Dateien 0600); gibt den öffentlichen Teil zurück."""
+    secret = Ed25519PrivateKey.generate()
+    private = secret.private_bytes(
         serialization.Encoding.PEM,
         serialization.PrivateFormat.OpenSSH,
         serialization.NoEncryption(),
     )
-    public = key.public_key().public_bytes(
+    public = secret.public_key().public_bytes(
         serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH
     )
-    public_line = f"{public.decode('ascii')} {POWER_KEY_COMMENT}"
+    public_line = f"{public.decode('ascii')} {key.comment}"
     write_file_atomic(private_path, private, 0o600)
     write_file_atomic(public_path, public_line.encode("ascii") + b"\n", 0o600)
     return public_line
 
 
-def read_public_key(public_path: Path) -> str | None:
+def read_public_key(public_path: Path, key: GuardKey) -> str | None:
     try:
         line = public_path.read_text(encoding="ascii").strip()
     except FileNotFoundError, UnicodeDecodeError:
@@ -299,13 +362,13 @@ def read_public_key(public_path: Path) -> str | None:
     parts = line.split()
     if len(parts) < 2 or parts[0] != KEY_TYPE or _key_blob_type(parts[1]) != KEY_TYPE:
         return None
-    return f"{parts[0]} {parts[1]} {POWER_KEY_COMMENT}"
+    return f"{parts[0]} {parts[1]} {key.comment}"
 
 
-def authorized_keys_line(public_line: str, addresses: Sequence[IpAddress]) -> str:
+def authorized_keys_line(public_line: str, addresses: Sequence[IpAddress], key: GuardKey) -> str:
     """Zeile für /boot/config/ssh/root/authorized_keys auf Groß (Konzept 5.6).
 
     Unraids Prüfung beim Speichern (checkKey in UserEdit.page, Unraid 7.3) akzeptiert sie.
     """
     sources = ",".join(str(address) for address in addresses)
-    return f'restrict,from="{sources}",command="{GUARD_COMMAND}" {public_line}'
+    return f'restrict,from="{sources}",command="{key.guard_command}" {public_line}'

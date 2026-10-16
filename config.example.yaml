@@ -1,7 +1,7 @@
 # TwinRaid-Konfiguration – Beispiel.
 # Kopieren nach /mnt/user/appdata/twinraid/config/twinraid.yaml und anpassen.
 # Im Container wird die Datei read-only nach /config/twinraid.yaml gemountet.
-# Secrets (Passwort, API-Keys, SSH-Keys) gehören NICHT hierher (siehe Konzept 5.5).
+# Secrets (Passwort, SSH-Keys) gehören NICHT hierher (siehe Konzept 5.5).
 # Alle Werte hier sind Beispielwerte, keine echten Adressen.
 
 web:
@@ -25,25 +25,27 @@ servers:
   source:                      # Unraid Klein – hier läuft der Container
     name: "Unraid Klein"
     host: 192.168.10.10
-    webgui:                    # wie „SSL/TLS verwenden“ in Unraid: Nein → http, Ja → https
+    webgui:                    # ohne Wirkung: Klein wird nicht geprüft
       scheme: http
-      port: 80                 # optional, Standard 80 bei http, 443 bei https
+      port: 80
   target:                      # Unraid Groß
     name: "Unraid Groß"
     host: 192.168.10.11
-    webgui:
-      scheme: http
-      port: 80
+    webgui:                    # nur für die Online-Prüfung (TCP auf diesen Port)
+      scheme: http             # wie „SSL/TLS verwenden“ in Unraid: Nein → http, Ja → https
+      port: 80                 # optional, Standard 80 bei http, 443 bei https
     mac: "AA:BB:CC:DD:EE:FF"    # für Wake-on-LAN
     # Broadcast-Adresse für Wake-on-LAN; ohne Angabe aus dem eigenen Netz abgeleitet.
     # Nur nötig, wenn Groß in einem anderen Netz liegt als TwinRaid.
     # wol_broadcast: 192.168.10.255
     boot_timeout_minutes: 5    # so lange wartet TwinRaid nach dem Wecken auf Groß
-    # ssh_port: 22             # optional, Standard 22 (Herunterfahren per SSH)
+    # ssh_port: 22             # optional, Standard 22 (Status, VM und Herunterfahren per SSH)
 
 gaming_vm:
   display_name: "Gaming-VM"
-  unraid_vm_name: "Windows 11 Gaming"  # genau wie im Reiter VMs von Groß
+  # Die VM selbst steht nur auf Groß in /boot/config/twinraid/power.conf (UUID).
+  # Optional: ihr Name genau wie im Reiter VMs von Groß, zum Abgleich mit power.conf.
+  unraid_vm_name: "Windows 11 Gaming"
   shutdown_timeout_minutes: 3  # danach wird "Erzwingen" angeboten
 
 # Aktionen im Echtbetrieb (TWINRAID_MODE=real) einzeln freischalten. Standard: alles

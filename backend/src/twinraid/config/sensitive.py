@@ -35,7 +35,9 @@ def sensitive_values(
         values.add(str(target.wol_broadcast))
     values.update({target.mac, target.mac.replace(":", "-"), target.mac.replace(":", "")})
     values.update({source.name, target.name})
-    values.update({config.gaming_vm.display_name, config.gaming_vm.unraid_vm_name})
+    values.add(config.gaming_vm.display_name)
+    if config.gaming_vm.unraid_vm_name is not None:
+        values.add(config.gaming_vm.unraid_vm_name)
 
     sync = config.sync
     values.update(sync.shares)

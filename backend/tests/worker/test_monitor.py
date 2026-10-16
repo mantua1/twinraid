@@ -1,6 +1,9 @@
 """Statusprüfung im Worker und Antwort auf get_status (Konzept 4.1)."""
 
+import asyncio
+import contextlib
 import logging
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,6 +17,7 @@ from twinraid.shared.status import (
     ResourceInfo,
     ResourceState,
     ResourceStatus,
+    StatusNotice,
     StatusReason,
 )
 from twinraid.worker.monitor import StatusMonitor
@@ -55,7 +59,7 @@ async def test_failed_check_does_not_stop_the_worker(caplog: pytest.LogCaptureFi
 
 
 async def test_changes_are_logged_once(caplog: pytest.LogCaptureFixture) -> None:
-    invalid = ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.API_KEY_INVALID)
+    invalid = ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.SSH_AUTH_FAILED)
     monitor = StatusMonitor(
         SequenceProvider(_status(ONLINE), _status(invalid), _status(invalid)), clock=lambda: NOW
     )
@@ -65,7 +69,7 @@ async def test_changes_are_logged_once(caplog: pytest.LogCaptureFixture) -> None
     vm_lines = [r.getMessage() for r in caplog.records if "status vm" in r.getMessage()]
     assert vm_lines == [
         "status vm: unknown -> online",
-        "status vm: online -> unknown (api_key_invalid)",
+        "status vm: online -> unknown (ssh_auth_failed)",
     ]
 
 
@@ -85,3 +89,67 @@ async def test_get_status_combines_monitor_job_and_password(tmp_path: Path) -> N
     assert isinstance(response, OkResponse)
     assert isinstance(response.result, dict)
     assert response.result["job_running"] is True
+
+
+class CountingProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get_status(self) -> ResourceStatus:
+        self.calls += 1
+        return _status(ONLINE)
+
+
+async def _wait_for(provider: CountingProvider, calls: int, seconds: float = 2.0) -> float:
+    started = time.monotonic()
+    while provider.calls < calls:
+        if time.monotonic() - started > seconds:
+            pytest.fail(f"only {provider.calls} checks")
+        await asyncio.sleep(0.01)
+    return time.monotonic() - started
+
+
+async def test_a_reported_change_triggers_a_check_at_once() -> None:
+    """vm-watch meldet eine Änderung: nicht bis zur nächsten regulären Prüfung warten."""
+    provider = CountingProvider()
+    changes = asyncio.Event()
+    monitor = StatusMonitor(provider, interval=60, clock=lambda: NOW, changes=changes)
+    task = asyncio.create_task(monitor.run())
+    try:
+        await _wait_for(provider, 1)
+        changes.set()
+        assert await _wait_for(provider, 2) < 1
+        # Danach wieder Ruhe bis zur nächsten Meldung.
+        await asyncio.sleep(0.2)
+        assert provider.calls == 2
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_without_changes_the_interval_applies() -> None:
+    provider = CountingProvider()
+    monitor = StatusMonitor(provider, interval=0.05, clock=lambda: NOW, changes=asyncio.Event())
+    task = asyncio.create_task(monitor.run())
+    try:
+        await _wait_for(provider, 3)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+async def test_notice_changes_are_logged(caplog: pytest.LogCaptureFixture) -> None:
+    with_notice = _status(ONLINE).model_copy(
+        update={"notices": (StatusNotice.TARGET_CONNECT_PLUGIN,)}
+    )
+    monitor = StatusMonitor(
+        SequenceProvider(_status(ONLINE), with_notice, with_notice, _status(ONLINE)),
+        clock=lambda: NOW,
+    )
+    with caplog.at_level(logging.INFO, logger="twinraid.worker.monitor"):
+        for _ in range(4):
+            await monitor.check_once()
+    lines = [r.getMessage() for r in caplog.records if "notices" in r.getMessage()]
+    assert lines == ["status notices: target_connect_plugin", "status notices: none"]

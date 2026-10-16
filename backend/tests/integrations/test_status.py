@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import EXAMPLE_CONFIG
-from twinraid.config import load_config
+from tests.support.watch import StubWatch, report
+from twinraid.config import TwinRaidConfig, load_config
 from twinraid.integrations.control import RealControl
 from twinraid.integrations.factory import build_integrations, build_job_state
 from twinraid.integrations.jobs import NoJobs
@@ -17,47 +18,28 @@ from twinraid.integrations.mocks.lab import MockLab
 from twinraid.integrations.mocks.status import SCENARIO, STEP_SECONDS, MockStatusProvider
 from twinraid.integrations.network import tcp_reachable
 from twinraid.integrations.status import RealStatusProvider, map_vm_state
-from twinraid.integrations.unraid_api import UnraidApiError
+from twinraid.integrations.vm_watch import WatchReport
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.mode import RunMode
-from twinraid.shared.status import ResourceInfo, ResourceState, StatusReason
+from twinraid.shared.status import (
+    ResourceInfo,
+    ResourceState,
+    StatusNotice,
+    StatusReason,
+)
 
 pytestmark = pytest.mark.anyio
 CONFIG = load_config(EXAMPLE_CONFIG)
 NOW = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
-
-
-GAMING = "Windows 11 Gaming"  # gaming_vm.unraid_vm_name aus config.example.yaml
-
-
-class FakeApi:
-    def __init__(
-        self,
-        state: str | None = "RUNNING",
-        error: StatusReason | None = None,
-        others: dict[str, str] | None = None,
-    ) -> None:
-        self.state = state
-        self.error = error
-        self.others = others or {}
-        self.calls = 0
-
-    async def domain_states(self) -> dict[str, str]:
-        self.calls += 1
-        if self.error is not None:
-            raise UnraidApiError(self.error, "test")
-        states = dict(self.others)
-        if self.state is not None:
-            states[GAMING] = self.state
-        return states
-
-
 TARGET = "192.168.10.11"  # servers.target.host aus config.example.yaml
 RUNS_HERE = ResourceInfo(state=ResourceState.ONLINE, reason=StatusReason.RUNS_HERE)
 
 
 def _provider(
-    api: FakeApi, target_up: bool, checked: list[str] | None = None
+    watch: StubWatch,
+    target_up: bool,
+    checked: list[str] | None = None,
+    config: TwinRaidConfig = CONFIG,
 ) -> RealStatusProvider:
     async def tcp(host: str, port: int) -> bool:
         assert port == 80  # webgui aus config.example.yaml
@@ -66,32 +48,34 @@ def _provider(
         assert host == TARGET, "only Unraid Groß is checked over TCP"
         return target_up
 
-    return RealStatusProvider(CONFIG, api, tcp_check=tcp, clock=lambda: NOW)
+    return RealStatusProvider(config, watch, tcp_check=tcp, clock=lambda: NOW)
 
 
 async def test_everything_online() -> None:
-    api = FakeApi("RUNNING")
-    status = await _provider(api, target_up=True).get_status()
+    watch = StubWatch()
+    status = await _provider(watch, target_up=True).get_status()
     assert status.source == RUNS_HERE
     assert status.target == ResourceInfo(state=ResourceState.ONLINE)
     assert status.vm == ResourceInfo(state=ResourceState.ONLINE)
     assert status.checked_at == NOW
     assert status.other_vms_running == ()
-    assert api.calls == 1
+    assert status.notices == ()
+    # Die Sitzung erfährt jedes Ergebnis der TCP-Prüfung.
+    assert watch.online_calls == [True]
 
 
 async def test_source_is_online_without_a_check() -> None:
     """TwinRaid läuft auf Klein: kein TCP-Check von Klein, auch wenn Groß offline ist."""
     checked: list[str] = []
     for target_up in (True, False):
-        status = await _provider(FakeApi(), target_up, checked).get_status()
+        status = await _provider(StubWatch(), target_up, checked).get_status()
         assert status.source == RUNS_HERE
     assert checked == [TARGET, TARGET]
 
 
-async def test_target_offline_means_vm_off_without_asking_the_api() -> None:
-    api = FakeApi()
-    status = await _provider(api, target_up=False).get_status()
+async def test_target_offline_means_vm_off_without_a_session() -> None:
+    watch = StubWatch()
+    status = await _provider(watch, target_up=False).get_status()
     assert status.target == ResourceInfo(
         state=ResourceState.OFFLINE, reason=StatusReason.UNREACHABLE
     )
@@ -99,62 +83,98 @@ async def test_target_offline_means_vm_off_without_asking_the_api() -> None:
         state=ResourceState.OFFLINE, reason=StatusReason.TARGET_OFFLINE
     )
     assert status.other_vms_running is None
-    assert api.calls == 0
+    assert status.notices == ()
+    assert watch.online_calls == [False]
 
 
 @pytest.mark.parametrize(
     "reason",
     [
-        StatusReason.API_UNREACHABLE,
-        StatusReason.API_KEY_MISSING,
-        StatusReason.API_KEY_INVALID,
-        StatusReason.API_FORBIDDEN,
-        StatusReason.API_CERT_UNTRUSTED,
-        StatusReason.API_CERT_CHANGED,
-        StatusReason.API_REDIRECTED,
-        StatusReason.API_ERROR,
+        StatusReason.WATCH_CONNECTING,
+        StatusReason.WATCH_INTERRUPTED,
+        StatusReason.SSH_KEY_MISSING,
+        StatusReason.SSH_HOST_UNTRUSTED,
+        StatusReason.SSH_HOST_KEY_MISMATCH,
+        StatusReason.SSH_AUTH_FAILED,
+        StatusReason.SSH_UNREACHABLE,
+        StatusReason.SSH_DENIED,
+        StatusReason.SSH_FAILED,
+        StatusReason.GUARD_OUTDATED,
     ],
 )
-async def test_api_problems_are_distinguishable(reason: StatusReason) -> None:
-    """Server online, aber die API scheitert: die Ursache steht beim VM-Status."""
-    api = FakeApi(error=reason)
-    status = await _provider(api, target_up=True).get_status()
+async def test_session_problems_are_distinguishable(reason: StatusReason) -> None:
+    """Server online, aber die Sitzung liefert keinen Stand: die Ursache steht beim VM-Status."""
+    watch = StubWatch()
+    watch.show(reason)
+    status = await _provider(watch, target_up=True).get_status()
     assert status.target.state is ResourceState.ONLINE
     assert status.vm == ResourceInfo(state=ResourceState.UNKNOWN, reason=reason)
-    # Ohne lesbare VM-Liste ist auch unbekannt, ob weitere VMs laufen.
+    # Ohne Stand ist auch unbekannt, ob weitere VMs laufen.
     assert status.other_vms_running is None
 
 
-async def test_vm_not_found() -> None:
-    api = FakeApi(state=None, others={"Andere VM": "RUNNING"})
-    status = await _provider(api, target_up=True).get_status()
+@pytest.mark.parametrize(
+    ("state", "reason"),
+    [
+        ("NOT_CONFIGURED", StatusReason.VM_NOT_CONFIGURED),
+        ("NOT_FOUND", StatusReason.VM_NOT_FOUND),
+        ("LIBVIRT_DOWN", StatusReason.VM_SERVICE_UNAVAILABLE),
+        ("UNKNOWN", StatusReason.VM_SERVICE_UNAVAILABLE),
+    ],
+)
+async def test_guard_reports_are_distinguishable(state: str, reason: StatusReason) -> None:
+    watch = StubWatch()
+    watch.show(report(state, others=None, name=None))
+    status = await _provider(watch, target_up=True).get_status()
+    assert status.vm == ResourceInfo(state=ResourceState.UNKNOWN, reason=reason)
+    assert status.other_vms_running is None
+
+
+async def test_vm_not_found_still_lists_other_vms() -> None:
+    watch = StubWatch()
+    watch.show(report("NOT_FOUND", others=("Andere VM",), name=None))
+    status = await _provider(watch, target_up=True).get_status()
     assert status.vm == ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.VM_NOT_FOUND)
     assert status.other_vms_running == ("Andere VM",)
 
 
-async def test_other_running_vms() -> None:
-    """Jeder Zustand außer SHUTOFF zählt als laufend (Konzept 4.2, ab v0.4.2)."""
-    others = {
-        "Aus": "SHUTOFF",
-        "Pausiert": "PAUSED",
-        "Leerlauf": "IDLE",
-        "Ruhezustand": "PMSUSPENDED",
-        "Abgestürzt": "CRASHED",
-        "Läuft": "RUNNING",
-        "Fährt herunter": "SHUTDOWN",
-        "Ohne Zustand": "NOSTATE",
-    }
-    status = await _provider(FakeApi("SHUTOFF", others=others), target_up=True).get_status()
-    assert status.other_vms_running == (
-        "Abgestürzt",
-        "Fährt herunter",
-        "Leerlauf",
-        "Läuft",
-        "Ohne Zustand",
-        "Pausiert",
-        "Ruhezustand",
-    )
+async def test_other_running_vms_come_from_the_session() -> None:
+    watch = StubWatch()
+    watch.show(report("SHUTOFF", others=("Abgestürzt", "Läuft")))
+    status = await _provider(watch, target_up=True).get_status()
+    assert status.other_vms_running == ("Abgestürzt", "Läuft")
     assert status.vm == ResourceInfo(state=ResourceState.OFFLINE)
+
+
+@pytest.mark.parametrize(
+    ("value", "notices"),
+    [
+        (report(connect_plugin=True), (StatusNotice.TARGET_CONNECT_PLUGIN,)),
+        (report(flash_backup="active"), (StatusNotice.TARGET_FLASH_BACKUP,)),
+        (
+            report(connect_plugin=True, flash_backup="active"),
+            (StatusNotice.TARGET_CONNECT_PLUGIN, StatusNotice.TARGET_FLASH_BACKUP),
+        ),
+        (report(flash_backup="unknown"), ()),
+        (report(name="Andere VM"), (StatusNotice.VM_NAME_MISMATCH,)),
+        (report(name=None), ()),
+    ],
+)
+async def test_notices(value: WatchReport, notices: tuple[StatusNotice, ...]) -> None:
+    watch = StubWatch()
+    watch.show(value)
+    status = await _provider(watch, target_up=True).get_status()
+    assert status.notices == notices
+
+
+async def test_no_name_check_without_unraid_vm_name() -> None:
+    config = CONFIG.model_copy(
+        update={"gaming_vm": CONFIG.gaming_vm.model_copy(update={"unraid_vm_name": None})}
+    )
+    watch = StubWatch()
+    watch.show(report(name="Irgendein Name"))
+    status = await _provider(watch, target_up=True, config=config).get_status()
+    assert status.notices == ()
 
 
 @pytest.mark.parametrize(
@@ -197,17 +217,20 @@ async def test_mock_scenario_cycles_through_all_states() -> None:
     provider = MockStatusProvider(monotonic=lambda: now[0], clock=lambda: NOW)
     seen_states: set[ResourceState] = set()
     seen_reasons: set[StatusReason] = set()
+    seen_notices: set[StatusNotice] = set()
     for step in range(len(SCENARIO) + 1):
         now[0] = step * STEP_SECONDS
         status = await provider.get_status()
         assert status.checked_at == NOW
+        seen_notices.update(status.notices)
         for info in (status.source, status.target, status.vm):
             seen_states.add(info.state)
             if info.reason is not None:
                 seen_reasons.add(info.reason)
-    # Konzept 6.4: jeder Zustand und jede Ursache mindestens einmal.
+    # Konzept 6.4: jeder Zustand, jede Ursache und jeder Hinweis mindestens einmal.
     assert seen_states == set(ResourceState)
     assert seen_reasons == set(StatusReason)
+    assert seen_notices == set(StatusNotice)
     # Nach einem Durchlauf beginnt der Ablauf von vorn.
     assert provider.step() == 0
 
@@ -228,9 +251,14 @@ def test_factory_by_mode(tmp_path: Path) -> None:
     mock = build_integrations(RunMode.MOCK, CONFIG, paths, tmp_path, None)
     assert isinstance(mock.status, MockLab)
     assert mock.control is mock.status
+    assert mock.background == ()
+    assert mock.status_changed is None
     real = build_integrations(RunMode.REAL, CONFIG, paths, tmp_path, None)
     assert isinstance(real.status, RealStatusProvider)
     assert isinstance(real.control, RealControl)
+    # Im Modus real läuft die Sitzung vm-watch im Hintergrund und meldet Änderungen.
+    assert len(real.background) == 1
+    assert real.status_changed is not None
     # Den Rundlauf gibt es nur in der Simulation.
     (tmp_path / "mock-tour").touch()
     assert mock.tour_active() is True
