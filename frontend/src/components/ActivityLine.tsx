@@ -15,7 +15,12 @@ interface ActivityLineProps {
 type Hint = { key: "forceNow" } | { key: "forceAndShutdownUntil"; until: string };
 
 // Ergebnisse, deren Hinweis vom aktuellen Status abhängt (Konzept 4.2, ab v0.4.1).
-const CONDITIONAL = new Set(["vm_stop_timeout", "boot_timeout", "shutdown_timeout"]);
+const CONDITIONAL = new Set([
+  "vm_stop_timeout",
+  "boot_timeout",
+  "shutdown_timeout",
+  "other_vms_running",
+]);
 
 /**
  * Der Hinweis, was jetzt zu tun ist, solange er nach dem aktuellen Status zutrifft.
@@ -24,7 +29,7 @@ const CONDITIONAL = new Set(["vm_stop_timeout", "boot_timeout", "shutdown_timeou
 function currentHint(
   last: ActionResult,
   status: StatusSnapshot | null,
-): Hint | "checkWake" | "checkShutdown" | null | undefined {
+): Hint | "checkWake" | "checkShutdown" | "stillApplies" | null | undefined {
   if (!CONDITIONAL.has(last.outcome)) {
     return undefined;
   }
@@ -39,6 +44,9 @@ function currentHint(
       return status.actions.availability.vm_force_stop === null ? { key: "forceNow" } : null;
     case "boot_timeout":
       return status.target.state === "offline" ? "checkWake" : null;
+    case "other_vms_running":
+      // Die Begründung mit den Namen steht schon am gesperrten Button.
+      return status.other_vms_running?.length ? "stillApplies" : null;
     default:
       return status.target.state === "online" ? "checkShutdown" : null;
   }
@@ -73,7 +81,7 @@ export function ActivityLine({ activity, status, tile, vmName }: ActivityLinePro
   let hintText: string | null = null;
   if (hint === "checkWake" || hint === "checkShutdown") {
     hintText = t(`actions.hints.${hint}`);
-  } else if (hint) {
+  } else if (hint && hint !== "stillApplies") {
     const own =
       hint.key === "forceNow"
         ? t("actions.hints.forceNow")

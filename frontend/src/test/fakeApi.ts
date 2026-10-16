@@ -57,6 +57,7 @@ export const STATUS: StatusSnapshot = {
   job_running: false,
   password_set: true,
   actions: actionsSnapshot(),
+  other_vms_running: null,
 };
 
 /** Groß und VM laufen: Herunterfahren ist möglich, Erzwingen noch nicht. */
@@ -64,6 +65,7 @@ export const STATUS_VM_RUNNING: StatusSnapshot = {
   ...STATUS,
   target: { state: "online", reason: null },
   vm: { state: "online", reason: null },
+  other_vms_running: [],
   actions: actionsSnapshot({
     wake_target: "target_online",
     shutdown_target: null,

@@ -264,7 +264,8 @@
       "vm_unknown": "der Zustand der VM ist unbekannt",
       "force_not_yet": "erst nach Ablauf der Wartezeit nach „Herunterfahren“ möglich",
       "tour": "im Rundlauf der Simulation nicht verfügbar",
-      "not_offered": "nur kurz nach einem an der VM gescheiterten Herunterfahren des Servers möglich"
+      "not_offered": "nur kurz nach einem an der VM gescheiterten Herunterfahren des Servers möglich",
+      "other_vms_running": "Auf {{target}} laufen noch weitere VMs: {{vms}}. Bitte fahre sie zuerst über die Unraid-Oberfläche herunter. Zur Sicherheit schaltet TwinRaid den Server nicht aus, solange andere VMs laufen, damit keine Daten verloren gehen."
     },
     "outcomes": {
       "success": "erfolgreich",
@@ -291,12 +292,13 @@
       "remote_failed": "Der Befehl ist auf dem Server fehlgeschlagen.",
       "shutdown_timeout": "Der Server war nach 15 Minuten noch erreichbar.",
       "interrupted": "abgebrochen, weil TwinRaid neu gestartet wurde",
-      "internal_error": "Interner Fehler – bitte das Container-Log prüfen."
+      "internal_error": "Interner Fehler – bitte das Container-Log prüfen.",
+      "other_vms_running": "Der Server wurde nicht ausgeschaltet, weil noch weitere VMs liefen."
     },
     "last": "Zuletzt: {{action}} – {{outcome}} ({{time}})",
     "hint": "{{actions}}: {{reason}}",
     "forceAt": "möglich ab {{time}}",
-    "rejected": "Nicht ausgeführt: {{reason}}.",
+    "rejected": "Nicht ausgeführt: {{reason}}",
     "rejectedUnknown": "vom Server abgelehnt",
     "requestFailed": "Die Anfrage ist fehlgeschlagen. Bitte erneut versuchen.",
     "dialog": {

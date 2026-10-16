@@ -24,6 +24,20 @@ interface ActionPanelProps {
   actions: PanelAction[];
   snapshot: ActionsSnapshot | null;
   onRun: (name: ActionName) => Promise<ActionRequestResult>;
+  // Werte für Begründungen: Servername und weitere VMs (other_vms_running).
+  blockerValues?: BlockerValues;
+}
+
+export interface BlockerValues {
+  target: string;
+  vms: string;
+}
+
+const NO_VALUES: BlockerValues = { target: "", vms: "" };
+
+/** Ein ganzer Satz endet mit Punkt; Teilsätze bekommen ihn hier. */
+function sentence(text: string): string {
+  return /[.!?]$/.test(text) ? text : `${text}.`;
 }
 
 // Gründe, die nicht schon aus dem Status hervorgehen, werden unter den Buttons genannt.
@@ -33,11 +47,17 @@ const EXPLAINED = new Set<ActionBlocker>([
   "target_unknown",
   "vm_unknown",
   "force_not_yet",
+  "other_vms_running",
   "tour",
 ]);
 
 /** Buttons einer Kachel. Verfügbar ist nur, was der Worker als möglich meldet (Konzept 4.2). */
-export function ActionPanel({ actions, snapshot, onRun }: ActionPanelProps) {
+export function ActionPanel({
+  actions,
+  snapshot,
+  onRun,
+  blockerValues = NO_VALUES,
+}: ActionPanelProps) {
   const { t, i18n } = useTranslation();
   const [pending, setPending] = useState<ActionName | null>(null);
   // Stand beim Absenden einer angenommenen Aktion: Bis der Live-Status ihn ersetzt,
@@ -65,8 +85,8 @@ export function ActionPanel({ actions, snapshot, onRun }: ActionPanelProps) {
           const reason =
             result.reason === "rejected"
               ? t("actions.rejectedUnknown")
-              : t(`actions.blockers.${result.reason}`);
-          setMessage({ text: t("actions.rejected", { reason }), with: current });
+              : t(`actions.blockers.${result.reason}`, { ...blockerValues });
+          setMessage({ text: sentence(t("actions.rejected", { reason })), with: current });
         } else if (result.kind === "failed") {
           setMessage({ text: t("actions.requestFailed"), with: current });
         }
@@ -83,7 +103,7 @@ export function ActionPanel({ actions, snapshot, onRun }: ActionPanelProps) {
       );
       return t("actions.forceAt", { time });
     }
-    return t(`actions.blockers.${blocker}`);
+    return t(`actions.blockers.${blocker}`, { ...blockerValues });
   };
 
   // Gleiche Gründe zusammenfassen: „Wecken, Herunterfahren: nicht freigeschaltet“.
