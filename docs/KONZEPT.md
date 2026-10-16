@@ -1,6 +1,6 @@
 # TwinRaid – Projektkonzept
 
-> Arbeitstitel „TwinRaid“ · Version 0.9 · Stand 15.10.2026
+> Arbeitstitel „TwinRaid“ · Version 0.10 · Stand 16.10.2026
 > Dieses Dokument ist die verbindliche Grundlage für die Entwicklung. Änderungen am Konzept werden hier eingetragen, bevor sie umgesetzt werden.
 
 ---
@@ -74,7 +74,7 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 | Zugriff auf Secrets | **nein** | ja |
 | Zugriff auf Share-Daten | **nein** | nur lesend |
 
-- Die beiden Prozesse kommunizieren über einen Unix-Socket mit einer **festen, kleinen Befehlsliste**: `get_status`, `verify_password`, `wake_target`, `shutdown_target`, `vm_start`, `vm_stop`, `vm_force_stop`, `sync_start`, `sync_cancel`, `sync_confirm_deletions`.
+- Die beiden Prozesse kommunizieren über einen Unix-Socket mit einer **festen, kleinen Befehlsliste**: `get_status`, `verify_password`, `wake_target`, `shutdown_target`, `shutdown_target_force_vm` (ab v0.4.1, siehe 4.2), `vm_start`, `vm_stop`, `vm_force_stop`, `sync_start`, `sync_cancel`, `sync_confirm_deletions`.
 - Befehle haben **keine frei wählbaren Parameter** (keine Pfade, Hosts oder Shell-Befehle). Erlaubt sind höchstens IDs, die der Worker selbst vergeben hat (z. B. eine Job-ID).
 - **Einzige Ausnahme `verify_password` (ab Phase 2):** Der Befehl trägt das eingegebene Passwort, höchstens 1024 Zeichen. Der Worker vergleicht es nur mit dem Argon2id-Hash und verwendet es nie als Pfad, Argument oder Logeintrag. So bleibt der Hash ein Secret, das nur der Worker lesen kann (siehe 5.3).
 - **Drosselung im Worker:** Der Worker prüft immer nur ein Passwort gleichzeitig. Jede Prüfung dauert mindestens 1 Sekunde. Nach 5 Fehlversuchen in 15 Minuten wartet er vor jeder weiteren Prüfung zusätzlich, beginnend mit 1 Sekunde und verdoppelt bis höchstens 30 Sekunden. Ein erfolgreicher Login setzt die Zählung zurück, ebenso `twinraid-admin unlock`. So kann auch ein übernommener Web-Prozess nicht schnell durchprobieren.
@@ -144,7 +144,7 @@ Kacheln:
 
 1. **Unraid Klein:** Status. Im Modus `real` immer „Online“ mit der Ursache „TwinRaid läuft auf diesem Server“ (siehe „Prüfung“).
 2. **Unraid Groß:** Status mit den Buttons „Wecken“ und „Herunterfahren“.
-3. **Gaming-VM:** Status mit den Buttons „Starten“ und „Herunterfahren“. Nach einem Timeout zusätzlich „Erzwingen“: Der Button erscheint, sobald ein Herunterfahren läuft oder gescheitert ist, und wird erst `shutdown_timeout_minutes` nach dem letzten Versuch aktiv (siehe 4.2).
+3. **Gaming-VM:** Status mit den Buttons „Starten“ und „Herunterfahren“. Nach einem Timeout zusätzlich „Erzwingen“: Der Button erscheint, sobald ein Herunterfahren läuft oder gescheitert ist, und wird erst `shutdown_timeout_minutes` nach dem letzten Versuch aktiv (siehe 4.2). Ist ein Herunterfahren von Groß an der VM gescheitert, zeitweise zusätzlich „Erzwingen und danach Server herunterfahren“ (ab v0.4.1, siehe 4.2).
 4. **Sync:** letzter Lauf (Ergebnis, Dauer, Datenmenge), nächster geplanter Lauf, Button „Jetzt synchronisieren“, Live-Fortschritt während eines Laufs.
 5. **Verlauf:** Liste der letzten Aktionen und Sync-Läufe (Audit-Log).
 
@@ -163,10 +163,11 @@ Destruktive oder störende Aktionen (Herunterfahren, Force-Stop, Sync mit vielen
 | Aktion | Verhalten / Sperre |
 |---|---|
 | Groß wecken | nur wenn Groß offline ist. Magic Packet senden, dann „Startet …“, bis Groß per TCP erreichbar ist und die API antwortet, höchstens `boot_timeout_minutes` |
-| Groß herunterfahren | gesperrt, solange ein Sync läuft und solange der Zustand der VM unbekannt ist. Läuft die Gaming-VM, fragt der Dialog „VM zuerst herunterfahren?“. Bestätigen fährt erst die VM herunter (höchstens `shutdown_timeout_minutes`), danach den Server. Bleibt die VM an, bricht TwinRaid ab, der Server läuft weiter und „Erzwingen“ wird angeboten. Eine Variante „trotzdem sofort herunterfahren“ gibt es nicht (Entscheidung E10). |
+| Groß herunterfahren | gesperrt, solange ein Sync läuft und solange der Zustand der VM unbekannt ist. Läuft die Gaming-VM, fragt der Dialog „VM zuerst herunterfahren?“. Bestätigen fährt erst die VM herunter (höchstens `shutdown_timeout_minutes`), danach den Server. Bleibt die VM an, bricht TwinRaid ab, der Server läuft weiter und „Erzwingen“ wird angeboten. Ein sofortiges Herunterfahren an der laufenden VM vorbei gibt es nicht (Entscheidung E10). |
 | Gaming-VM starten | ist Groß offline: automatisch wecken, warten bis die API die VM kennt (`boot_timeout_minutes`), dann VM starten. Auch bei laufendem Groß wartet der Worker bis zu dieser Zeit auf die API, falls Groß gerade erst gestartet ist |
 | Gaming-VM herunterfahren | ACPI-Signal per SSH, dann „Fährt herunter …“, bis die VM aus ist, höchstens `shutdown_timeout_minutes`. Danach Meldung „reagiert nicht“ und „Erzwingen“ |
 | Gaming-VM erzwingen | erst `shutdown_timeout_minutes` nach dem letzten erfolgreich gesendeten ACPI-Signal und nur, solange die VM noch läuft; über die API (`vm.forceStop`) |
+| Erzwingen und danach Server herunterfahren (ab v0.4.1) | nur nach einem Herunterfahren von Groß, das abgebrochen wurde, weil die VM nicht rechtzeitig herunterfuhr; höchstens 10 Minuten lang und nur, solange sich nichts geändert hat (siehe unten) |
 | Sync starten | gesperrt, wenn bereits ein Sync läuft; ist Groß offline, wird es automatisch geweckt |
 | Automatisches Herunterfahren nach Sync | nur wenn **der Sync den Server geweckt hat** UND die Gaming-VM nicht läuft UND währenddessen keine manuelle Aktion auf Groß stattfand |
 
@@ -176,11 +177,22 @@ Alle Aktionen laufen über eine zentrale Sperrlogik im Worker (eine Aktion pro R
 
 **Sperrlogik und Abläufe (ab Phase 4):**
 
-- **Ressourcen** sind Groß und die VM. Groß wecken belegt Groß, VM herunterfahren und Erzwingen belegen die VM, VM starten und Groß herunterfahren belegen beide. Ist eine Ressource belegt, wird der Befehl abgelehnt; es gibt keine Warteschlange.
-- **Verfügbarkeit:** Der Worker berechnet für jede Aktion, ob sie gerade möglich ist, und sonst den Grund aus einer festen Liste: `not_enabled`, `busy`, `sync_running`, `target_online`, `target_offline`, `target_unknown`, `vm_running`, `vm_off`, `vm_unknown`, `force_not_yet`, `tour`. Er liefert das mit `get_status` aus und prüft bei jedem Befehl erneut. Die Oberfläche deaktiviert Buttons nur nach dieser Angabe und nennt die Gründe, die nicht schon aus dem Status hervorgehen.
+- **Ressourcen** sind Groß und die VM. Groß wecken belegt Groß, VM herunterfahren und Erzwingen belegen die VM, VM starten, Groß herunterfahren und „Erzwingen und danach Server herunterfahren“ belegen beide. Ist eine Ressource belegt, wird der Befehl abgelehnt; es gibt keine Warteschlange.
+- **Verfügbarkeit:** Der Worker berechnet für jede Aktion, ob sie gerade möglich ist, und sonst den Grund aus einer festen Liste: `not_enabled`, `busy`, `sync_running`, `target_online`, `target_offline`, `target_unknown`, `vm_running`, `vm_off`, `vm_unknown`, `force_not_yet`, `not_offered` (ab v0.4.1: kein gültiges Angebot für „Erzwingen und danach Server herunterfahren“), `tour`. Er liefert das mit `get_status` aus und prüft bei jedem Befehl erneut. Die Oberfläche deaktiviert Buttons nur nach dieser Angabe und nennt die Gründe, die nicht schon aus dem Status hervorgehen.
 - **Zwischenzustände:** Solange eine Aktion läuft, meldet der Status „Startet …“ bzw. „Fährt herunter …“ und den aktuellen Schritt: `waking`, `waiting_for_api`, `starting_vm`, `stopping_vm`, `forcing_vm`, `shutting_down`. Während Groß nach dem Wecken bootet, zeigt die VM die Ursache „Wartet auf den Server“ (`target_starting`).
 - **Ergebnis:** Je Ressource meldet der Status das letzte Ergebnis aus einer festen Liste (siehe Aktionslog in 5.3). Es bleibt bis zur nächsten Aktion auf dieser Ressource bzw. bis zum Neustart des Workers sichtbar.
+- **Meldung und Hinweis (ab v0.4.1):** Die Oberfläche zeigt zu jedem Ergebnis die Meldung als Verlauf. Ein Hinweis, was jetzt zu tun ist, erscheint nur, solange er nach dem aktuellen Status zutrifft: „Erzwingen ist jetzt möglich“ nur, solange Erzwingen angeboten wird; der Verweis auf „Erzwingen und danach Server herunterfahren“ nur, solange das Angebot gilt; „Wake-on-LAN prüfen“ nach `boot_timeout` nur, solange Groß aus ist; der Hinweis nach `shutdown_timeout` nur, solange Groß an ist. Hinweise, die sich nicht prüfen lassen (z. B. fehlende Rechte des API-Keys), bleiben bis zur nächsten Aktion stehen. Eine Ablehnung beim Absenden („eine andere Aktion läuft gerade“) verschwindet mit dem nächsten Live-Status.
 - **Erzwingen:** Den Zeitpunkt des letzten ACPI-Signals kennt nur der Worker im Speicher. Ist die VM aus, wird er gelöscht. Nach einem Neustart des Workers muss erneut „Herunterfahren“ gewählt werden.
+
+**Erzwingen und danach Server herunterfahren (ab v0.4.1, Ergänzung zu E10):**
+
+- **Angebot:** Entsteht nur, wenn „Groß herunterfahren“ abbricht, weil die VM nicht innerhalb von `shutdown_timeout_minutes` herunterfuhr (Ergebnis `vm_stop_timeout`). Ein gescheitertes normales „VM herunterfahren“ erzeugt kein Angebot. Das Angebot kennt nur der Worker im Speicher; der Status meldet, bis wann es gilt (`forced_shutdown_until`).
+- **Gültigkeit:** höchstens 10 Minuten nach dem Abbruch. Das reicht, um die Meldung zu lesen und nachzusehen, ob jemand die VM gerade benutzt oder Windows Updates installiert; danach kann die Lage eine andere sein, und ein neuer sauberer Versuch erzeugt ein neues Angebot.
+- **Verfällt** außerdem, sobald die VM nicht mehr als laufend gemeldet wird, Groß nicht mehr online ist, irgendeine andere Aktion startet (auch das einfache „Erzwingen“), der Worker neu startet, oder mit der Ausführung selbst (einmalig nutzbar).
+- **Befehl:** `shutdown_target_force_vm` ohne Parameter. Der Worker nimmt ihn nur an, solange sein eigenes Angebot gilt. Ein übernommener Web-Prozess gewinnt damit nichts, was er nicht schon mit `vm_force_stop` und `shutdown_target` könnte.
+- **Ablauf:** VM über die API erzwingen und warten, bis sie aus ist (höchstens 30 s); ist sie danach nicht aus, bricht TwinRaid ab und fährt Groß nicht herunter. Dann Groß sauber herunterfahren wie bei „Groß herunterfahren“.
+- **Bestätigung:** Der Dialog warnt deutlich, dass Erzwingen für die VM wie Stecker ziehen ist: Nicht gespeicherte Daten gehen verloren, auch laufende Windows-Updates werden unterbrochen.
+- **Aktionslog:** `shutdown_target_force_vm` vom Auslöser `dashboard`, darin automatisch zuerst `vm_force_stop` und danach `shutdown_target` (jeweils mit `part_of`).
 - **Feste Zeiten:** Prüfabstand während einer Aktion 3 s; Bestätigung nach `vm.start` höchstens 60 s, nach `vm.forceStop` höchstens 30 s; nach `poweroff` höchstens 15 min, bis Groß nicht mehr erreichbar ist.
 - **Nach jeder Aktion** prüft der Worker den Status sofort neu, damit die Oberfläche nicht auf die nächste reguläre Prüfung wartet.
 
@@ -192,6 +204,7 @@ Alle Aktionen laufen über eine zentrale Sperrlogik im Worker (eine Aktion pro R
 | Groß herunterfahren | `shutdown`; läuft die VM, zusätzlich `vm` |
 | VM starten | `vm`; ist Groß aus, zusätzlich `wake` |
 | VM herunterfahren, Erzwingen | `vm` |
+| Erzwingen und danach Server herunterfahren | `vm` und `shutdown` |
 
 Eine nicht freigeschaltete Aktion lehnt der Worker mit `not_available` ab, die Oberfläche zeigt „nicht freigeschaltet“. Sind alle Aktionen aus, bleibt das Banner „Nur Statusanzeige“. Änderungen wirken nach einem Neustart des Containers. Die Sync-Befehle bleiben bis Phase 5 gesperrt.
 
@@ -406,7 +419,7 @@ Cross-Origin-Resource-Policy: same-origin
 - Phase 2 protokolliert: Login erfolgreich, fehlgeschlagen, gesperrt oder ohne gesetztes Passwort; Beginn einer Sperre; Logout; abgelaufene Session; fehlgeschlagene CSRF- oder Origin-Prüfung; die CLI-Befehle `set-password`, `renew-cert` und `unlock`. Gleiche Abweisungen derselben IP werden höchstens einmal pro Minute eingetragen.
 - Ab Phase 3 zusätzlich die CLI-Befehle `set-api-key` und `trust-api-cert`.
 - Ab v0.3.1 zusätzlich die Bestätigung des Hinweises zum CA-Wechsel.
-- Ab Phase 4 zusätzlich jede Anforderung einer Aktion über die Oberfläche (`wake_target`, `shutdown_target`, `vm_start`, `vm_stop`, `vm_force_stop`) mit dem Ergebnis `requested` (vom Worker angenommen) oder `rejected`, sowie die CLI-Befehle `init-ssh-keys` und `trust-host-key`. Wie die Aktion ausging, steht im Aktionslog des Workers.
+- Ab Phase 4 zusätzlich jede Anforderung einer Aktion über die Oberfläche (`wake_target`, `shutdown_target`, `vm_start`, `vm_stop`, `vm_force_stop`, ab v0.4.1 `shutdown_target_force_vm`) mit dem Ergebnis `requested` (vom Worker angenommen) oder `rejected`, sowie die CLI-Befehle `init-ssh-keys` und `trust-host-key`. Wie die Aktion ausging, steht im Aktionslog des Workers.
 - **Nie gespeichert oder geloggt:** Passwörter, Session-IDs, CSRF-Tokens, Cookies, Request-Inhalte.
 - Aufbewahrung 180 Tage und höchstens 50.000 Einträge; aufgeräumt wird beim Start und stündlich.
 - Die Kachel „Verlauf“ zeigt die letzten 50 Einträge über eine geschützte Route.
@@ -662,7 +675,7 @@ Ergänzende Regeln:
   - **Interaktive Simulation (ab Phase 4, Entscheidung E11):** Groß und die VM starten ausgeschaltet, Klein ist online („TwinRaid läuft auf diesem Server“). Aktionen wirken mit festen Wartezeiten: Groß bootet 20 s, danach braucht die API weitere 10 s; die VM startet in 3 s und fährt in 8 s herunter; Groß fährt in 15 s herunter.
   - **Fester Rundlauf:** Die bisherige Statussimulation durchläuft einen festen Ablauf, der jeden Zustand und jede Ursache mindestens einmal zeigt, ab v0.3.2 auch „TwinRaid läuft auf diesem Server“ (ein Test prüft die Vollständigkeit). Ab Phase 4 wird sie mit `twinraid-admin mock-tour on|off` eingeschaltet; währenddessen sind Aktionen mit dem Grund `tour` gesperrt.
   - **Fehler simulieren:** `twinraid-admin mock-fault <Name> on|off` mit `vm-hang` (VM reagiert nicht auf Herunterfahren), `api-forbidden` (API-Key ohne `VMS:UPDATE_ANY`), `ssh-denied` (`guard.sh` lehnt ab) und `no-boot` (Groß reagiert nicht auf Wake-on-LAN).
-- **Modus `real` (ab Phase 3 nur lesend, ab Phase 4 mit freigeschalteten Aktionen):** Status-Abfragen sind immer erlaubt, also der TCP-Check von Groß und der VM-Status über die Unraid-API. Die Aktionen `wake_target`, `shutdown_target`, `vm_start`, `vm_stop` und `vm_force_stop` sind nur verfügbar, wenn sie in `actions` freigeschaltet sind (siehe 4.2); sonst lehnt der Worker sie vor jeder Verarbeitung mit dem Fehlercode `not_available` ab. Die Sync-Befehle (`sync_start`, `sync_cancel`, `sync_confirm_deletions`) bleiben bis Phase 5 mit `not_available` gesperrt. Ist keine Aktion freigeschaltet, zeigt die Oberfläche das Banner „Nur Statusanzeige“.
+- **Modus `real` (ab Phase 3 nur lesend, ab Phase 4 mit freigeschalteten Aktionen):** Status-Abfragen sind immer erlaubt, also der TCP-Check von Groß und der VM-Status über die Unraid-API. Die Aktionen `wake_target`, `shutdown_target`, `shutdown_target_force_vm`, `vm_start`, `vm_stop` und `vm_force_stop` sind nur verfügbar, wenn sie in `actions` freigeschaltet sind (siehe 4.2); sonst lehnt der Worker sie vor jeder Verarbeitung mit dem Fehlercode `not_available` ab. Die Sync-Befehle (`sync_start`, `sync_cancel`, `sync_confirm_deletions`) bleiben bis Phase 5 mit `not_available` gesperrt. Ist keine Aktion freigeschaltet, zeigt die Oberfläche das Banner „Nur Statusanzeige“.
 
 ---
 
@@ -763,7 +776,7 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 | E7 | Wie steuert TwinRaid in Phase 5 die Container auf Klein, ohne dass „Host access to custom networks“ eingeschaltet wird? | **offen**, Optionen in 10.1; Entscheidung vor Beginn von Phase 5 |
 | E8 | Wie wird die Gaming-VM heruntergefahren? | **entschieden:** per SSH mit dem Key „power“ (`virsh shutdown`, nur ACPI); Starten und Erzwingen über die API, weil `vm.stop` der API nach 10 s selbst erzwingt (siehe 3.4) |
 | E9 | Wie werden Aktionen im Echtbetrieb schrittweise freigeschaltet? | **entschieden:** Abschnitt `actions` in `twinraid.yaml` mit `wake`, `vm`, `shutdown`, Standard aus (siehe 4.2) |
-| E10 | Groß herunterfahren bei laufender VM | **entschieden:** Dialog „VM zuerst herunterfahren?“, dann VM und danach Server; kein sofortiges Herunterfahren an der VM vorbei (siehe 4.2) |
+| E10 | Groß herunterfahren bei laufender VM | **entschieden:** Dialog „VM zuerst herunterfahren?“, dann VM und danach Server; weiterhin kein sofortiges Herunterfahren an der laufenden VM vorbei. **Ergänzt in v0.4.1:** Nur nach einem gescheiterten sauberen Versuch und ausdrücklicher Bestätigung bietet TwinRaid zeitlich begrenzt „Erzwingen und danach Server herunterfahren“ an (siehe 4.2) |
 | E11 | Simulationsmodus mit Aktionen | **entschieden:** interaktive Simulation als Standard, fester Rundlauf mit `mock-tour`, Fehler mit `mock-fault` (siehe 6.4) |
 | E12 | Kleinere Punkte aus Phase 4 | **entschieden:** `wol_broadcast` optional (Startabbruch nur bei freigeschaltetem Wecken), `ssh_port` optional, 60 s für API-Aktionen, `restrict` in `authorized_keys` |
 
