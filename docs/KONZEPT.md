@@ -1,6 +1,6 @@
 # TwinRaid – Projektkonzept
 
-> Arbeitstitel „TwinRaid“ · Version 0.11 · Stand 16.10.2026
+> Arbeitstitel „TwinRaid“ · Version 0.12 · Stand 17.10.2026
 > Dieses Dokument ist die verbindliche Grundlage für die Entwicklung. Änderungen am Konzept werden hier eingetragen, bevor sie umgesetzt werden.
 
 ---
@@ -51,14 +51,14 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
   │   ┌────────────────────┐   Unix-Socket    ┌─────────────────────────┐    │
   │   │ Web-Prozess        │ ───────────────▶ │ Worker-Prozess          │    │
   │   │ unprivilegiert     │  feste Befehle   │ minimal privilegiert    │    │
-  │   │ UI, Login, API,SSE │                  │ Status, WoL, API, rsync │    │
+  │   │ UI, Login, API,SSE │                  │ Status, WoL, SSH, rsync │    │
   │   └────────────────────┘                  └───────────┬─────────────┘    │
   │                                                       │                  │
   │   Shares (read-only gemountet) ◀──────────────────────┤                  │
   │   Unraid-API Klein (Container stop/start) ◀───────────┤                  │
   └───────────────────────────────────────────────────────┼──────────────────┘
                                                           │
-        WoL · Unraid-API (VM-Status, Start, Erzwingen) · SSH (Shutdown, VM-ACPI, rsync)
+        WoL · SSH: guard.sh status (VM-Status) und power (VM, Shutdown) · rsync über SSH
                                                           ▼
   ┌──────────────────────── Unraid GROSS (bei Bedarf) ──────────────────────┐
   │   Gaming-VM   ·   gespiegelte Shares   ·   Container-Templates           │
@@ -92,7 +92,7 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 | Persistenz | SQLite in `/data` (Job-Historie, Sessions, Audit-Log) |
 | Zeitsteuerung | im Worker; Zeitplan aus Wochentagen, Uhrzeit und Zeitzone (siehe 4.8); die technische Umsetzung wird in Phase 6 festgelegt |
 | Prozessverwaltung | s6-overlay mit read-only Root (entschieden, siehe 5.4) |
-| Unraid-Steuerung | offizielle Unraid-GraphQL-API (in Unraid 7.3.3 enthalten), API-Keys mit minimalen Rechten |
+| Unraid-Steuerung | Groß: SSH mit erzwungenem Befehl über `guard.sh`, ohne API-Key (ab v0.4.3, Entscheidung E22); Klein: siehe E7 (Abschnitt 10.1) |
 | Kopieren | `rsync` über SSH |
 | SSH-Client | `openssh-client` aus Debian, Version exakt gepinnt (ab Phase 4); das setuid-Programm `ssh-keysign` wird entfernt |
 | Tests | pytest (Backend), Vitest (Frontend); Mocks für alle externen Systeme |
@@ -103,37 +103,115 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 
 | Aufgabe | Weg | Rechte |
 |---|---|---|
-| Groß online/offline | TCP-Check auf den WebGUI-Port aus `servers.target.webgui` | keine |
+| Groß online/offline | TCP-Check auf den WebGUI-Port aus `servers.target.webgui`; es werden keine Daten gesendet | keine |
 | Klein online/offline | keine Prüfung: TwinRaid läuft auf Klein, im Modus `real` gilt Klein deshalb immer als online (ab v0.3.2, siehe 4.1) | keine |
 | Wake-on-LAN | UDP-Magic-Packet an die Broadcast-Adresse des Server-Netzes (siehe 4.2) | keine |
-| Gaming-VM Status | Unraid-API auf Groß (siehe 3.5) | API-Key nur mit `VMS:READ_ANY` (ab Phase 3) |
-| Gaming-VM starten und erzwingen | Unraid-API auf Groß (`vm.start`, `vm.forceStop`) | zusätzlich `VMS:UPDATE_ANY` (ab Phase 4) |
-| Gaming-VM herunterfahren | SSH: `guard.sh` führt `virsh shutdown <UUID>` aus, nur ACPI (ab Phase 4, Entscheidung E8) | SSH-Key „power“ |
+| Gaming-VM Status, weitere VMs | SSH: eine dauerhafte Sitzung `guard.sh status` → `vm-watch`, solange Groß online ist (ab v0.4.3, siehe 3.5) | SSH-Key „status“, darf nur `check` und `vm-watch` |
+| Gaming-VM starten und erzwingen | SSH: `guard.sh power` → `vm-start` bzw. `vm-force-stop` (`virsh start`, `virsh destroy`), ab v0.4.3 | SSH-Key „power“ |
+| Gaming-VM herunterfahren | SSH: `guard.sh power` → `vm-shutdown` (`virsh shutdown`), nur ACPI (ab Phase 4, Entscheidung E8) | SSH-Key „power“ |
 | Container stoppen/starten (Konsistenz beim Sync) | Unraid-API auf Klein; der Weg dorthin ohne „Host access to custom networks“ ist offen (E7) | API-Key nur mit Docker-Rechten |
 | Daten kopieren | rsync über SSH nach Groß | SSH-Key „sync“, per Wrapper auf erlaubte Zielpfade beschränkt |
-| Groß herunterfahren | SSH: `guard.sh` führt `/sbin/poweroff` aus, wie der Button in der Unraid-WebGUI (ab Phase 4) | SSH-Key „power“, darf ausschließlich `check`, `poweroff` und `vm-shutdown <UUID>` (siehe 5.6) |
+| Groß herunterfahren | SSH: `guard.sh` führt `/sbin/poweroff` aus, wie der Button in der Unraid-WebGUI (ab Phase 4); ab v0.4.3 nur, wenn alle VMs aus sind | SSH-Key „power“, darf ausschließlich `check`, `vm-start`, `vm-shutdown`, `vm-force-stop` und `poweroff`, alle ohne Parameter (siehe 5.6) |
 
-**Kein Docker-Socket. Kein Root-Shell-Zugang auf irgendeinem Server.**
+**Kein Docker-Socket. Kein Root-Shell-Zugang auf irgendeinem Server.** Welche VM gemeint ist, steht nur auf Groß in `/boot/config/twinraid/power.conf`; TwinRaid schickt guard.sh nie Parameter (ab v0.4.3).
 
 **Ergebnisse der Prüfung in Phase 4** (Quellcode von Unraid-API v4.37.5 und Unraid-WebGUI 7.3):
 
 - Die Unraid-API hat **keine Funktion zum Herunterfahren** des Servers. Groß wird deshalb per SSH heruntergefahren.
 - `/sbin/poweroff` ist der saubere Weg: Er startet das Shutdown-Skript von Unraid, das das Array über `emhttpd` stoppt. Dabei stoppt Unraid Container und VMs geordnet (VMs mit der Einstellung *VM shutdown time-out*, Standard 60 s) und hängt die Platten aus; das gesamte Zeitlimit kommt aus *Disk Settings → Shutdown time-out* (Standard 90 s). Der frühere Befehl `powerdown` ist veraltet.
 - **Warum die VM nicht über die API heruntergefahren wird (E8):** `vm.stop` sendet zwar ein ACPI-Signal, wartet aber nur 10 Sekunden und schaltet die VM dann selbst hart aus (`destroy`). Windows könnte so mitten im Herunterfahren abgeschaltet werden, etwa während eines Updates, und „Erzwingen erst nach `shutdown_timeout_minutes`“ ließe sich nicht umsetzen. `virsh shutdown` sendet nur das ACPI-Signal, wie „Stop“ in der Unraid-WebGUI. Der Key „power“ darf damit nur VMs herunterfahren; das ist weniger, als er mit `poweroff` ohnehin darf.
-- `vm.start` und `vm.forceStop` verlangen `VMS:UPDATE_ANY`. Die Rechteprüfung greift in 4.37.5 auch für diese verschachtelten Befehle (`fieldResolverEnhancers: ['guards']`); der Fehler aus unraid/api #1723 ist dort behoben. Geprüft wird trotzdem real (siehe 5.6).
+- `vm.start` und `vm.forceStop` verlangen `VMS:UPDATE_ANY`. Die Rechteprüfung greift in 4.37.5 auch für diese verschachtelten Befehle (`fieldResolverEnhancers: ['guards']`); der Fehler aus unraid/api #1723 ist dort behoben. In Phase 4 wurde das real geprüft.
+- **Seit v0.4.3 (Entscheidung E22)** spricht TwinRaid die API von Groß gar nicht mehr an. `vm.start` ruft in der API libvirt `domain.create()` auf (bei pausierter VM `resume()`), `vm.forceStop` ruft `domain.destroy()` auf; `virsh start` und `virsh destroy` über guard.sh bewirken dasselbe. Grund: Unraid speichert API-Keys im Klartext auf dem USB-Stick (`/boot/config/plugins/dynamix.my.servers/keys`), mit Unraid Connect Flash Backup unverschlüsselt auch in der Cloud, und bei `scheme: http` ging der Key im Klartext durchs Server-Netz. Ein gestohlener Key durfte alle VMs steuern; der Key „power“ darf nur die eingetragene VM steuern und Groß nur ausschalten, wenn alle VMs aus sind.
 
-### 3.5 Verbindung zur Unraid-API (ab Phase 3)
+### 3.5 VM-Status und VM-Aktionen über guard.sh (ab v0.4.3, Entscheidung E22)
 
-- **Adresse:** `<scheme>://<host>:<port>/graphql` mit den Werten aus `servers.<server>.host` und `servers.<server>.webgui`. Der Worker sendet eine GraphQL-Abfrage per POST mit dem Key im Header `x-api-key`. Für den VM-Status genügt `vms { domains { name state } }`.
-- **Aktionen (ab Phase 4):** Der Worker fragt `vms { domains { id name state } }` ab und sucht die VM bei jeder Aktion neu über `gaming_vm.unraid_vm_name`. Die ID (`<Server-ID>:<UUID>`) geht an `vm { start(id: …) }` bzw. `vm { forceStop(id: …) }`, die UUID daraus an `guard.sh` (siehe 5.6). Eine andere VM lässt sich so ohne Codeänderung eintragen (Konfiguration ändern, Container neu starten).
-- **Grenzen:** Zeitlimit 5 Sekunden für Abfragen und 60 Sekunden für `vm.start` und `vm.forceStop` (das Starten einer VM mit durchgereichter Grafikkarte kann dauern), Antwort höchstens 256 KiB, Weiterleitungen werden nicht verfolgt.
-- **`scheme: http`** (Unraid-Einstellung „SSL/TLS verwenden: Nein“): Der API-Key geht im Klartext durch das Server-Netz. Startlog (im Modus `real`) und Einstellungsseite zeigen deshalb deutlich: „Verbindung zu Unraid Groß unverschlüsselt, API-Key wird im Klartext übertragen“.
-- **`scheme: https`** (Unraid-Einstellung „Ja“): Unraid nutzt dann ein selbstsigniertes Zertifikat, eine Prüfung über eine Zertifikatskette ist nicht möglich. TwinRaid vergleicht stattdessen den SHA-256-Fingerabdruck des Zertifikats mit einem bestätigten Wert (Vertrauen beim ersten Kontakt wie bei SSH). Bestätigt wird mit `twinraid-admin trust-api-cert target`: Der Befehl zeigt den Fingerabdruck, den Groß gerade ausliefert, zum Vergleich mit der Anzeige im Browser. Der Key wird erst gesendet, nachdem der Fingerabdruck geprüft ist.
-- **Zertifikat geändert:** Erneuert Unraid sein Zertifikat, meldet TwinRaid „Zertifikat geändert“ und sendet den Key nicht mehr. Nach Prüfung im Browser wird der neue Fingerabdruck mit `twinraid-admin trust-api-cert target` bestätigt.
-- **Umstellung von http auf https** ohne Codeänderung: in Unraid „Ja“ wählen, in `twinraid.yaml` `scheme: https` (Port 443) eintragen, Container neu starten, `twinraid-admin trust-api-cert target` ausführen. Die Anleitung steht in `docs/EINRICHTUNG.md`.
-- Die Einstellung „Strikt“ (Zertifikat für myunraid.net) wird nicht unterstützt; sie bräuchte DNS-Auflösung über das Internet.
-- **Weitere VMs (ab v0.4.2):** Aus derselben Abfrage bestimmt der Worker, welche VMs außer `gaming_vm.unraid_vm_name` laufen (jeder Zustand außer `SHUTOFF`, also auch pausiert, im Leerlauf, im Ruhezustand oder abgestürzt). Dafür genügt der Lese-Key. Die Namen dieser VMs sind Text aus der Antwort von Unraid und eine bewusste Ausnahme von der Regel, dass kein fremder Text in den Status gelangt: Sie werden bereinigt (Steuer- und unsichtbare Formatzeichen werden ersetzt, höchstens 64 Zeichen je Name, höchstens 20 Namen), nur über geschützte Routen ausgeliefert und nie geloggt; Aktionslog und Container-Log enthalten nur den festen Code `other_vms_running`.
-- **Ursachen bei Fehlern** (siehe 4.1): Server offline (TCP-Check scheitert), API nicht erreichbar, Unraid leitet auf HTTPS um, kein API-Key gesetzt, API-Key ungültig (Antwort 401 bzw. „UNAUTHENTICATED“), keine Leserechte (403 bzw. „FORBIDDEN“), Fingerabdruck nicht bestätigt, Zertifikat geändert, VM nicht gefunden, sonstiger API-Fehler.
+Bis v0.4.2 fragte TwinRaid den VM-Status über die Unraid-API von Groß ab und startete bzw. erzwang die VM darüber, mit einem API-Key in `/data/secrets`. Seit v0.4.3 läuft alles über SSH und `guard.sh`; TwinRaid braucht für Groß keinen API-Key mehr (Begründung in 3.4).
+
+**Welche VM:** Die Gaming-VM steht nur auf Groß in `/boot/config/twinraid/power.conf`: genau eine Zeile `vm <UUID>`, dazu höchstens Leerzeilen und Zeilen, die mit `#` beginnen. Die UUID steht in Unraid bei der VM (Bearbeiten, XML-Ansicht) oder kommt von `virsh domuuid "<Name>"`. Die Datei ist kein Secret; TwinRaid kann sie weder lesen noch ändern. Fehlt sie oder ist sie ungültig, meldet `vm-watch` `NOT_CONFIGURED`, und alle VM-Befehle werden abgelehnt. Eine andere VM wird auf Groß eingetragen, ohne TwinRaid zu ändern.
+
+**guard.sh Version 2** (im Repo `host-scripts/guard.sh`, auf Groß `/boot/config/twinraid/guard.sh`):
+
+```
+guard.sh status       Key „status“: kann nichts verändern
+  check          → twinraid-guard 2 status ok
+  vm-watch       → eine Statuszeile bei jeder Änderung, sonst alle 15 s
+
+guard.sh power        Key „power“: nur für freigeschaltete Aktionen
+  check          → twinraid-guard 2 power ok
+  vm-start       → virsh start --domain <UUID aus power.conf>
+  vm-shutdown    → virsh shutdown --domain <UUID>   (nur ACPI, E8)
+  vm-force-stop  → virsh destroy --domain <UUID>
+  poweroff       → nur wenn alle VMs aus sind, dann /sbin/poweroff
+
+guard.sh sync         Key „sync“ (Phase 5); bis dahin wird alles abgelehnt
+```
+
+- Die Anfrage steht in `SSH_ORIGINAL_COMMAND` und wird nur mit festen Texten verglichen; Parameter gibt es nicht. Alles andere endet mit Exit-Code 2 („denied“) und einem Eintrag im Syslog von Groß.
+- Exit-Code 3 heißt: Die Anfrage ist erlaubt, eine Prüfung in guard.sh lehnt sie aber ab. Auf stderr steht dann `twinraid-guard: refused <Grund>` mit `vm-not-configured`, `vm-running`, `other-vms-running` oder `vm-state-unknown`.
+- Jeder Aufruf von virsh läuft mit `LC_ALL=C` und einem Zeitlimit (`timeout`): 10 s für Abfragen, 90 s für `vm-start`, 60 s für `vm-force-stop`, 30 s für `vm-shutdown`. Ausgaben von virsh gibt guard.sh nie weiter.
+- Ins Syslog kommen nur feste Texte und die geprüfte UUID, nie die Anfrage selbst.
+- **Version:** TwinRaid 0.4.3 verlangt guard.sh Version 2. `check` und jede Statuszeile nennen die Version; ist sie älter, lautet die Ursache `guard_outdated` mit dem Hinweis, guard.sh neu zu kopieren. guard.sh Version 1 kennt den Modus `status` nicht und lehnt ab (`ssh_denied`); auch dann weist die Oberfläche auf das Kopieren hin.
+
+**Statuszeile von `vm-watch`** (nur ASCII, höchstens 16 KiB):
+
+```
+watch 2 vm=<Zustand> name=<Hex|-> others=<Anzahl|?> names=<Hex>,<Hex>…|- connect=<present|absent> flash_backup=<active|inactive|unknown>
+```
+
+- `vm`: Zustand der eingetragenen VM aus `virsh domstate`, in denselben Werten wie bisher die API: `RUNNING`, `IDLE`, `PAUSED`, `SHUTDOWN`, `SHUTOFF`, `CRASHED`, `PMSUSPENDED`, `NOSTATE`. Dazu `NOT_CONFIGURED` (`power.conf` fehlt oder ist ungültig), `NOT_FOUND` (keine VM mit dieser UUID), `LIBVIRT_DOWN` (der VM-Dienst läuft nicht) und `UNKNOWN` (virsh antwortet nicht innerhalb des Zeitlimits). Die Zuordnung zur Anzeige steht in 4.1.
+- `name`: Name der eingetragenen VM, hex-kodiert. `gaming_vm.unraid_vm_name` ist ab v0.4.3 optional. Ist es gesetzt und weicht der Name ab, zeigt die VM-Kachel den Hinweis `vm_name_mismatch` („Auf Groß ist eine VM mit anderem Namen eingetragen“). Das fängt eine falsche UUID in `power.conf` ab.
+- `others` und `names`: weitere VMs (Konzept 4.2), also alle außer der eingetragenen in jedem Zustand außer „shut off“. Die Namen sind hex-kodiert, höchstens 20, je höchstens 256 Byte. `others=?` heißt: Die Liste ist nicht lesbar (dann `names=-`).
+- `connect` und `flash_backup`: Merkmale von Unraid Connect (siehe unten).
+- Die Namen sind Text von Groß und eine bewusste Ausnahme von der Regel, dass kein fremder Text in den Status gelangt: TwinRaid dekodiert sie als UTF-8 und bereinigt sie (Steuer- und unsichtbare Formatzeichen werden ersetzt, höchstens 64 Zeichen je Name, höchstens 20 Namen), liefert sie nur über geschützte Routen aus und loggt sie nie; Aktionslog und Container-Log enthalten nur den festen Code `other_vms_running`.
+- Eine Zeile, die nicht genau diesem Format entspricht, beendet die Sitzung (`watch_interrupted`).
+
+**Takt und Anmeldungen:** eine dauerhafte Sitzung je Laufzeit von Groß statt einer Anmeldung je Abfrage. Abgefragt wird lokal auf Groß; über das Netz geht nur eine kurze Zeile.
+
+| Was | wie oft | wer |
+|---|---|---|
+| Online-Prüfung von Groß (TCP auf den WebGUI-Port) | alle 10 s, Zeitlimit 2 s | Worker |
+| Aufbau der Sitzung `vm-watch` mit dem Key „status“ | einmal, sobald Groß online ist; danach nur nach einem Abbruch (Neuversuche unten) | Worker |
+| VM-Zustände lesen (`virsh domstate`, `virsh list --all --uuid`, `virsh list --uuid --state-shutoff`) | alle 3 s | guard.sh, lokal |
+| Namen weiterer VMs (`virsh domname`) | nur für VMs, die nicht aus sind | guard.sh |
+| `power.conf` und Name der eingetragenen VM neu lesen; Merkmale von Unraid Connect | alle 15 s bzw. alle 60 s | guard.sh |
+| Zeile an TwinRaid | bei jeder Änderung, sonst alle 15 s als Lebenszeichen | guard.sh |
+| Sitzung gilt als hängend | nach 40 s ohne Zeile; eine tote Verbindung erkennt SSH schon nach 10–15 s (`ServerAliveInterval=5`, `ServerAliveCountMax=2`) | Worker |
+| `get_status` | alle 2 s, nur solange ein Dashboard offen ist; liest nur den Stand im Worker | Web-Prozess |
+
+- **Status sofort:** Jede Zeile mit einer Änderung löst sofort eine neue Statusprüfung im Worker aus; die Oberfläche wartet nicht auf die nächste reguläre Prüfung.
+- **Abläufe ohne weitere Anmeldungen:** Auch die Abläufe aus 4.2 (VM starten, herunterfahren, erzwingen, Warten nach dem Wecken, Prüfung der VM-Liste vor `poweroff`) lesen nur den Stand der Sitzung. Eine eigene Anmeldung mit dem Key „power“ gibt es nur für den Befehl selbst (`vm-start`, `vm-shutdown`, `vm-force-stop`, `poweroff`). Im Normalbetrieb ergibt das eine Anmeldung je Start von Groß und eine je Aktion.
+- **Bereitschaft nach dem Wecken:** Groß gilt als bereit, sobald `vm-watch` einen Zustand außer `LIBVIRT_DOWN` und `UNKNOWN` liefert. Der Schritt heißt `waiting_for_vm_service` („Wartet auf den VM-Dienst“, bis v0.4.2 `waiting_for_api`).
+- **Syslog von Groß:** sshd schreibt je Anmeldung einige Zeilen; daran ändert TwinRaid nichts. guard.sh schreibt je Sitzung eine Zeile „vm-watch started“, eine ungültige `power.conf` einmal je Sitzung, und jede Aktion und Ablehnung einzeln. Einzelne Abfragen und Zustandswechsel schreibt es nicht; Start und Stopp der VMs protokolliert libvirt selbst.
+
+**Wenn Groß aus ist, startet oder wegfällt:**
+
+- **Aus:** Die TCP-Prüfung scheitert nach höchstens 2 s, die VM gilt als aus mit „Server offline“. TwinRaid versucht keine SSH-Verbindung.
+- **Startet** (geweckt oder von Hand): Sobald die TCP-Prüfung klappt, baut der Worker die Sitzung auf. Lehnt sshd noch ab, versucht er es alle 3 s erneut, höchstens `boot_timeout_minutes` lang; die VM zeigt so lange „Verbindung wird aufgebaut“. Bis libvirt läuft, meldet `vm-watch` `LIBVIRT_DOWN`.
+- **Fährt sauber herunter:** sshd beendet die Verbindung, der Worker prüft sofort per TCP. Nicht erreichbar: „Server offline“. Noch erreichbar: kurz „Unbekannt“ mit „Sitzung unterbrochen“ und neuer Versuch nach 5 s.
+- **Fällt plötzlich weg** (Strom, Kabel): SSH bemerkt es nach 10–15 s, die TCP-Prüfung nach höchstens 12 s. Was zuerst kommt, beendet die Sitzung; der Worker beendet den ssh-Prozess sofort.
+- **virsh hängt:** Das Zeitlimit bricht den Aufruf ab, die Zeile meldet `UNKNOWN`, die Schleife läuft weiter. So bleiben auf Groß keine hängenden Prozesse zurück.
+
+**Neuversuche** (begrenzen die Anmeldungen auch im Fehlerfall):
+
+- **Verbindung abgebrochen oder nicht zustande gekommen,** Groß per TCP erreichbar: neuer Versuch nach 5 s, 15 s und 60 s, danach alle 5 Minuten. Nach einer Sitzung, die länger als 60 s lief, beginnt die Folge von vorn. Bei einem Dauerfehler höchstens etwa 12 Anmeldungen pro Stunde.
+- **Dauerhafte Fehler** (Key fehlt, Hostkey nicht bestätigt oder geändert, Key abgelehnt, guard.sh lehnt ab oder ist zu alt): kein automatischer Versuch, bis Groß neu startet (offline, dann online), sich Key oder bestätigter Hostkey ändern (`init-ssh-keys`, `trust-host-key`; der Worker erkennt die geänderte Datei) oder 30 Minuten vergangen sind. Höchstens 2 Anmeldungen pro Stunde.
+- Eine ältere `vm-watch`-Schleife auf Groß endet spätestens beim nächsten Lebenszeichen (≤ 15 s), weil das Schreiben in die geschlossene Verbindung scheitert.
+- Im Container-Log stehen Beginn, Ende und Fehler der Sitzung nur als feste Codes, gleiche Meldungen höchstens einmal pro Minute.
+
+**Prüfung vor `poweroff` in guard.sh:** Unmittelbar vor `/sbin/poweroff` prüft guard.sh selbst: Die eingetragene VM ist „shut off“ oder „crashed“ (wie im Worker), jede andere VM ist „shut off“. Ohne gültige `power.conf` muss jede VM „shut off“ sein. Sonst endet guard.sh mit Exit-Code 3 (`vm-running`, `other-vms-running`, oder `vm-state-unknown`, wenn virsh nicht antwortet), schreibt einen Eintrag ins Syslog, und Groß bleibt an. TwinRaid ordnet das `vm_running`, `other_vms_running` bzw. `vm_service_unavailable` zu. So gilt „nie ausschalten, solange VMs laufen“ (4.2) auch gegen einen übernommenen TwinRaid. Herunterfahren über die Unraid-Oberfläche bleibt immer möglich.
+
+**Warnung zu Unraid Connect:**
+
+- **Merkmal:** die Datei `/boot/config/plugins/dynamix.unraid.net.plg`; genau sie prüft die Unraid-API 4.37.5 selbst (`isConnectPluginInstalled()`). Zusätzlich zählen `/var/log/plugins/dynamix.unraid.net.plg` (im laufenden Betrieb geladen) und der ältere Name `dynamix.unraid.net.staging.plg` an beiden Orten. Eines davon genügt für `connect=present`. Kein Merkmal ist der Ordner `/boot/config/plugins/dynamix.my.servers`: Seit Unraid 7.2 legt die eingebaute API dort ihre Keys ab.
+- **Flash Backup:** aus `/var/local/emhttp/flashbackup.ini`, Schlüssel `activated`. Nicht leer: `active`; Datei oder Wert fehlt: `inactive`; nicht lesbar: `unknown`.
+- **Anzeige:** ein gelber Hinweis in der Kachel von Groß, solange das Merkmal besteht (Hinweis `target_connect_plugin`; bei aktivem Flash Backup zusätzlich `target_flash_backup`). Nur feste Texte; TwinRaid liest keine Daten von Connect (Konto, Servername).
+- Auf Klein prüft das ab v0.5.0 der Container-Wächter (E7).
+
+**HTTPS der WebGUI von Groß:** TwinRaid überträgt nichts mehr über die WebGUI von Groß; übrig bleibt die TCP-Prüfung, ob der Port offen ist. Ob Unraid dort HTTPS nutzt, spielt keine Rolle. `webgui.scheme` und `webgui.port` bleiben gültig und bestimmen nur den Port der Online-Prüfung (Standard 80 bei http, 443 bei https). Der bestätigte Fingerabdruck des Zertifikats und die Warnung „unverschlüsselt“ entfallen.
+
+**Umstieg von v0.4.2:** `twinraid-init` löscht `target-api-key` und `target-api-cert.sha256` einmal und schreibt einen Hinweis ins Log, den Key auch in Unraid zu löschen (*Settings → Management Access → API Keys*). Die Schritte stehen in `docs/EINRICHTUNG.md`.
+
+**Ursachen bei Fehlern** (siehe 4.1): Server offline, Verbindung wird aufgebaut (`watch_connecting`), Sitzung unterbrochen (`watch_interrupted`), SSH-Key „status“ fehlt (`ssh_key_missing`), Hostkey nicht bestätigt (`ssh_host_untrusted`), Hostkey geändert (`ssh_host_key_mismatch`), Key abgelehnt (`ssh_auth_failed`), SSH nicht erreichbar (`ssh_unreachable`), guard.sh lehnt ab (`ssh_denied`), guard.sh zu alt (`guard_outdated`), sonstiger SSH-Fehler (`ssh_failed`), VM nicht eingetragen (`vm_not_configured`), VM nicht gefunden (`vm_not_found`), VM-Dienst nicht bereit (`vm_service_unavailable`).
 
 ---
 
@@ -149,11 +227,12 @@ Kacheln:
 4. **Sync:** letzter Lauf (Ergebnis, Dauer, Datenmenge), nächster geplanter Lauf, Button „Jetzt synchronisieren“, Live-Fortschritt während eines Laufs.
 5. **Verlauf:** Liste der letzten Aktionen und Sync-Läufe (Audit-Log).
 
-Statuswerte: `Online`, `Offline`, `Startet …`, `Fährt herunter …`, `Unbekannt`. Zu jedem Status kann eine **Ursache** aus einer festen Liste kommen (z. B. „Server offline“, „API nicht erreichbar“, „API-Key ungültig“, „Zertifikat geändert“, „VM pausiert“; siehe 3.5). So ist bei einem Fehler klar unterscheidbar, ob der Server aus ist, die API nicht antwortet oder der Key nicht passt.
+Statuswerte: `Online`, `Offline`, `Startet …`, `Fährt herunter …`, `Unbekannt`. Zu jedem Status kann eine **Ursache** aus einer festen Liste kommen (z. B. „Server offline“, „VM-Dienst nicht bereit“, „Key abgelehnt“, „VM pausiert“; siehe 3.5). So ist bei einem Fehler klar unterscheidbar, ob der Server aus ist, der VM-Dienst nicht antwortet oder der Key nicht passt.
 
-- **Prüfung:** Der Worker prüft alle 10 Sekunden. Groß per TCP-Check, die VM über die API nur, wenn Groß online ist. Ist Groß offline, gilt die VM als aus mit der Ursache „Server offline“. `get_status` liefert sofort den zuletzt geprüften Stand.
+- **Prüfung:** Der Worker prüft Groß alle 10 Sekunden per TCP-Check. Die VM kommt aus der Sitzung `vm-watch`, solange Groß online ist (ab v0.4.3, siehe 3.5); jede Änderung löst sofort eine neue Prüfung aus. Ist Groß offline, gilt die VM als aus mit der Ursache „Server offline“. `get_status` liefert sofort den zuletzt geprüften Stand.
 - **Klein (ab v0.3.2):** TwinRaid läuft auf Klein. Solange der Worker antwortet, ist Klein also online. Im Modus `real` entfällt deshalb der TCP-Check von Klein; die Kachel zeigt „Online“ mit der festen Ursache „TwinRaid läuft auf diesem Server“. Grund: Ohne „Host access to custom networks“ (siehe 5.1) erreicht der Container seinen eigenen Host nicht, ein TCP-Check würde Klein fälschlich als offline melden.
-- **VM-Zustände** (libvirt über die Unraid-API): `RUNNING` und `IDLE` → Online; `PAUSED` → Online, Ursache „pausiert“; `PMSUSPENDED` → Online, Ursache „im Ruhezustand“; `SHUTDOWN` → Fährt herunter …; `SHUTOFF` → Offline; `CRASHED` → Offline, Ursache „abgestürzt“; `NOSTATE` und Unbekanntes → Unbekannt.
+- **VM-Zustände** (libvirt, ab v0.4.3 über guard.sh): `RUNNING` und `IDLE` → Online; `PAUSED` → Online, Ursache „pausiert“; `PMSUSPENDED` → Online, Ursache „im Ruhezustand“; `SHUTDOWN` → Fährt herunter …; `SHUTOFF` → Offline; `CRASHED` → Offline, Ursache „abgestürzt“; `NOSTATE` und Unbekanntes → Unbekannt. Dazu von guard.sh: `NOT_CONFIGURED` → Unbekannt, Ursache „VM auf Groß nicht eingetragen“; `NOT_FOUND` → Unbekannt, Ursache „VM nicht gefunden“; `LIBVIRT_DOWN` und `UNKNOWN` → Unbekannt, Ursache „VM-Dienst nicht bereit“.
+- **Hinweise (ab v0.4.3):** Der Status enthält eine Liste fester Hinweise (`notices`): `target_connect_plugin` und `target_flash_backup` für die Kachel Groß, `vm_name_mismatch` für die VM-Kachel (siehe 3.5). Sie ändern weder Zustand noch Verfügbarkeit der Aktionen.
 - **Live-Updates:** Die Oberfläche öffnet einen SSE-Datenstrom (`GET /api/events`, geschützt). Ein einziger Abfrage-Task im Web-Prozess fragt den Worker alle 2 Sekunden mit dem vorhandenen Befehl `get_status` und schickt Änderungen an alle offenen Datenströme. Es gibt dafür keinen neuen Worker-Befehl. Höchstens 32 Datenströme gleichzeitig.
 - **Kopierjob:** Der Status enthält das Feld `job_running` („Kopierjob läuft“). Ab Phase 5 kommt es vom echten Sync. Bis dahin ist es im Modus `real` immer aus und im Simulationsmodus mit `twinraid-admin mock-job on|off` schaltbar. Es steuert die Ausnahme vom Inaktivitäts-Timeout (siehe 5.3).
 
@@ -163,11 +242,11 @@ Destruktive oder störende Aktionen (Herunterfahren, Force-Stop, Sync mit vielen
 
 | Aktion | Verhalten / Sperre |
 |---|---|
-| Groß wecken | nur wenn Groß offline ist. Magic Packet senden, dann „Startet …“, bis Groß per TCP erreichbar ist und die API antwortet, höchstens `boot_timeout_minutes` |
+| Groß wecken | nur wenn Groß offline ist. Magic Packet senden, dann „Startet …“, bis Groß per TCP erreichbar ist und der VM-Dienst über `vm-watch` antwortet (bis v0.4.2: die API), höchstens `boot_timeout_minutes` |
 | Groß herunterfahren | gesperrt, solange ein Sync läuft, solange der Zustand der VM oder die Liste der VMs unbekannt ist und solange außer der Gaming-VM weitere VMs auf Groß laufen (ab v0.4.2, siehe unten). Läuft die Gaming-VM, fragt der Dialog „VM zuerst herunterfahren?“. Bestätigen fährt erst die VM herunter (höchstens `shutdown_timeout_minutes`), danach den Server. Bleibt die VM an, bricht TwinRaid ab, der Server läuft weiter und „Erzwingen“ wird angeboten. Ein sofortiges Herunterfahren an der laufenden VM vorbei gibt es nicht (Entscheidung E10). |
-| Gaming-VM starten | ist Groß offline: automatisch wecken, warten bis die API die VM kennt (`boot_timeout_minutes`), dann VM starten. Auch bei laufendem Groß wartet der Worker bis zu dieser Zeit auf die API, falls Groß gerade erst gestartet ist |
+| Gaming-VM starten | ist Groß offline: automatisch wecken, warten bis der VM-Dienst antwortet (`boot_timeout_minutes`), dann VM starten (`vm-start`). Auch bei laufendem Groß wartet der Worker bis zu dieser Zeit auf den VM-Dienst, falls Groß gerade erst gestartet ist |
 | Gaming-VM herunterfahren | ACPI-Signal per SSH, dann „Fährt herunter …“, bis die VM aus ist, höchstens `shutdown_timeout_minutes`. Danach Meldung „reagiert nicht“ und „Erzwingen“ |
-| Gaming-VM erzwingen | erst `shutdown_timeout_minutes` nach dem letzten erfolgreich gesendeten ACPI-Signal und nur, solange die VM noch läuft; über die API (`vm.forceStop`) |
+| Gaming-VM erzwingen | erst `shutdown_timeout_minutes` nach dem letzten erfolgreich gesendeten ACPI-Signal und nur, solange die VM noch läuft; per SSH (`vm-force-stop`, bis v0.4.2 über die API) |
 | Erzwingen und danach Server herunterfahren (ab v0.4.1) | nur nach einem Herunterfahren von Groß, das abgebrochen wurde, weil die VM nicht rechtzeitig herunterfuhr; höchstens 10 Minuten lang und nur, solange sich nichts geändert hat (siehe unten) |
 | Sync starten | gesperrt, wenn bereits ein Sync läuft; ist Groß offline, wird es automatisch geweckt |
 | Automatisches Herunterfahren nach Sync | nur wenn **der Sync den Server geweckt hat** UND die Gaming-VM nicht läuft UND keine weitere VM auf Groß läuft (Schutz vor weiteren VMs, siehe unten) UND währenddessen keine manuelle Aktion auf Groß stattfand |
@@ -180,9 +259,9 @@ Alle Aktionen laufen über eine zentrale Sperrlogik im Worker (eine Aktion pro R
 
 - **Ressourcen** sind Groß und die VM. Groß wecken belegt Groß, VM herunterfahren und Erzwingen belegen die VM, VM starten, Groß herunterfahren und „Erzwingen und danach Server herunterfahren“ belegen beide. Ist eine Ressource belegt, wird der Befehl abgelehnt; es gibt keine Warteschlange.
 - **Verfügbarkeit:** Der Worker berechnet für jede Aktion, ob sie gerade möglich ist, und sonst den Grund aus einer festen Liste: `not_enabled`, `busy`, `sync_running`, `target_online`, `target_offline`, `target_unknown`, `vm_running`, `vm_off`, `vm_unknown`, `force_not_yet`, `not_offered` (ab v0.4.1: kein gültiges Angebot für „Erzwingen und danach Server herunterfahren“), `other_vms_running` (ab v0.4.2: auf Groß laufen weitere VMs), `tour`. Er liefert das mit `get_status` aus und prüft bei jedem Befehl erneut. Die Oberfläche deaktiviert Buttons nur nach dieser Angabe und nennt die Gründe, die nicht schon aus dem Status hervorgehen.
-- **Zwischenzustände:** Solange eine Aktion läuft, meldet der Status „Startet …“ bzw. „Fährt herunter …“ und den aktuellen Schritt: `waking`, `waiting_for_api`, `starting_vm`, `stopping_vm`, `forcing_vm`, `shutting_down`. Während Groß nach dem Wecken bootet, zeigt die VM die Ursache „Wartet auf den Server“ (`target_starting`).
+- **Zwischenzustände:** Solange eine Aktion läuft, meldet der Status „Startet …“ bzw. „Fährt herunter …“ und den aktuellen Schritt: `waking`, `waiting_for_vm_service` (bis v0.4.2 `waiting_for_api`), `starting_vm`, `stopping_vm`, `forcing_vm`, `shutting_down`. Während Groß nach dem Wecken bootet, zeigt die VM die Ursache „Wartet auf den Server“ (`target_starting`).
 - **Ergebnis:** Je Ressource meldet der Status das letzte Ergebnis aus einer festen Liste (siehe Aktionslog in 5.3). Es bleibt bis zur nächsten Aktion auf dieser Ressource bzw. bis zum Neustart des Workers sichtbar.
-- **Meldung und Hinweis (ab v0.4.1):** Die Oberfläche zeigt zu jedem Ergebnis die Meldung als Verlauf. Ein Hinweis, was jetzt zu tun ist, erscheint nur, solange er nach dem aktuellen Status zutrifft: „Erzwingen ist jetzt möglich“ nur, solange Erzwingen angeboten wird; der Verweis auf „Erzwingen und danach Server herunterfahren“ nur, solange das Angebot gilt; „Wake-on-LAN prüfen“ nach `boot_timeout` nur, solange Groß aus ist; der Hinweis nach `shutdown_timeout` nur, solange Groß an ist. Hinweise, die sich nicht prüfen lassen (z. B. fehlende Rechte des API-Keys), bleiben bis zur nächsten Aktion stehen. Eine Ablehnung beim Absenden („eine andere Aktion läuft gerade“) verschwindet mit dem nächsten Live-Status.
+- **Meldung und Hinweis (ab v0.4.1):** Die Oberfläche zeigt zu jedem Ergebnis die Meldung als Verlauf. Ein Hinweis, was jetzt zu tun ist, erscheint nur, solange er nach dem aktuellen Status zutrifft: „Erzwingen ist jetzt möglich“ nur, solange Erzwingen angeboten wird; der Verweis auf „Erzwingen und danach Server herunterfahren“ nur, solange das Angebot gilt; „Wake-on-LAN prüfen“ nach `boot_timeout` nur, solange Groß aus ist; der Hinweis nach `shutdown_timeout` nur, solange Groß an ist. Hinweise, die sich nicht prüfen lassen (z. B. guard.sh lehnt ab), bleiben bis zur nächsten Aktion stehen. Eine Ablehnung beim Absenden („eine andere Aktion läuft gerade“) verschwindet mit dem nächsten Live-Status.
 - **Erzwingen:** Den Zeitpunkt des letzten ACPI-Signals kennt nur der Worker im Speicher. Ist die VM aus, wird er gelöscht. Nach einem Neustart des Workers muss erneut „Herunterfahren“ gewählt werden.
 
 **Erzwingen und danach Server herunterfahren (ab v0.4.1, Ergänzung zu E10):**
@@ -191,19 +270,19 @@ Alle Aktionen laufen über eine zentrale Sperrlogik im Worker (eine Aktion pro R
 - **Gültigkeit:** höchstens 10 Minuten nach dem Abbruch. Das reicht, um die Meldung zu lesen und nachzusehen, ob jemand die VM gerade benutzt oder Windows Updates installiert; danach kann die Lage eine andere sein, und ein neuer sauberer Versuch erzeugt ein neues Angebot.
 - **Verfällt** außerdem, sobald die VM nicht mehr als laufend gemeldet wird, Groß nicht mehr online ist, irgendeine andere Aktion startet (auch das einfache „Erzwingen“), der Worker neu startet, oder mit der Ausführung selbst (einmalig nutzbar).
 - **Befehl:** `shutdown_target_force_vm` ohne Parameter. Der Worker nimmt ihn nur an, solange sein eigenes Angebot gilt. Ein übernommener Web-Prozess gewinnt damit nichts, was er nicht schon mit `vm_force_stop` und `shutdown_target` könnte.
-- **Ablauf:** VM über die API erzwingen und warten, bis sie aus ist (höchstens 30 s); ist sie danach nicht aus, bricht TwinRaid ab und fährt Groß nicht herunter. Dann Groß sauber herunterfahren wie bei „Groß herunterfahren“.
+- **Ablauf:** VM erzwingen (`vm-force-stop`) und warten, bis sie aus ist (höchstens 30 s); ist sie danach nicht aus, bricht TwinRaid ab und fährt Groß nicht herunter. Dann Groß sauber herunterfahren wie bei „Groß herunterfahren“.
 - **Bestätigung:** Der Dialog warnt deutlich, dass Erzwingen für die VM wie Stecker ziehen ist: Nicht gespeicherte Daten gehen verloren, auch laufende Windows-Updates werden unterbrochen.
 - **Aktionslog:** `shutdown_target_force_vm` vom Auslöser `dashboard`, darin automatisch zuerst `vm_force_stop` und danach `shutdown_target` (jeweils mit `part_of`).
-- **Feste Zeiten:** Prüfabstand während einer Aktion 3 s; Bestätigung nach `vm.start` höchstens 60 s, nach `vm.forceStop` höchstens 30 s; nach `poweroff` höchstens 15 min, bis Groß nicht mehr erreichbar ist.
+- **Feste Zeiten:** Prüfabstand während einer Aktion 3 s; Bestätigung nach `vm-start` höchstens 60 s, nach `vm-force-stop` höchstens 30 s; nach `poweroff` höchstens 15 min, bis Groß nicht mehr erreichbar ist.
 - **Nach jeder Aktion** prüft der Worker den Status sofort neu, damit die Oberfläche nicht auf die nächste reguläre Prüfung wartet.
 
 **Schutz vor weiteren VMs beim Herunterfahren von Groß (ab v0.4.2, Ergänzung zu E10):**
 
 - Laufen auf Groß außer der Gaming-VM weitere VMs, schaltet TwinRaid Groß nicht aus. Das gilt für „Groß herunterfahren“, für „Erzwingen und danach Server herunterfahren“ und ab Phase 6 für das automatische Herunterfahren nach einem Sync.
-- Grundlage ist die VM-Liste aus 3.5; es braucht keine weiteren Rechte. Als laufend gilt jeder Zustand außer `SHUTOFF`.
+- Grundlage ist die VM-Liste der Sitzung `vm-watch` (3.5); es braucht keine weiteren Rechte. Als laufend gilt jeder Zustand außer `SHUTOFF`. Ab v0.4.3 prüft guard.sh zusätzlich selbst unmittelbar vor `poweroff` (3.5); so gilt der Schutz auch gegen einen übernommenen TwinRaid.
 - **Anzeige:** Der Button ist gesperrt (`other_vms_running`). Die Begründung nennt den Server und die VMs: „Auf <Servername> laufen noch weitere VMs: <Namen>. Bitte fahre sie zuerst über die Unraid-Oberfläche herunter. Zur Sicherheit schaltet TwinRaid den Server nicht aus, solange andere VMs laufen, damit keine Daten verloren gehen.“
-- **Erneute Prüfung im Worker:** unmittelbar vor `poweroff`, also auch nach dem Herunterfahren der Gaming-VM; bei der erzwungenen Variante zusätzlich vor dem Erzwingen, damit die Gaming-VM nicht umsonst hart ausgeschaltet wird. Läuft dann eine weitere VM, bricht der Ablauf mit `other_vms_running` ab; lässt sich die Liste nicht lesen, mit der Ursache aus 3.5 (z. B. `api_unreachable`). Groß bleibt in beiden Fällen an; das Ergebnis steht im Status und im Aktionslog.
-- **Liste unbekannt** (z. B. API-Fehler): Herunterfahren bleibt gesperrt (`vm_unknown`), wie bei unbekanntem Zustand der Gaming-VM.
+- **Erneute Prüfung im Worker:** unmittelbar vor `poweroff`, also auch nach dem Herunterfahren der Gaming-VM; bei der erzwungenen Variante zusätzlich vor dem Erzwingen, damit die Gaming-VM nicht umsonst hart ausgeschaltet wird. Läuft dann eine weitere VM, bricht der Ablauf mit `other_vms_running` ab; lässt sich die Liste nicht lesen, mit der Ursache aus 3.5 (z. B. `vm_service_unavailable`). Lehnt guard.sh das Ausschalten ab, gilt dasselbe (`vm_running`, `other_vms_running` oder `vm_service_unavailable`). Groß bleibt in allen Fällen an; das Ergebnis steht im Status und im Aktionslog.
+- **Liste unbekannt** (z. B. VM-Dienst nicht bereit): Herunterfahren bleibt gesperrt (`vm_unknown`), wie bei unbekanntem Zustand der Gaming-VM.
 
 **Aktionen im Echtbetrieb einzeln freischalten (Entscheidung E9):** In `twinraid.yaml` gibt es den optionalen Abschnitt `actions` mit `wake`, `vm` und `shutdown`, alle standardmäßig aus. Er gilt nur im Modus `real`; im Simulationsmodus sind alle Aktionen verfügbar.
 
@@ -269,7 +348,7 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 - Die Uhrzeit gilt als Ortszeit der angegebenen Zeitzone. Das Verhalten an den Tagen der Zeitumstellung wird in Phase 6 festgelegt.
 - Der manuelle Sync bleibt jederzeit möglich (außer während eines laufenden Syncs).
 - Der nächste geplante Lauf wird im Dashboard und im Startlog mit Wochentag und Uhrzeit angezeigt (ab Phase 6).
-- Fehler lösen optional eine Unraid-Benachrichtigung über die API aus.
+- Fehler lösen optional eine Unraid-Benachrichtigung aus. Der Weg wird in Phase 6 festgelegt; einen API-Key für Groß gibt es seit v0.4.3 nicht mehr (E22), möglich wäre Unraids Skript `notify` über den Wächter auf Klein.
 
 ---
 
@@ -426,7 +505,7 @@ Cross-Origin-Resource-Policy: same-origin
 
 - Tabelle in der SQLite-Datenbank des Web-Prozesses: Zeit (UTC), Client-IP, Aktion, Ergebnis. Aktion und Ergebnis stammen aus festen Listen; kein Feld übernimmt Text aus Requests.
 - Phase 2 protokolliert: Login erfolgreich, fehlgeschlagen, gesperrt oder ohne gesetztes Passwort; Beginn einer Sperre; Logout; abgelaufene Session; fehlgeschlagene CSRF- oder Origin-Prüfung; die CLI-Befehle `set-password`, `renew-cert` und `unlock`. Gleiche Abweisungen derselben IP werden höchstens einmal pro Minute eingetragen.
-- Ab Phase 3 zusätzlich die CLI-Befehle `set-api-key` und `trust-api-cert`.
+- Von Phase 3 bis v0.4.2 zusätzlich die CLI-Befehle `set-api-key` und `trust-api-cert`. Seit v0.4.3 gibt es sie nicht mehr; alte Einträge bleiben lesbar.
 - Ab v0.3.1 zusätzlich die Bestätigung des Hinweises zum CA-Wechsel.
 - Ab Phase 4 zusätzlich jede Anforderung einer Aktion über die Oberfläche (`wake_target`, `shutdown_target`, `vm_start`, `vm_stop`, `vm_force_stop`, ab v0.4.1 `shutdown_target_force_vm`) mit dem Ergebnis `requested` (vom Worker angenommen) oder `rejected`, sowie die CLI-Befehle `init-ssh-keys` und `trust-host-key`. Wie die Aktion ausging, steht im Aktionslog des Workers.
 - **Nie gespeichert oder geloggt:** Passwörter, Session-IDs, CSRF-Tokens, Cookies, Request-Inhalte.
@@ -438,7 +517,7 @@ Cross-Origin-Resource-Policy: same-origin
 
 - Datei `/data/worker/actions.jsonl`, eine JSON-Zeile pro Eintrag. Ordner `0700` und Datei `0600`, beide root: Der Web-Prozess kann das Log weder lesen noch verändern.
 - Felder: `at` (UTC), `id` (vom Worker vergeben, verbindet Beginn und Ende), `action`, `trigger` (`dashboard` oder `automatic`; bei `automatic` zusätzlich `part_of` mit der auslösenden Aktion, z. B. das Wecken beim VM-Start), `result` (`started` oder das Ergebnis aus einer festen Liste).
-- Ergebnisse: `success`, `wol_failed`, `boot_timeout`, die API-Ursachen aus 3.5 (`api_unreachable`, `api_redirected`, `api_key_missing`, `api_key_invalid`, `api_forbidden`, `api_cert_untrusted`, `api_cert_changed`, `api_error`, `vm_not_found`), `vm_start_timeout`, `vm_stop_timeout`, `ssh_key_missing`, `ssh_host_untrusted`, `ssh_host_key_mismatch`, `ssh_auth_failed`, `ssh_unreachable`, `ssh_denied`, `ssh_failed`, `remote_failed`, `shutdown_timeout`, `other_vms_running` (ab v0.4.2: Groß wurde nicht ausgeschaltet, weil weitere VMs liefen), `interrupted` (Worker beendet), `internal_error`. Kein Feld übernimmt Text aus fremden Antworten.
+- Ergebnisse: `success`, `wol_failed`, `boot_timeout`, `vm_not_found`, `vm_not_configured`, `vm_service_unavailable`, `vm_start_timeout`, `vm_stop_timeout`, `ssh_key_missing`, `ssh_host_untrusted`, `ssh_host_key_mismatch`, `ssh_auth_failed`, `ssh_unreachable`, `ssh_denied`, `ssh_failed`, `guard_outdated`, `watch_interrupted` (der Stand der Sitzung `vm-watch` fehlte), `remote_failed`, `shutdown_timeout`, `vm_running` (guard.sh lehnte `poweroff` ab, weil die Gaming-VM lief), `other_vms_running` (ab v0.4.2: Groß wurde nicht ausgeschaltet, weil weitere VMs liefen), `interrupted` (Worker beendet), `internal_error`. Neu in v0.4.3 sind `vm_not_configured`, `vm_service_unavailable`, `guard_outdated`, `watch_interrupted` und `vm_running`; bis v0.4.2 gab es stattdessen die API-Ursachen (`api_unreachable`, `api_redirected`, `api_key_missing`, `api_key_invalid`, `api_forbidden`, `api_cert_untrusted`, `api_cert_changed`, `api_error`), alte Einträge bleiben lesbar. Kein Feld übernimmt Text aus fremden Antworten.
 - Jeder Eintrag steht zusätzlich im Container-Log. Ab 1 MiB wird die Datei nach `actions.jsonl.1` umbenannt (genau eine ältere Datei).
 - Anzeige mit `twinraid-admin show-action-log`.
 
@@ -493,23 +572,25 @@ Startoptionen für Docker, entsprechend später im Unraid-Template:
   - `twinraid-admin set-password`: fragt das Passwort zweimal ohne Anzeige ab, nie als Argument (Shell-Historie). Für Skripte und Tests gibt es `--stdin`. Beendet alle Sessions.
   - `twinraid-admin show-cert-fingerprint`, `twinraid-admin unlock` (Phase 2, siehe 5.2 und 5.3).
   - `twinraid-admin renew-cert` erneuert das Serverzertifikat (Geräte merken nichts); `renew-cert --new-ca` erzeugt eine neue CA, die auf allen Geräten neu installiert werden muss (Phase 3, siehe 5.2).
-  - `twinraid-admin set-api-key target` (Phase 3): fragt den API-Key von Groß ohne Anzeige ab (für Skripte `--stdin`), prüft das Format wie Unraid (nur `A–Z`, `a–z`, Ziffern, `-` und `_`, höchstens 512 Zeichen) und speichert ihn. Bei `scheme: https` ohne bestätigten Fingerabdruck folgt die Bestätigung wie bei `trust-api-cert`. Im Modus `real` macht der Befehl danach eine Testabfrage und meldet verständlich, was passt und was nicht. `set-api-key source` folgt in Phase 5.
-  - `twinraid-admin trust-api-cert target` (Phase 3): zeigt den SHA-256-Fingerabdruck des Zertifikats, das Groß gerade ausliefert, und speichert ihn nach Bestätigung (siehe 3.5). Für Skripte kann der erwartete Fingerabdruck mit `--fingerprint` übergeben werden; er muss genau übereinstimmen. Nur im Modus `real` und nur bei `scheme: https`.
+  - `twinraid-admin set-api-key target` und `twinraid-admin trust-api-cert target` (Phase 3 bis v0.4.2) entfallen ab v0.4.3 (E22): TwinRaid braucht für Groß keinen API-Key mehr.
   - `twinraid-admin mock-job on|off` (Phase 3, nur im Simulationsmodus): schaltet das Feld `job_running` der Simulation, um die Sitzungsregel aus 5.3 auszuprobieren.
-  - `twinraid-admin init-ssh-keys`: erzeugt ed25519-Keys „sync“ und „power“ und gibt die fertigen `authorized_keys`-Zeilen inklusive Einschränkungen aus. In Phase 4 nur „power“: Der Key wird nur angelegt, wenn er fehlt; sonst gibt der Befehl die Zeile zum vorhandenen Key erneut aus. `--new` ersetzt ihn (die Zeile auf Groß muss dann ebenfalls ersetzt werden). Die Zeile enthält `from=` mit der verwendeten Adresse des Containers (siehe 5.1).
-  - `twinraid-admin trust-host-key target`: holt den ed25519-Hostkey von Groß (`ssh-keyscan`), zeigt seinen SHA-256-Fingerabdruck zum Vergleich mit `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` auf Groß und speichert ihn nach Bestätigung mit `yes`. Für Skripte kann der erwartete Fingerabdruck mit `--fingerprint` übergeben werden. Danach gilt strikte Hostkey-Prüfung. Ist der Key „power“ vorhanden, folgt ein Verbindungstest mit `check`, der nichts verändert. Nur im Modus `real`.
+  - `twinraid-admin init-ssh-keys [--key status|power] [--new]`: erzeugt ed25519-Keys und gibt die fertigen `authorized_keys`-Zeilen inklusive Einschränkungen aus. Ohne `--key` die Keys, die die Konfiguration braucht: „status“ immer (ab v0.4.3), „power“, wenn `actions.vm` oder `actions.shutdown` freigeschaltet ist (im Simulationsmodus beide). Ein Key wird nur angelegt, wenn er fehlt; sonst gibt der Befehl die Zeile zum vorhandenen Key erneut aus. `--new` ersetzt den mit `--key` genannten Key (die Zeile auf Groß muss dann ebenfalls ersetzt werden) und ist nur zusammen mit `--key` erlaubt. Die Zeile enthält `from=` mit der verwendeten Adresse des Containers (siehe 5.1). Der Key „sync“ folgt in Phase 5.
+  - `twinraid-admin trust-host-key target`: holt den ed25519-Hostkey von Groß (`ssh-keyscan`), zeigt seinen SHA-256-Fingerabdruck zum Vergleich mit `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` auf Groß und speichert ihn nach Bestätigung mit `yes`. Für Skripte kann der erwartete Fingerabdruck mit `--fingerprint` übergeben werden. Danach gilt strikte Hostkey-Prüfung. Für jeden vorhandenen Key („status“, „power“) folgt ein Verbindungstest mit `check`, der nichts verändert und die Version von guard.sh prüft. Nur im Modus `real`.
   - `twinraid-admin show-action-log [--lines N]` (Phase 4): zeigt die letzten Einträge des Aktionslogs (siehe 5.3).
-  - `twinraid-admin mock-tour on|off` und `twinraid-admin mock-fault vm-hang|api-forbidden|ssh-denied|no-boot on|off` (Phase 4, nur im Simulationsmodus, siehe 6.4).
+  - `twinraid-admin mock-tour on|off` und `twinraid-admin mock-fault <Name> on|off` (Phase 4, nur im Simulationsmodus, Namen siehe 6.4).
 - Secrets stehen niemals in der YAML-Datei, in Git, in Logs oder im Frontend.
-- Die Befehle für den SSH-Key „power“ kommen in Phase 4, der Key „sync“ und `set-api-key source` in Phase 5.
-- Der Worker liest API-Key und Fingerabdruck bei jeder Prüfung neu; nach `set-api-key` oder `trust-api-cert` ist kein Neustart nötig.
+- Die Befehle für den SSH-Key „power“ kommen in Phase 4, der Key „status“ in v0.4.3, der Key „sync“ in Phase 5.
+- Der Worker liest SSH-Keys und den bestätigten Hostkey bei jedem Verbindungsaufbau neu; nach `init-ssh-keys` oder `trust-host-key` ist kein Neustart nötig. Eine geänderte Datei beendet auch die Pause nach einem dauerhaften Fehler der Sitzung `vm-watch` (3.5).
 - Die CLI läuft als root. Zugriffe auf die Datenbank des Web-Prozesses erledigt sie in einem Kindprozess als Web-Benutzer, weil root ohne `DAC_OVERRIDE` dort nicht schreiben darf. Der Container braucht dafür keine zusätzliche Capability.
 
 ### 5.6 Rechte auf den Unraid-Servern (Least Privilege)
 
 - **API-Key Klein:** nur Docker-Steuerung (Container stoppen/starten, lesen).
-- **API-Key Groß:** Ab Phase 3 ein Key **ohne Rolle** mit der einzigen Berechtigung `VMS:READ_ANY` (in der Unraid-Oberfläche: Ressource „VMS“, Aktion „Read (any)“). Die Rolle „Viewer“ ist zu breit: Sie darf laut Quellcode der Unraid-API alle Bereiche außer API-Keys lesen. Ab Phase 4 kommt `VMS:UPDATE_ANY` für Start und Stopp hinzu.
-- **Rechte werden getestet:** In älteren API-Versionen gab es einen Fehler, durch den ein nur lesender Key Container und VMs starten und stoppen konnte (GitHub-Issue unraid/api #1723). In Phase 4 wird geprüft, dass ein Key ohne die nötigen Rechte tatsächlich abgewiesen wird.
+- **API-Key Groß:** entfällt ab v0.4.3 (Entscheidung E22, siehe 3.4 und 3.5). Von Phase 3 bis v0.4.2 war es ein Key **ohne Rolle** mit `VMS:READ_ANY`, ab Phase 4 zusätzlich `VMS:UPDATE_ANY`; in Phase 4 wurde real geprüft, dass ein Key ohne diese Rechte abgewiesen wird (Fehler unraid/api #1723 behoben). Nach der Umstellung wird der Key in Unraid gelöscht (*Settings → Management Access → API Keys*).
+- **SSH-Key „status“ auf Groß (ab v0.4.3):**
+  `restrict,from="<Container-IP>",command="/bin/bash /boot/config/twinraid/guard.sh status" ssh-ed25519 … twinraid-status`
+  - `guard.sh status` erlaubt genau zwei Anfragen: `check` (gibt `twinraid-guard <Version> status ok` aus) und `vm-watch` (Statuszeilen, siehe 3.5). Beide verändern nichts.
+  - Mit diesem Key läuft die dauerhafte Sitzung für den Status. Auch eine Installation ohne freigeschaltete Aktionen („Nur Statusanzeige“) braucht damit keinen Key, der etwas verändern kann. Ein Fehler in `vm-watch` kann über diese Verbindung nichts auslösen.
 - **SSH-Key „sync“ auf Groß (Phase 5):**
   `restrict,from="<Container-IP>",command="/bin/bash /boot/config/twinraid/guard.sh sync" ssh-ed25519 …`
   `guard.sh` erlaubt ausschließlich rsync im Server-Modus mit Ziel in den konfigurierten Shares bzw. im Template-Ordner. Bis dahin lehnt der Modus `sync` alles ab.
@@ -517,12 +598,12 @@ Startoptionen für Docker, entsprechend später im Unraid-Template:
   `restrict,from="<Container-IP>",command="/bin/bash /boot/config/twinraid/guard.sh power" ssh-ed25519 … twinraid-power`
   - `restrict` schaltet Terminal, Port-, Agent- und X11-Weiterleitung sowie `~/.ssh/rc` ab, auch Funktionen, die künftige OpenSSH-Versionen hinzufügen. Es ersetzt die vier einzelnen `no-…`-Optionen (Entscheidung E12).
   - Unraids eigene Prüfung beim Speichern (*Users → root → SSH authorized keys*, `checkKey()` in `UserEdit.page` von Unraid 7.3) akzeptiert diese Zeile; gespeichert wird sie unverändert. Geprüft in Phase 4.
-  - `guard.sh power` erlaubt genau drei Anfragen in `SSH_ORIGINAL_COMMAND`, die nur mit festen Mustern verglichen und nie als Befehl ausgewertet werden: `check` (Verbindungstest, gibt `twinraid-guard <Version> power ok` aus), `poweroff` (`/sbin/poweroff`) und `vm-shutdown <UUID>` (`/usr/bin/virsh shutdown --domain <UUID>`, die UUID wird streng geprüft). Alles andere endet mit Exit-Code 2 und einem Eintrag im Syslog von Groß.
+  - `guard.sh power` erlaubt ab v0.4.3 genau fünf Anfragen in `SSH_ORIGINAL_COMMAND`, alle ohne Parameter, die nur mit festen Texten verglichen und nie als Befehl ausgewertet werden: `check` (Verbindungstest, gibt `twinraid-guard <Version> power ok` aus), `vm-start`, `vm-shutdown` (nur ACPI), `vm-force-stop` und `poweroff` (`/sbin/poweroff`, nur wenn alle VMs aus sind). Die VM-Befehle gelten nur der VM aus `power.conf` (3.5). Alles andere endet mit Exit-Code 2 und einem Eintrag im Syslog von Groß. Bis v0.4.2 waren es `check`, `poweroff` und `vm-shutdown <UUID>`.
+  - Der Key „power“ wird nur für Aktionen benutzt und ist nur nötig, wenn `actions.vm` oder `actions.shutdown` freigeschaltet ist. Er darf die eingetragene VM starten, herunterfahren und erzwingen; das ist weniger, als der frühere API-Key durfte (alle VMs). Groß darf er nur ausschalten, wenn keine VM läuft.
 - **Dauerhaft gespeichert** wird die Zeile in `/boot/config/ssh/root/authorized_keys`; seit Unraid 6.9 ist `/root/.ssh` ein Link dorthin. Bearbeitet wird sie in der WebGUI unter *Users → root → SSH authorized keys*.
 - **SSH-Client im Worker:** feste Argumentliste mit `-F /dev/null`, `BatchMode=yes`, `IdentitiesOnly=yes`, `StrictHostKeyChecking=yes`, eigener `UserKnownHostsFile` in `/data/secrets`, `GlobalKnownHostsFile=/dev/null`, `HostKeyAlgorithms=ssh-ed25519`, `ConnectTimeout=5`, ohne Passwort-Anmeldung. Fehler werden anhand von Exit-Code und festen Meldungen von OpenSSH einer Ursache zugeordnet; die Ausgabe selbst wird nicht geloggt.
-- Die Wrapper-Skripte liegen im Repo unter `host-scripts/` und werden auf Groß nach `/boot/config/twinraid/` kopiert. `/boot` ist FAT32, Dateien dort sind nicht ausführbar; deshalb der Aufruf über `/bin/bash`.
-- **Test ohne echte Server:** Die CI startet einen Wegwerf-Container als nachgebautes Groß (Image per Digest gepinnt, `openssh-server` in derselben gepinnten Version wie der Client, nur im Test) mit `guard.sh`, einer nachgebauten Unraid-API und Platzhaltern für `poweroff` und `virsh`. Geprüft werden `from=`, `restrict`, die erzwungene Befehlszeile, die strikte Hostkey-Prüfung und die Abläufe Herunterfahren, VM herunterfahren und Erzwingen (`docker/ssh-test.sh`).
-- Die Unraid-API wird per HTTPS mit bestätigtem Fingerabdruck angesprochen, falls in Unraid aktiviert. Sonst läuft sie per HTTP nur innerhalb des Server-Netzes (bekanntes Restrisiko, deutlich angezeigt, siehe 3.5).
+- Die Wrapper-Skripte liegen im Repo unter `host-scripts/` und werden auf Groß nach `/boot/config/twinraid/` kopiert; dort liegt auch `power.conf`. `/boot` ist FAT32, Dateien dort sind nicht ausführbar; deshalb der Aufruf über `/bin/bash`. Bootet Groß intern (ab Unraid 7.3, Boot-Pool mit ZFS), liegt `/boot` nicht auf einem Stick; der Aufruf über `/bin/bash` funktioniert dort ebenso.
+- **Test ohne echte Server:** Die CI startet einen Wegwerf-Container als nachgebautes Groß (Image per Digest gepinnt, `openssh-server` in derselben gepinnten Version wie der Client, nur im Test) mit `guard.sh`, einem nachgebauten `virsh` mit allen Zuständen, weiteren VMs und Hängern und einem Platzhalter für `poweroff`. Geprüft werden `from=`, `restrict`, die erzwungenen Befehlszeilen beider Keys, die strikte Hostkey-Prüfung, die Sitzung `vm-watch` (Zustände, Lebenszeichen, Ende ohne übrig bleibende Prozesse, Neuverbindung), die Prüfung vor `poweroff`, die Merkmale von Unraid Connect und alle Abläufe aus 4.2 (`docker/ssh-test.sh`).
 
 ### 5.7 Regeln für den Code
 
@@ -566,7 +647,7 @@ Das Repo ist öffentlich auf GitHub, das Container-Image wird öffentlich über 
 
 | Pfad | Besitzer | Rechte | Inhalt |
 |---|---|---|---|
-| `/data/secrets` | root | 0700 | Passwort-Hash; ab Phase 3 API-Key von Groß (`target-api-key`) und bestätigter Fingerabdruck seines Zertifikats (`target-api-cert.sha256`); ab Phase 4 SSH-Key „power“ (`ssh-power`, `ssh-power.pub`) und bestätigter Hostkey von Groß (`target-ssh-known-hosts`), alle Dateien `0600` |
+| `/data/secrets` | root | 0700 | Passwort-Hash; ab Phase 4 SSH-Key „power“ (`ssh-power`, `ssh-power.pub`) und bestätigter Hostkey von Groß (`target-ssh-known-hosts`); ab v0.4.3 SSH-Key „status“ (`ssh-status`, `ssh-status.pub`); alle Dateien `0600`. Von Phase 3 bis v0.4.2 lagen hier API-Key und Fingerabdruck von Groß (`target-api-key`, `target-api-cert.sha256`); `twinraid-init` löscht sie ab v0.4.3 einmal mit Hinweis im Log |
 | `/data/tls` | root | 0700 | CA (`ca.pem`, `ca-key.pem`), Serverzertifikat (`server.pem`, `server-key.pem`), Vermerk des letzten CA-Wechsels (`ca-change.json`) |
 | `/data/web` | root, Gruppe 10001 | 0770 | SQLite des Web-Prozesses (Datei `0600`, Besitzer 10001); Vermerk der letzten Erneuerungsanfrage `tls-renewal.json` |
 | `/data/worker` (ab Phase 4) | root | 0700 | Aktionslog des Workers (`actions.jsonl`, `actions.jsonl.1`, Dateien `0600`); der Web-Prozess kann es weder lesen noch verändern |
@@ -608,23 +689,23 @@ servers:
   source:                      # Unraid Klein – hier läuft der Container
     name: "Unraid Klein"
     host: 192.168.10.10
-    webgui:                    # wie „SSL/TLS verwenden“ in Unraid: Nein → http, Ja → https
+    webgui:                    # ohne Wirkung: Klein wird nicht geprüft (Konzept 4.1)
       scheme: http
       port: 80                 # optional, Standard 80 bei http, 443 bei https
   target:                      # Unraid Groß
     name: "Unraid Groß"
     host: 192.168.10.11
-    webgui:
-      scheme: http
-      port: 80
+    webgui:                    # nur für die Online-Prüfung (TCP auf diesen Port)
+      scheme: http             # wie „SSL/TLS verwenden“ in Unraid: Nein → http, Ja → https
+      port: 80                 # optional, Standard 80 bei http, 443 bei https
     mac: "AA:BB:CC:DD:EE:FF"
     # wol_broadcast: 192.168.10.255  # optional; ohne Angabe aus dem eigenen Netz abgeleitet
     boot_timeout_minutes: 5
-    # ssh_port: 22               # optional, Standard 22 (Herunterfahren per SSH)
+    # ssh_port: 22               # optional, Standard 22 (Status, VM und Herunterfahren per SSH)
 
 gaming_vm:
   display_name: "Gaming-VM"
-  unraid_vm_name: "Windows 11 Gaming"
+  unraid_vm_name: "Windows 11 Gaming"  # optional: Abgleich mit power.conf auf Groß
   shutdown_timeout_minutes: 3  # danach wird "Erzwingen" angeboten
 
 actions:                       # optional; nur im Modus real, Standard: alles aus (siehe 4.2)
@@ -666,7 +747,8 @@ Ergänzende Regeln:
 - **Share-Namen** (`shares`, `appdata_share`): Prüfung über eine Positivliste erlaubter Zeichen. Erlaubt sind die Buchstaben `A–Z` und `a–z`, Ziffern, Punkt, Unterstrich und Bindestrich. Das erste Zeichen muss ein Buchstabe oder eine Ziffer sein, höchstens 64 Zeichen. Damit sind Schrägstrich, `..`, führendes Minus, Leerzeichen und Steuerzeichen ausgeschlossen. `system` und `domains` sind unabhängig von Groß- und Kleinschreibung verboten. Doppelte Einträge sind ein Fehler. `appdata_share` muss in `shares` enthalten sein.
 - **Pfade** (`exclude`, `protect_on_target`): relativ zu `/mnt/user`, also ohne führenden Schrägstrich. Nicht erlaubt sind `..`, `.` und leere Bestandteile, Bestandteile mit führendem Minus sowie Steuer- und unsichtbare Formatzeichen. Zusätzlich verboten sind die Platzhalterzeichen `*`, `?`, `[`, `]` und der Backslash, weil rsync sie in Filterregeln als Muster auswertet. Der erste Bestandteil muss eine konfigurierte Share sein. Eine ganze Share darf nicht ausgeschlossen werden; dafür wird sie aus `shares` entfernt.
 - **Container-Namen** in `never_stop`: nur die von Docker erlaubten Zeichen.
-- **WebGUI** (`servers.<server>.webgui`, ab Phase 3): `scheme` ist `http` oder `https`; `port` ist optional (1 bis 65535, Standard 80 bzw. 443).
+- **WebGUI** (`servers.<server>.webgui`, ab Phase 3): `scheme` ist `http` oder `https`; `port` ist optional (1 bis 65535, Standard 80 bzw. 443). Ab v0.4.3 bestimmt es nur den Port der Online-Prüfung von Groß; bei Klein hat es keine Wirkung.
+- **Gaming-VM** (`gaming_vm`): `unraid_vm_name` ist ab v0.4.3 optional (Abgleich mit dem Namen der VM aus `power.conf`, siehe 3.5); ist es gesetzt, gelten dieselben Zeichenregeln wie bisher.
 - **Groß** (ab Phase 4): `wol_broadcast` ist optional (IPv4-Adresse, siehe 4.2); `ssh_port` ist optional (1 bis 65535, Standard 22).
 - **Aktionen** (`actions`, ab Phase 4): optional; `wake`, `vm` und `shutdown` sind jeweils `true` oder `false`, Standard `false`.
 - **Erlaubte Netze** (`web.allowed_networks`): mindestens ein Eintrag. Erlaubt sind Netze in CIDR-Schreibweise und einzelne Adressen (`/32` bzw. `/128` oder ohne Maske), gemischt. Gesetzte Host-Bits wie `192.168.10.50/24` sind ein Fehler, damit ein vermeintlich einzelnes Gerät nicht still das ganze Netz freigibt.
@@ -681,10 +763,10 @@ Ergänzende Regeln:
 - Fehlt der Wert oder ist er ungültig, startet der Container nicht und meldet im Log klar, was fehlt und welche Werte erlaubt sind.
 - Entwicklungs-Skripte, Tests und CI setzen `mock` ausdrücklich.
 - **Mock-Modus:** Alle Integrationen mit Außenwirkung sind durch Simulationen ersetzt. Das Log warnt beim Start deutlich. Die Oberfläche zeigt dauerhaft ein auffälliges Banner „Simulationsmodus“. `job_running` wird mit `twinraid-admin mock-job on|off` geschaltet.
-  - **Interaktive Simulation (ab Phase 4, Entscheidung E11):** Groß und die VM starten ausgeschaltet, Klein ist online („TwinRaid läuft auf diesem Server“). Aktionen wirken mit festen Wartezeiten: Groß bootet 20 s, danach braucht die API weitere 10 s; die VM startet in 3 s und fährt in 8 s herunter; Groß fährt in 15 s herunter.
+  - **Interaktive Simulation (ab Phase 4, Entscheidung E11):** Groß und die VM starten ausgeschaltet, Klein ist online („TwinRaid läuft auf diesem Server“). Aktionen wirken mit festen Wartezeiten: Groß bootet 20 s, danach braucht der VM-Dienst weitere 10 s; die VM startet in 3 s und fährt in 8 s herunter; Groß fährt in 15 s herunter.
   - **Fester Rundlauf:** Die bisherige Statussimulation durchläuft einen festen Ablauf, der jeden Zustand und jede Ursache mindestens einmal zeigt, ab v0.3.2 auch „TwinRaid läuft auf diesem Server“ (ein Test prüft die Vollständigkeit). Ab Phase 4 wird sie mit `twinraid-admin mock-tour on|off` eingeschaltet; währenddessen sind Aktionen mit dem Grund `tour` gesperrt.
-  - **Fehler simulieren:** `twinraid-admin mock-fault <Name> on|off` mit `vm-hang` (VM reagiert nicht auf Herunterfahren), `api-forbidden` (API-Key ohne `VMS:UPDATE_ANY`), `ssh-denied` (`guard.sh` lehnt ab), `no-boot` (Groß reagiert nicht auf Wake-on-LAN) und ab v0.4.2 `other-vm` (auf Groß läuft eine weitere VM).
-- **Modus `real` (ab Phase 3 nur lesend, ab Phase 4 mit freigeschalteten Aktionen):** Status-Abfragen sind immer erlaubt, also der TCP-Check von Groß und der VM-Status über die Unraid-API. Die Aktionen `wake_target`, `shutdown_target`, `shutdown_target_force_vm`, `vm_start`, `vm_stop` und `vm_force_stop` sind nur verfügbar, wenn sie in `actions` freigeschaltet sind (siehe 4.2); sonst lehnt der Worker sie vor jeder Verarbeitung mit dem Fehlercode `not_available` ab. Die Sync-Befehle (`sync_start`, `sync_cancel`, `sync_confirm_deletions`) bleiben bis Phase 5 mit `not_available` gesperrt. Ist keine Aktion freigeschaltet, zeigt die Oberfläche das Banner „Nur Statusanzeige“.
+  - **Fehler simulieren:** `twinraid-admin mock-fault <Name> on|off` mit `vm-hang` (VM reagiert nicht auf Herunterfahren), `ssh-denied` (`guard.sh` lehnt ab), `no-boot` (Groß reagiert nicht auf Wake-on-LAN), ab v0.4.2 `other-vm` (auf Groß läuft eine weitere VM) und ab v0.4.3 `vm-not-configured` (`power.conf` fehlt), `libvirt-down` (VM-Dienst nicht bereit), `guard-outdated` (guard.sh zu alt) und `connect-plugin` (Unraid Connect mit Flash Backup auf Groß). `api-forbidden` entfällt mit v0.4.3.
+- **Modus `real` (ab Phase 3 nur lesend, ab Phase 4 mit freigeschalteten Aktionen):** Status-Abfragen sind immer erlaubt, also der TCP-Check von Groß und der VM-Status über die Sitzung `vm-watch` mit dem Key „status“ (ab v0.4.3; bis v0.4.2 über die Unraid-API). Die Aktionen `wake_target`, `shutdown_target`, `shutdown_target_force_vm`, `vm_start`, `vm_stop` und `vm_force_stop` sind nur verfügbar, wenn sie in `actions` freigeschaltet sind (siehe 4.2); sonst lehnt der Worker sie vor jeder Verarbeitung mit dem Fehlercode `not_available` ab. Die Sync-Befehle (`sync_start`, `sync_cancel`, `sync_confirm_deletions`) bleiben bis Phase 5 mit `not_available` gesperrt. Ist keine Aktion freigeschaltet, zeigt die Oberfläche das Banner „Nur Statusanzeige“.
 
 ---
 
@@ -757,8 +839,8 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 - [ ] Groß: Wake-on-LAN im BIOS aktivieren („Wake on LAN“ bzw. „Power On by PCI-E“ an, „ErP/EuP“ aus) und `ethtool -s eth0 wol g` in `/boot/config/go` eintragen
 - [ ] Groß: Array startet automatisch (*Settings → Disk Settings → Enable auto start*), sonst sind VMs nach dem Wecken nicht verfügbar
 - [ ] Gaming-VM (Windows): Energieoptionen → „Beim Drücken des Netzschalters: Herunterfahren“, sonst reagiert sie nicht auf das ACPI-Signal
-- [ ] Groß: SSH aktivieren; `guard.sh` nach `/boot/config/twinraid/` kopieren; `authorized_keys`-Zeilen aus `twinraid-admin init-ssh-keys` unter *Users → root → SSH authorized keys* eintragen; Hostkey mit `twinraid-admin trust-host-key target` bestätigen
-- [ ] Groß: API-Key ohne Rolle mit `VMS:READ_ANY` anlegen und mit `twinraid-admin set-api-key target` hinterlegen (ab Phase 4 zusätzlich `VMS:UPDATE_ANY`, vorher Rechtetest mit dem Lese-Key; ab Phase 5 Key für Klein, siehe 5.6)
+- [ ] Groß: SSH aktivieren; `guard.sh` (Version 2) nach `/boot/config/twinraid/` kopieren; `power.conf` mit der UUID der Gaming-VM anlegen; die Zeilen aus `twinraid-admin init-ssh-keys` (Key „status“, für freigeschaltete Aktionen auch „power“) unter *Users → root → SSH authorized keys* eintragen; Hostkey mit `twinraid-admin trust-host-key target` bestätigen
+- [ ] Groß: einen API-Key von TwinRaid aus v0.4.2 oder früher in Unraid löschen (ab v0.4.3 nicht mehr nötig)
 - [ ] Aktionen einzeln in `actions` freischalten und nach dem Testprotokoll in `docs/EINRICHTUNG.md` prüfen
 - [ ] Klein: „Host access to custom networks“ in den Docker-Einstellungen **nicht** aktivieren (siehe 5.1)
 - [ ] Klein: Container-Templates auf Pool-Pfade prüfen und auf `/mnt/user/…` umstellen
@@ -767,7 +849,7 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 - [ ] Feste IP nur im Template („Fixed IP address“); das Startlog zeigt `TLS address … (detected on …)` mit dieser IP
 - [ ] Feste, lokal administrierte MAC im Template („Fixed MAC address“); in UniFi die IP per MAC reservieren; MAC vor und nach einem Update vergleichen
 - [ ] `web.allowed_networks`: im Server-Netz nur einzelne Geräte als `/32`, andere Netze ganz, wenn die Router-Firewall sie regelt
-- [ ] Container installieren, Konfiguration anlegen, Passwort setzen, bei `https` Zertifikat von Groß bestätigen (`trust-api-cert`), ab Phase 4 Hostkey von Groß bestätigen
+- [ ] Container installieren, Konfiguration anlegen, Passwort setzen, Hostkey von Groß bestätigen
 - [ ] Geräte: CA-Zertifikat auf Windows, Linux und Android für Chrome bzw. Edge und Firefox installieren (Test in Issue #3)
 
 ---
@@ -788,6 +870,11 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 | E10 | Groß herunterfahren bei laufender VM | **entschieden:** Dialog „VM zuerst herunterfahren?“, dann VM und danach Server; weiterhin kein sofortiges Herunterfahren an der laufenden VM vorbei. **Ergänzt in v0.4.1:** Nur nach einem gescheiterten sauberen Versuch und ausdrücklicher Bestätigung bietet TwinRaid zeitlich begrenzt „Erzwingen und danach Server herunterfahren“ an (siehe 4.2). **Ergänzt in v0.4.2:** Laufen außer der Gaming-VM weitere VMs auf Groß, schaltet TwinRaid den Server gar nicht aus, weder manuell noch erzwungen noch automatisch nach einem Sync (siehe 4.2) |
 | E11 | Simulationsmodus mit Aktionen | **entschieden:** interaktive Simulation als Standard, fester Rundlauf mit `mock-tour`, Fehler mit `mock-fault` (siehe 6.4) |
 | E12 | Kleinere Punkte aus Phase 4 | **entschieden:** `wol_broadcast` optional (Startabbruch nur bei freigeschaltetem Wecken), `ssh_port` optional, 60 s für API-Aktionen, `restrict` in `authorized_keys` |
+| E22 | Kein Secret von TwinRaid auf einem USB-Stick: VM-Status, VM-Start und Erzwingen weiter über die API oder über SSH? | **entschieden:** über SSH und guard.sh, als v0.4.3 vor Phase 5. Eigener Key „status“ für die dauerhafte Statussitzung, Key „power“ nur für Aktionen, die VM steht nur in `power.conf` auf Groß, guard.sh prüft vor `poweroff` selbst; kein API-Key mehr, HTTPS von Groß spielt keine Rolle mehr (siehe 3.5) |
+| E23 | Snapshots auf Groß, damit der Spiegel Löschungen, Fehler oder Verschlüsselung auf Klein nicht unwiderruflich überträgt | **offen**; vorläufige Empfehlung: Btrfs-Snapshot der ganzen Disk bzw. des Pools, wo dort nur gespiegelte Shares liegen, sonst Shares als Subvolumes. guard.sh legt sie vor dem ersten Schreiben eines Syncs selbst an (höchstens alle 12 Stunden) und löscht sie frühestens nach 30 Tagen; TwinRaid hat dafür keinen Befehl. Entscheidung vor der ersten echten Share, Umsetzung als v0.5.5 |
+| E24 | Sync aus einem ZFS-Snapshot auf Klein statt Konsistenzlauf (Phase B)? | **offen**; Empfehlung: ja, wenn ein Machbarkeitstest auf Klein klappt (Datasets, Sichtbarkeit im Container, Array stoppen, doppelte Dateien). Container wären nur für den Snapshot angehalten, alle Shares kämen aus einem Zeitpunkt. Entscheidung spätestens vor v0.5.3 |
+
+E13 bis E21 (Container-Wächter auf Klein und Sync, Phase 5) sind entschieden und werden mit Konzept 0.13 (v0.5.0) hier eingetragen.
 
 ### 10.1 E7: Container auf Klein stoppen und starten
 
@@ -872,7 +959,7 @@ Die Rechte der API bestehen nur aus Ressource und Aktion (Casbin-Regel `obj` und
 **G. Unix-Socket der Unraid-API einbinden** (`/var/run/unraid-api.sock`)
 - *Einstellungen:* Im Template nur diese eine Datei einbinden (nie den Ordner `/var/run`, dort liegt auch `docker.sock`). Netzwerk und UniFi bleiben unverändert.
 - *Sicherheit:* Am Socket gilt dieselbe Anmeldung wie über das Netz (API-Key, alternativ Cookie oder lokale Sitzung). Key mit `DOCKER:UPDATE_ANY` in TwinRaid. Startprüfung und Starttest müssen sicherstellen, dass hinter dem Socket die Unraid-API antwortet und nicht Docker.
-- *Nachteile:* Startet die Unraid-API neu, legt sie den Socket neu an, und die eingebundene Datei zeigt ins Leere → Neustart des Containers nötig. Abweichung von 3.5 (API über HTTP).
+- *Nachteile:* Startet die Unraid-API neu, legt sie den Socket neu an, und die eingebundene Datei zeigt ins Leere → Neustart des Containers nötig. Abweichung vom bisherigen Weg über HTTP (bis v0.4.2 für Groß, siehe 3.5).
 
 **I. Wächter auf Klein mit Auftragsdateien (neu)**
 - *So:* Ein kleines Skript auf Klein (Ablage in `/boot/config/twinraid/`, gestartet aus `/boot/config/go`, wartet auf das Array) prüft alle 1–2 s einen festen Ordner im Datenordner von TwinRaid (`/mnt/user/appdata/twinraid/data/worker/docker-requests`, auf dem Host root-Rechte). Der Worker legt dort Aufträge in festem Format ab („stop `<Name>`“, „start `<Name>`“). Der Wächter führt nur diese beiden Befehle über die Unraid-API am lokalen Socket aus und schreibt das Ergebnis zurück. Der Key mit `DOCKER:READ_ANY`/`DOCKER:UPDATE_ANY` liegt **nur auf Klein** (root, `0600`), nie in TwinRaid.
