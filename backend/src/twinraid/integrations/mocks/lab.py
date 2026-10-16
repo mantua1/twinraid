@@ -22,9 +22,11 @@ from twinraid.shared.actions import ActionOutcome
 from twinraid.shared.status import ResourceInfo, ResourceState, ResourceStatus, StatusReason
 
 # Simulierte Fehler (twinraid-admin mock-fault <Name> on|off).
-FAULTS = ("vm-hang", "api-forbidden", "ssh-denied", "no-boot")
+FAULTS = ("vm-hang", "api-forbidden", "ssh-denied", "no-boot", "other-vm")
 MOCK_SERVER_ID = "5a1b2c3d"
 MOCK_VM_UUID = "6d0b8f4e-1c2a-4b3d-9e8f-0123456789ab"
+# Name der weiteren VM bei mock-fault other-vm.
+MOCK_OTHER_VM = "Test-VM"
 
 
 def fault_flag(directory: Path, name: str) -> Path:
@@ -114,6 +116,7 @@ class MockLab:
     async def get_status(self) -> ResourceStatus:
         if self.tour_active():
             return await self._tour.get_status()
+        others: tuple[str, ...] | None = None
         if not self._target_up():
             target = ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.UNREACHABLE)
             vm = ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.TARGET_OFFLINE)
@@ -123,7 +126,17 @@ class MockLab:
         else:
             target = ResourceInfo(state=ResourceState.ONLINE)
             vm = map_vm_state(self._vm_state)
-        return ResourceStatus(source=SOURCE_STATUS, target=target, vm=vm, checked_at=self._clock())
+            others = self._others()
+        return ResourceStatus(
+            source=SOURCE_STATUS,
+            target=target,
+            vm=vm,
+            checked_at=self._clock(),
+            other_vms_running=others,
+        )
+
+    def _others(self) -> tuple[str, ...]:
+        return (MOCK_OTHER_VM,) if self.fault("other-vm") else ()
 
     # --- ActionControl ---
 
@@ -160,6 +173,11 @@ class MockLab:
         if self.fault("api-forbidden"):
             raise ActionError(ActionOutcome.API_FORBIDDEN)
         self._vm_state, self._vm_change = "SHUTOFF", None
+
+    async def other_running_vms(self) -> tuple[str, ...]:
+        if not self._api_ready():
+            raise ActionError(ActionOutcome.API_UNREACHABLE)
+        return self._others()
 
     async def power_off(self) -> None:
         if self.fault("ssh-denied"):

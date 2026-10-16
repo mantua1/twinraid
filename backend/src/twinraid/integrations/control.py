@@ -13,6 +13,7 @@ from twinraid.config import TwinRaidConfig
 from twinraid.integrations.network import tcp_reachable
 from twinraid.integrations.ssh import SshError, SshPower
 from twinraid.integrations.unraid_api import UnraidApi, UnraidApiError, VmDomain
+from twinraid.integrations.vm_list import other_running_vms
 from twinraid.integrations.wol import WolTarget, send_magic_packet
 from twinraid.shared.actions import ActionOutcome
 from twinraid.shared.status import StatusReason
@@ -42,6 +43,10 @@ class ActionControl(Protocol):
         ...
 
     async def force_stop_vm(self, vm: VmDomain) -> None: ...
+
+    async def other_running_vms(self) -> tuple[str, ...]:
+        """Laufende VMs außer der Gaming-VM (Konzept 4.2). Wirft ActionError."""
+        ...
 
     async def power_off(self) -> None: ...
 
@@ -113,6 +118,13 @@ class RealControl:
             await self._api.force_stop_vm(vm)
         except UnraidApiError as exc:
             raise ActionError(api_outcome(exc.reason)) from None
+
+    async def other_running_vms(self) -> tuple[str, ...]:
+        try:
+            states = await self._api.domain_states()
+        except UnraidApiError as exc:
+            raise ActionError(api_outcome(exc.reason)) from None
+        return other_running_vms(states, self._config.gaming_vm.unraid_vm_name)
 
     async def power_off(self) -> None:
         try:

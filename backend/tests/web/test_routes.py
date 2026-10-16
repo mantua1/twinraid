@@ -78,6 +78,7 @@ def test_status_from_worker(tmp_path: Path) -> None:
     unknown = {"state": "unknown", "reason": None}
     body = response.json()
     assert body.pop("actions")["availability"]["vm_start"] == "target_unknown"
+    assert body.pop("other_vms_running") is None
     assert body == {
         "source": unknown,
         "target": unknown,

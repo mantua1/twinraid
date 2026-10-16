@@ -27,17 +27,29 @@ CONFIG = load_config(EXAMPLE_CONFIG)
 NOW = datetime(2026, 10, 13, 12, 0, tzinfo=UTC)
 
 
+GAMING = "Windows 11 Gaming"  # gaming_vm.unraid_vm_name aus config.example.yaml
+
+
 class FakeApi:
-    def __init__(self, state: str | None = "RUNNING", error: StatusReason | None = None) -> None:
+    def __init__(
+        self,
+        state: str | None = "RUNNING",
+        error: StatusReason | None = None,
+        others: dict[str, str] | None = None,
+    ) -> None:
         self.state = state
         self.error = error
-        self.calls: list[str] = []
+        self.others = others or {}
+        self.calls = 0
 
-    async def vm_state(self, vm_name: str) -> str | None:
-        self.calls.append(vm_name)
+    async def domain_states(self) -> dict[str, str]:
+        self.calls += 1
         if self.error is not None:
             raise UnraidApiError(self.error, "test")
-        return self.state
+        states = dict(self.others)
+        if self.state is not None:
+            states[GAMING] = self.state
+        return states
 
 
 TARGET = "192.168.10.11"  # servers.target.host aus config.example.yaml
@@ -64,7 +76,8 @@ async def test_everything_online() -> None:
     assert status.target == ResourceInfo(state=ResourceState.ONLINE)
     assert status.vm == ResourceInfo(state=ResourceState.ONLINE)
     assert status.checked_at == NOW
-    assert api.calls == ["Windows 11 Gaming"]
+    assert status.other_vms_running == ()
+    assert api.calls == 1
 
 
 async def test_source_is_online_without_a_check() -> None:
@@ -85,7 +98,8 @@ async def test_target_offline_means_vm_off_without_asking_the_api() -> None:
     assert status.vm == ResourceInfo(
         state=ResourceState.OFFLINE, reason=StatusReason.TARGET_OFFLINE
     )
-    assert api.calls == []
+    assert status.other_vms_running is None
+    assert api.calls == 0
 
 
 @pytest.mark.parametrize(
@@ -107,12 +121,40 @@ async def test_api_problems_are_distinguishable(reason: StatusReason) -> None:
     status = await _provider(api, target_up=True).get_status()
     assert status.target.state is ResourceState.ONLINE
     assert status.vm == ResourceInfo(state=ResourceState.UNKNOWN, reason=reason)
+    # Ohne lesbare VM-Liste ist auch unbekannt, ob weitere VMs laufen.
+    assert status.other_vms_running is None
 
 
 async def test_vm_not_found() -> None:
-    api = FakeApi(state=None)
+    api = FakeApi(state=None, others={"Andere VM": "RUNNING"})
     status = await _provider(api, target_up=True).get_status()
     assert status.vm == ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.VM_NOT_FOUND)
+    assert status.other_vms_running == ("Andere VM",)
+
+
+async def test_other_running_vms() -> None:
+    """Jeder Zustand außer SHUTOFF zählt als laufend (Konzept 4.2, ab v0.4.2)."""
+    others = {
+        "Aus": "SHUTOFF",
+        "Pausiert": "PAUSED",
+        "Leerlauf": "IDLE",
+        "Ruhezustand": "PMSUSPENDED",
+        "Abgestürzt": "CRASHED",
+        "Läuft": "RUNNING",
+        "Fährt herunter": "SHUTDOWN",
+        "Ohne Zustand": "NOSTATE",
+    }
+    status = await _provider(FakeApi("SHUTOFF", others=others), target_up=True).get_status()
+    assert status.other_vms_running == (
+        "Abgestürzt",
+        "Fährt herunter",
+        "Leerlauf",
+        "Läuft",
+        "Ohne Zustand",
+        "Pausiert",
+        "Ruhezustand",
+    )
+    assert status.vm == ResourceInfo(state=ResourceState.OFFLINE)
 
 
 @pytest.mark.parametrize(

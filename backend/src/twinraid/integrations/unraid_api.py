@@ -188,6 +188,10 @@ class UnraidApi:
         self._credentials = credentials
         self._timeout = timeout
 
+    async def domain_states(self) -> dict[str, str]:
+        """Name und Zustand aller VMs (eine Abfrage, nur Leserechte)."""
+        return await asyncio.to_thread(self.vm_states)
+
     async def vm_state(self, vm_name: str) -> str | None:
         """libvirt-Zustand der VM (z. B. RUNNING); None, wenn es die VM nicht gibt."""
         domains = await asyncio.to_thread(self.vm_states)

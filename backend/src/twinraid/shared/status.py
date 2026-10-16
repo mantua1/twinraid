@@ -16,7 +16,10 @@ class ResourceState(StrEnum):
 
 
 class StatusReason(StrEnum):
-    """Feste Liste von Ursachen. Kein Text aus fremden Antworten gelangt in den Status."""
+    """Feste Liste von Ursachen. Kein Text aus fremden Antworten gelangt in den Status.
+
+    Einzige Ausnahme sind die bereinigten Namen weiterer laufender VMs (Konzept 3.5).
+    """
 
     # Server: Der TCP-Check auf den WebGUI-Port ist gescheitert.
     UNREACHABLE = "unreachable"
@@ -58,6 +61,9 @@ class ResourceStatus(StrictModel):
     vm: ResourceInfo
     # Zeitpunkt der letzten Prüfung; None, solange noch nie geprüft wurde.
     checked_at: datetime | None
+    # Weitere laufende VMs auf Groß außer der Gaming-VM, bereinigt (Konzept 3.5 und 4.2).
+    # None: unbekannt, weil Groß aus ist oder die VM-Liste nicht lesbar war.
+    other_vms_running: tuple[str, ...] | None = None
 
 
 NOT_CHECKED = ResourceStatus(source=UNKNOWN, target=UNKNOWN, vm=UNKNOWN, checked_at=None)

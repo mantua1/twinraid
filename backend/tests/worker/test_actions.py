@@ -13,7 +13,7 @@ from twinraid.integrations.mocks.jobs import MockJobSwitch
 from twinraid.integrations.mocks.lab import MockLab, fault_flag, set_flag, tour_flag
 from twinraid.shared.actions import ActionBlocker, ActionName, ActionOutcome, ActionStep
 from twinraid.shared.mode import RunMode
-from twinraid.shared.status import ResourceState, StatusReason
+from twinraid.shared.status import ResourceInfo, ResourceState, StatusReason
 from twinraid.worker.action_log import ActionLog
 from twinraid.worker.actions import ActionCoordinator
 from twinraid.worker.monitor import StatusMonitor
@@ -552,3 +552,97 @@ async def test_failed_force_keeps_the_target_on(setup: Setup) -> None:
     ) not in setup.log()
     # Das Angebot ist verbraucht.
     assert _offer(setup) is None
+
+
+# --- Schutz vor weiteren VMs (Konzept 4.2, ab v0.4.2) ---
+
+
+async def test_other_vm_blocks_shutdown(setup: Setup) -> None:
+    await setup.boot()
+    set_flag(fault_flag(setup.dir, "other-vm"), True)
+    await setup.refresh()
+    assert setup.monitor.current().other_vms_running == ("Test-VM",)
+    availability = setup.availability()
+    assert availability[ActionName.SHUTDOWN_TARGET] is ActionBlocker.OTHER_VMS_RUNNING
+    set_flag(fault_flag(setup.dir, "other-vm"), False)
+    await setup.refresh()
+    assert setup.availability()[ActionName.SHUTDOWN_TARGET] is None
+
+
+async def test_unknown_vm_list_blocks_shutdown(setup: Setup) -> None:
+    await setup.refresh()
+    status = setup.monitor.current().model_copy(
+        update={
+            "target": ResourceInfo(state=ResourceState.ONLINE),
+            "vm": ResourceInfo(state=ResourceState.OFFLINE),
+            "other_vms_running": None,
+        }
+    )
+    assert setup.actions.availability(status)[ActionName.SHUTDOWN_TARGET] is (
+        ActionBlocker.VM_UNKNOWN
+    )
+
+
+async def test_shutdown_checks_again_before_stopping_the_vm(setup: Setup) -> None:
+    """Der Status war noch ohne weitere VM; der Worker prüft selbst noch einmal."""
+    await setup.boot()
+    await setup.start_vm()
+    set_flag(fault_flag(setup.dir, "other-vm"), True)
+    assert await setup.actions.request(ActionName.SHUTDOWN_TARGET) is None
+    await setup.settle()
+    await setup.refresh()
+    assert setup.last("target") is ActionOutcome.OTHER_VMS_RUNNING
+    status = setup.monitor.current()
+    assert status.target.state is ResourceState.ONLINE
+    # Die Gaming-VM wurde gar nicht erst heruntergefahren.
+    assert status.vm.state is ResourceState.ONLINE
+    assert setup.log()[-1] == ("shutdown_target", "dashboard", "other_vms_running", None)
+    assert _offer(setup) is None
+
+
+async def test_shutdown_checks_again_right_before_poweroff(tmp_path: Path) -> None:
+    time = FakeTime()
+    setup = Setup(tmp_path, time)
+    await setup.boot()
+    await setup.start_vm()
+    time.auto = False
+    assert await setup.request(ActionName.SHUTDOWN_TARGET) is None
+    await spin()
+    # Während die Gaming-VM herunterfährt, startet jemand eine weitere VM.
+    set_flag(fault_flag(setup.dir, "other-vm"), True)
+    while setup.actions.busy:
+        time.advance(3)
+        await spin()
+    await setup.refresh()
+    status = setup.monitor.current()
+    assert setup.last("target") is ActionOutcome.OTHER_VMS_RUNNING
+    assert status.target.state is ResourceState.ONLINE
+    assert status.vm.state is ResourceState.OFFLINE
+    assert setup.log()[-3:] == [
+        ("vm_stop", "automatic", "started", "shutdown_target"),
+        ("vm_stop", "automatic", "success", "shutdown_target"),
+        ("shutdown_target", "dashboard", "other_vms_running", None),
+    ]
+
+
+async def test_force_and_shutdown_never_forces_while_another_vm_runs(setup: Setup) -> None:
+    await _aborted_shutdown(setup)
+    set_flag(fault_flag(setup.dir, "other-vm"), True)
+    # Noch der alte Status: angenommen, aber der Worker prüft vor dem Erzwingen.
+    assert await setup.actions.request(ActionName.SHUTDOWN_TARGET_FORCE_VM) is None
+    await setup.settle()
+    await setup.refresh()
+    status = setup.monitor.current()
+    assert setup.last("target") is ActionOutcome.OTHER_VMS_RUNNING
+    assert status.vm.state is ResourceState.ONLINE
+    assert status.target.state is ResourceState.ONLINE
+    assert ("vm_force_stop", "automatic", "started", "shutdown_target_force_vm") not in setup.log()
+
+
+async def test_force_and_shutdown_is_blocked_by_another_vm(setup: Setup) -> None:
+    await _aborted_shutdown(setup)
+    set_flag(fault_flag(setup.dir, "other-vm"), True)
+    await setup.refresh()
+    assert setup.availability()[ActionName.SHUTDOWN_TARGET_FORCE_VM] is (
+        ActionBlocker.OTHER_VMS_RUNNING
+    )

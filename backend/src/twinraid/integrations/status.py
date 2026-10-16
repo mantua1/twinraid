@@ -11,6 +11,7 @@ from typing import Protocol
 from twinraid.config import TwinRaidConfig
 from twinraid.integrations.network import tcp_reachable
 from twinraid.integrations.unraid_api import UnraidApiError
+from twinraid.integrations.vm_list import other_running_vms
 from twinraid.shared.status import (
     ResourceInfo,
     ResourceState,
@@ -23,8 +24,10 @@ class StatusProvider(Protocol):
     async def get_status(self) -> ResourceStatus: ...
 
 
-class VmStateSource(Protocol):
-    async def vm_state(self, vm_name: str) -> str | None: ...
+class VmListSource(Protocol):
+    async def domain_states(self) -> dict[str, str]:
+        """Name und libvirt-Zustand aller VMs auf Groß."""
+        ...
 
 
 TcpCheck = Callable[[str, int], Awaitable[bool]]
@@ -66,7 +69,7 @@ class RealStatusProvider:
     def __init__(
         self,
         config: TwinRaidConfig,
-        api: VmStateSource,
+        api: VmListSource,
         tcp_check: TcpCheck = tcp_reachable,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
@@ -78,20 +81,28 @@ class RealStatusProvider:
     async def get_status(self) -> ResourceStatus:
         target = self._config.servers.target
         target_up = await self._tcp_check(str(target.host), target.webgui.effective_port)
+        vm, others = await self._vms(target_up)
         return ResourceStatus(
             source=SOURCE_STATUS,
             target=_server(target_up),
-            vm=await self._vm(target_up),
+            vm=vm,
             checked_at=self._clock(),
+            other_vms_running=others,
         )
 
-    async def _vm(self, target_up: bool) -> ResourceInfo:
+    async def _vms(self, target_up: bool) -> tuple[ResourceInfo, tuple[str, ...] | None]:
+        """Zustand der Gaming-VM und die weiteren laufenden VMs aus einer Abfrage."""
         if not target_up:
-            return ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.TARGET_OFFLINE)
+            off = ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.TARGET_OFFLINE)
+            return off, None
         try:
-            state = await self._api.vm_state(self._config.gaming_vm.unraid_vm_name)
+            states = await self._api.domain_states()
         except UnraidApiError as exc:
-            return ResourceInfo(state=ResourceState.UNKNOWN, reason=exc.reason)
+            return ResourceInfo(state=ResourceState.UNKNOWN, reason=exc.reason), None
+        own = self._config.gaming_vm.unraid_vm_name
+        others = other_running_vms(states, own)
+        state = states.get(own)
         if state is None:
-            return ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.VM_NOT_FOUND)
-        return map_vm_state(state)
+            not_found = ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.VM_NOT_FOUND)
+            return not_found, others
+        return map_vm_state(state), others

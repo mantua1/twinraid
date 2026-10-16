@@ -187,6 +187,11 @@ class ActionCoordinator:
         on, off = ResourceState.ONLINE, ResourceState.OFFLINE
         vm_unknown = vm.state is ResourceState.UNKNOWN
         busy = any(resource in self._running for resource in _RESOURCES[name])
+        # Schutz vor weiteren VMs beim Ausschalten von Groß (Konzept 4.2, ab v0.4.2).
+        other_vms = [
+            (status.other_vms_running is None, ActionBlocker.VM_UNKNOWN),
+            (bool(status.other_vms_running), ActionBlocker.OTHER_VMS_RUNNING),
+        ]
         match name:
             case ActionName.WAKE_TARGET:
                 checks = [
@@ -203,6 +208,7 @@ class ActionCoordinator:
                     (target is off, ActionBlocker.TARGET_OFFLINE),
                     (target is not on, ActionBlocker.TARGET_UNKNOWN),
                     (vm_unknown, ActionBlocker.VM_UNKNOWN),
+                    *other_vms,
                     (
                         vm.state is not off and not self.enabled(ActionGroup.VM),
                         ActionBlocker.NOT_ENABLED,
@@ -234,6 +240,7 @@ class ActionCoordinator:
                     (busy, ActionBlocker.BUSY),
                     (self._jobs.is_running(), ActionBlocker.SYNC_RUNNING),
                     (self.forced_shutdown_until(status) is None, ActionBlocker.NOT_OFFERED),
+                    *other_vms,
                 ]
             case ActionName.VM_STOP | ActionName.VM_FORCE_STOP:
                 force = name is ActionName.VM_FORCE_STOP
@@ -469,6 +476,7 @@ class ActionCoordinator:
         self._stop_sent_at = None
 
     async def _shutdown_target(self, run: _Run) -> None:
+        await self._ensure_no_other_vms()
         vm = await self._control.find_vm()
         if vm.state not in _VM_OFF:
             # „VM zuerst herunterfahren?“ (Entscheidung E10): Bleibt sie an, bricht der Ablauf ab.
@@ -480,14 +488,26 @@ class ActionCoordinator:
         """Nach ausdrücklicher Bestätigung: VM erzwingen, danach Groß sauber herunterfahren.
 
         Ist die VM nach dem Erzwingen nicht aus, bricht der Ablauf ab und Groß bleibt an.
+        Läuft eine weitere VM, wird die Gaming-VM gar nicht erst erzwungen.
         """
+        await self._ensure_no_other_vms()
         async with self._part(run, ActionName.VM_FORCE_STOP):
             await self._force_stop_vm(run)
         async with self._part(run, ActionName.SHUTDOWN_TARGET):
             await self._power_off(run)
 
+    async def _ensure_no_other_vms(self) -> None:
+        """Groß nie ausschalten, solange weitere VMs laufen (Konzept 4.2, ab v0.4.2).
+
+        Ist die Liste nicht lesbar, bricht der Ablauf mit der Ursache der API ab.
+        """
+        if await self._control.other_running_vms():
+            raise ActionError(ActionOutcome.OTHER_VMS_RUNNING)
+
     async def _power_off(self, run: _Run) -> None:
         run.step = ActionStep.SHUTTING_DOWN
+        # Unmittelbar vor dem Ausschalten erneut prüfen, auch nach dem Herunterfahren der VM.
+        await self._ensure_no_other_vms()
         await self._control.power_off()
         deadline = self._monotonic() + self._timings.shutdown_wait_seconds
         while await self._control.target_reachable():
