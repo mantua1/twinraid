@@ -1,6 +1,6 @@
 # TwinRaid auf Unraid einrichten
 
-> **Stand: Version 0.4.1.** Diese Version zeigt den Status beider Server und der Gaming-VM an und kann Unraid Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Die Aktionen werden einzeln freigeschaltet (Abschnitt 11). Der Sync folgt in einer späteren Version. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
+> **Stand: Version 0.4.2.** Diese Version zeigt den Status beider Server und der Gaming-VM an und kann Unraid Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Die Aktionen werden einzeln freigeschaltet (Abschnitt 11). Der Sync folgt in einer späteren Version. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
 
 Diese Anleitung führt Schritt für Schritt durch die Installation auf **Unraid Klein** (dem stromsparenden Server, der immer läuft). Am Ende:
 
@@ -125,11 +125,11 @@ Steht dort `nobody users` oder beginnt die Zeile mit `drwxrwxrwx`, die beiden Be
 
 > **Hinweis zu `appdata`:** TwinRaid speichert eine kleine SQLite-Datenbank. Am zuverlässigsten liegt `appdata` auf einem Pool (z. B. Cache) mit der Share-Einstellung *Exclusive access*. Bei den Unraid-Standardeinstellungen ist das meist schon so.
 
-**3.2 Beispielkonfiguration herunterladen.** Die Version im Pfad (`v0.4.1`) passt zur installierten Version.
+**3.2 Beispielkonfiguration herunterladen.** Die Version im Pfad (`v0.4.2`) passt zur installierten Version.
 
 ```bash
 wget -O /mnt/user/appdata/twinraid/config/twinraid.yaml \
-  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.1/config.example.yaml
+  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.2/config.example.yaml
 chmod 644 /mnt/user/appdata/twinraid/config/twinraid.yaml
 ```
 
@@ -176,7 +176,7 @@ Im Simulationsmodus spricht TwinRaid keine echten Server an. So prüfst du zuers
 
 ```bash
 wget -O /boot/config/plugins/dockerMan/templates-user/my-TwinRaid.xml \
-  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.1/docker/unraid-template.xml
+  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.2/docker/unraid-template.xml
 ```
 
 **4.2 Container anlegen:**
@@ -402,7 +402,7 @@ actions:
 | VM starten | Unraid-API (`VMS: Update (any)`); ist Groß aus, wird es vorher geweckt | `vm` (bei ausgeschaltetem Groß zusätzlich `wake`) |
 | VM herunterfahren | SSH-Key „power“: `guard.sh` sendet nur das Signal zum Herunterfahren (wie der Netzschalter) | `vm` |
 | VM erzwingen | Unraid-API, frühestens `shutdown_timeout_minutes` nach „Herunterfahren“ | `vm` |
-| Groß herunterfahren | SSH-Key „power“: `guard.sh` ruft `/sbin/poweroff` auf (wie der Button in der Unraid-Oberfläche); läuft die VM, wird sie zuerst heruntergefahren | `shutdown` (bei laufender VM zusätzlich `vm`) |
+| Groß herunterfahren | SSH-Key „power“: `guard.sh` ruft `/sbin/poweroff` auf (wie der Button in der Unraid-Oberfläche); läuft die VM, wird sie zuerst heruntergefahren. Laufen außer der Gaming-VM weitere VMs, schaltet TwinRaid Groß nicht aus (ab 0.4.2) | `shutdown` (bei laufender VM zusätzlich `vm`) |
 | Erzwingen und danach Server herunterfahren (ab 0.4.1) | nur bis zu 10 Minuten nach einem Herunterfahren von Groß, das an der VM gescheitert ist: VM über die API erzwingen, dann Groß wie oben herunterfahren | `vm` und `shutdown` |
 
 Nach jeder Änderung an `twinraid.yaml` den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart**). Jede Aktion steht im Aktionslog des Workers; anzeigen in der **Container-Konsole** mit `twinraid-admin show-action-log`.
@@ -459,7 +459,7 @@ In `nano` ans Ende diese Zeile anfügen, dann `Strg+O`, `Enter`, `Strg+X`:
    ```bash
    mkdir -p /boot/config/twinraid
    wget -O /boot/config/twinraid/guard.sh \
-     https://raw.githubusercontent.com/mantua1/twinraid/v0.4.1/host-scripts/guard.sh
+     https://raw.githubusercontent.com/mantua1/twinraid/v0.4.2/host-scripts/guard.sh
    head -3 /boot/config/twinraid/guard.sh
    ```
 
@@ -484,7 +484,7 @@ Für die VM-Tests kannst du statt der Gaming-VM vorübergehend eine Test-VM verw
 
 Für den Test von **Erzwingen** brauchst du eine VM, die auf das Signal zum Herunterfahren **nicht** reagiert. Am einfachsten stellst du in einer Windows-Test-VM den Netzschalter vorübergehend auf **Nichts unternehmen** (siehe 11.1). Alternativ reagiert eine VM ohne Betriebssystem, die in der UEFI-Shell steht, in der Regel ebenfalls nicht.
 
-Am Ende (11.15) trägst du die Gaming-VM wieder ein.
+Am Ende (11.17) trägst du die Gaming-VM wieder ein. Für Test 11 (11.14) brauchst du die Gaming-VM und die Test-VM gleichzeitig.
 
 ### 11.3 Testprotokoll: Ausgangslage
 
@@ -679,16 +679,47 @@ Groß wieder **Wecken**. Für jede Variante zuerst wie in Test 9, Schritte 1 bis
 
 Klickt jemand den Button genau in dem Moment, in dem das Angebot verfällt, lehnt TwinRaid ab: „Nicht ausgeführt: nur kurz nach einem an der VM gescheiterten Herunterfahren des Servers möglich.“ Die Meldung verschwindet mit der nächsten Statusänderung.
 
-### 11.14 Test 8 zur Kontrolle wiederholen
+### 11.14 Test 11: Eine weitere VM läuft
+
+Ab Version 0.4.2. In `twinraid.yaml` ist wieder die **Gaming-VM** eingetragen (`unraid_vm_name`), die Test-VM gibt es zusätzlich auf Groß. `actions.vm` und `actions.shutdown` sind freigeschaltet, Groß ist an.
+
+1. Die Gaming-VM ist aus. Die **Test-VM** in der Unraid-Oberfläche von Groß starten (Reiter **VMs** → Symbol der Test-VM → **Start**).
+
+   | Erwartet (nach etwa 10 Sekunden) | |
+   |---|---|
+   | Kachel Groß | **Herunterfahren** ist grau; darunter „Herunterfahren: Auf Unraid Groß laufen noch weitere VMs: Test-VM. Bitte fahre sie zuerst über die Unraid-Oberfläche herunter. Zur Sicherheit schaltet TwinRaid den Server nicht aus, solange andere VMs laufen, damit keine Daten verloren gehen.“ |
+   | Sprache auf **EN** | derselbe Hinweis auf Englisch |
+
+2. Die Test-VM in Unraid **pausieren** (**Pause**). Der Button bleibt gesperrt: Auch eine pausierte VM zählt als laufend.
+3. **Prüfung unmittelbar vor dem Ausschalten** (nur mit der Test-VM, sie wird dabei gestartet, während Groß herunterfahren soll):
+   1. Die Test-VM ausschalten (**Force Stop**), bis der Button **Herunterfahren** wieder aktiv ist.
+   2. Die **Gaming-VM starten** und warten, bis sie **Online** ist.
+   3. In der Kachel Groß **Herunterfahren** → **VM und Server herunterfahren**.
+   4. Sobald die VM-Kachel **Fährt herunter …** zeigt, sofort die **Test-VM** in Unraid starten.
+
+   | Erwartet | |
+   |---|---|
+   | Kachel VM | die Gaming-VM fährt herunter und ist **Offline** |
+   | Kachel Groß | bleibt **Online**; rot „Zuletzt: Server herunterfahren – Der Server wurde nicht ausgeschaltet, weil noch weitere VMs liefen.“; **Herunterfahren** grau mit dem Hinweis aus Schritt 1 |
+   | `twinraid-admin show-action-log` | `vm_stop  automatic (part of shutdown_target): success` und `shutdown_target  dashboard: other_vms_running` |
+
+   Warst du zu langsam und Groß fährt schon herunter, Groß wecken und den Schritt wiederholen. Unraid fährt die gerade gestartete Test-VM beim Herunterfahren selbst herunter.
+4. Die Test-VM in Unraid ausschalten (**Force Stop**). Nach etwa 10 Sekunden ist **Herunterfahren** wieder aktiv, die Meldung aus Schritt 3 ist nur noch grau.
+
+### 11.15 Test 8 zur Kontrolle wiederholen
 
 Mit der Gaming-VM (Netzschalter auf **Herunterfahren**, siehe 11.1) Test 8 aus 11.11 wiederholen. Erwartet wie dort: erst die VM **Offline**, dann Groß **Offline**, „Zuletzt: Server herunterfahren – erfolgreich“. Die Option „Erzwingen und danach Server herunterfahren“ erscheint dabei **nicht**.
 
-### 11.15 Abschluss
+### 11.16 Simulation (optional)
+
+Im Simulationsmodus lässt sich das Verhalten ohne Server ausprobieren: `twinraid-admin mock-fault other-vm on` lässt auf dem simulierten Groß eine weitere VM namens „Test-VM“ laufen, `off` schaltet sie wieder aus.
+
+### 11.17 Abschluss
 
 1. In `twinraid.yaml` wieder die Gaming-VM eintragen (`unraid_vm_name`) und `shutdown_timeout_minutes` auf den gewünschten Wert setzen (Standard 3), Container neu starten.
 2. Mit der Gaming-VM einmal **Starten** und **Herunterfahren**.
 3. `twinraid-admin show-action-log` ansehen: Jede Aktion steht dort mit Beginn und Ergebnis.
-4. Die Ergebnisse bitte im Pull Request festhalten (für 0.4.0 besonders Test 1, für 0.4.1 die Tests 9 und 10).
+4. Die Ergebnisse bitte im Pull Request festhalten (für 0.4.0 besonders Test 1, für 0.4.1 die Tests 9 und 10, für 0.4.2 Test 11).
 
 ---
 
@@ -773,6 +804,8 @@ Der Befehl zeigt den Fingerabdruck, den Unraid Groß gerade ausliefert. Vergleic
 | „Der Server war nicht rechtzeitig bereit“ | Groß ist nach dem Wecken nicht (rechtzeitig) gestartet, oder das Array startet nicht automatisch | Wake-on-LAN im BIOS und mit `ethtool` prüfen, Auto-Start des Arrays einschalten (11.1); bei langem Start `boot_timeout_minutes` erhöhen |
 | „Die VM hat sich nicht rechtzeitig heruntergefahren“ | Die VM reagiert nicht auf das Signal (Netzschalter-Einstellung in Windows, laufende Updates) | Netzschalter auf „Herunterfahren“ stellen (11.1), `shutdown_timeout_minutes` erhöhen oder **Erzwingen**; nach einem gescheiterten Herunterfahren von Groß 10 Minuten lang auch **Erzwingen und danach Server herunterfahren** (11.12) |
 | Meldung grau, ohne Hinweis darunter | Das Ergebnis ist nur noch Verlauf: Der Hinweis (z. B. auf „Erzwingen“) trifft nicht mehr zu, etwa weil die VM inzwischen aus ist | Nichts zu tun |
+| Herunterfahren gesperrt: „Auf … laufen noch weitere VMs: …“ | Außer der Gaming-VM laufen auf Groß weitere VMs (auch pausierte oder abgestürzte zählen) | Die genannten VMs in der Unraid-Oberfläche von Groß herunterfahren; nach etwa 10 Sekunden ist der Button wieder aktiv |
+| „Der Server wurde nicht ausgeschaltet, weil noch weitere VMs liefen“ | Eine weitere VM lief beim Herunterfahren (geprüft unmittelbar vor dem Ausschalten); Groß ist an geblieben | Die VM herunterfahren und Groß erneut herunterfahren |
 | Herunterfahren gesperrt: „der Zustand der VM ist unbekannt“ | TwinRaid kann die VM über die API gerade nicht lesen | Ursache in der VM-Kachel beheben (z. B. API-Key) oder Groß ausnahmsweise über die Unraid-Oberfläche herunterfahren |
 | „Der Server ist nach 15 Minuten noch erreichbar“ | Groß hängt beim Herunterfahren | Unraid-Oberfläche von Groß ansehen; *Disk Settings → Shutdown time-out* prüfen |
 | Log: `cannot derive the Wake-on-LAN broadcast address`, Container startet nicht | Wecken ist freigeschaltet, aber Groß liegt nicht im Netz von TwinRaid | `servers.target.wol_broadcast` eintragen (Broadcast-Adresse des Netzes von Groß) |
@@ -815,7 +848,7 @@ Danach den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart
 - Jedes Image wird ausschließlich von GitHub Actions aus diesem Repository gebaut und hat einen signierten Herkunftsnachweis. Prüfen kannst du ihn auf einem PC mit der GitHub-CLI (`gh`):
 
 ```bash
-gh attestation verify oci://ghcr.io/mantua1/twinraid:0.4.1 --owner mantua1
+gh attestation verify oci://ghcr.io/mantua1/twinraid:0.4.2 --owner mantua1
 ```
 
 Steht am Ende `Verification succeeded!`, stammt das Image nachweislich aus diesem Repository.
@@ -840,4 +873,4 @@ Alle Befehle laufen in der **Container-Konsole**.
 | `twinraid-admin show-action-log` | Aktionslog des Workers anzeigen (`--lines 100` für mehr Einträge) |
 | `twinraid-admin mock-job on` / `off` | Nur im Simulationsmodus: einen laufenden Kopierjob vortäuschen |
 | `twinraid-admin mock-tour on` / `off` | Nur im Simulationsmodus: alle Zustände und Ursachen nacheinander zeigen (Aktionen sind dann gesperrt) |
-| `twinraid-admin mock-fault <Name> on` / `off` | Nur im Simulationsmodus: Fehler vortäuschen, `<Name>` ist `vm-hang`, `api-forbidden`, `ssh-denied` oder `no-boot` |
+| `twinraid-admin mock-fault <Name> on` / `off` | Nur im Simulationsmodus: Fehler vortäuschen, `<Name>` ist `vm-hang`, `api-forbidden`, `ssh-denied`, `no-boot` oder `other-vm` (eine weitere VM läuft) |
