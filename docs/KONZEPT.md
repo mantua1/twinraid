@@ -782,63 +782,111 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 | E4 | Projektname (Arbeitstitel „TwinRaid“) | offen |
 | E5 | Prozessverwaltung im Container (s6-overlay oder supervisord) | **entschieden:** s6-overlay mit read-only Root und minimalen Capabilities (siehe 5.4) |
 | E6 | Versionen und Image-Tags | **entschieden:** SemVer, `latest` nur für Releases, `edge` für `main` (siehe 5.8) |
-| E7 | Wie steuert TwinRaid in Phase 5 die Container auf Klein, ohne dass „Host access to custom networks“ eingeschaltet wird? | **offen**, Optionen in 10.1; Entscheidung vor Beginn von Phase 5 |
+| E7 | Wie steuert TwinRaid in Phase 5 die Container auf Klein, ohne dass „Host access to custom networks“ eingeschaltet wird? | **offen**, Optionen und Empfehlung (Option I) in 10.1, überarbeitet in v0.4.2; Entscheidung vor Beginn von Phase 5 |
 | E8 | Wie wird die Gaming-VM heruntergefahren? | **entschieden:** per SSH mit dem Key „power“ (`virsh shutdown`, nur ACPI); Starten und Erzwingen über die API, weil `vm.stop` der API nach 10 s selbst erzwingt (siehe 3.4) |
 | E9 | Wie werden Aktionen im Echtbetrieb schrittweise freigeschaltet? | **entschieden:** Abschnitt `actions` in `twinraid.yaml` mit `wake`, `vm`, `shutdown`, Standard aus (siehe 4.2) |
 | E10 | Groß herunterfahren bei laufender VM | **entschieden:** Dialog „VM zuerst herunterfahren?“, dann VM und danach Server; weiterhin kein sofortiges Herunterfahren an der laufenden VM vorbei. **Ergänzt in v0.4.1:** Nur nach einem gescheiterten sauberen Versuch und ausdrücklicher Bestätigung bietet TwinRaid zeitlich begrenzt „Erzwingen und danach Server herunterfahren“ an (siehe 4.2). **Ergänzt in v0.4.2:** Laufen außer der Gaming-VM weitere VMs auf Groß, schaltet TwinRaid den Server gar nicht aus, weder manuell noch erzwungen noch automatisch nach einem Sync (siehe 4.2) |
 | E11 | Simulationsmodus mit Aktionen | **entschieden:** interaktive Simulation als Standard, fester Rundlauf mit `mock-tour`, Fehler mit `mock-fault` (siehe 6.4) |
 | E12 | Kleinere Punkte aus Phase 4 | **entschieden:** `wol_broadcast` optional (Startabbruch nur bei freigeschaltetem Wecken), `ssh_port` optional, 60 s für API-Aktionen, `restrict` in `authorized_keys` |
 
-### 10.1 E7: Unraid-API von Klein ohne Host access erreichen
+### 10.1 E7: Container auf Klein stoppen und starten
 
-**Ausgangslage:** TwinRaid hat eine eigene IP auf `br0` (macvlan mit Bridging). Ohne Host access erreichen sich Klein und der Container nicht (siehe 5.1). Der Status braucht Klein nicht mehr (siehe 4.1), der Konsistenzlauf beim Sync aber schon: Er stoppt und startet Container über die Unraid-API von Klein (siehe 3.4 und 4.3). Recherchiert am 14.10.2026 (Unraid 7.3.3, Docker 29.8.2); nichts davon ist umgesetzt oder auf Unraid getestet.
+**Ausgangslage:** TwinRaid hat eine eigene IP auf `br0` (macvlan mit Bridging). Ohne Host access erreichen sich Klein und der Container nicht (siehe 5.1). Der Konsistenzlauf beim Sync muss aber Container auf Klein stoppen und wieder starten (siehe 3.4 und 4.3). Überarbeitet am 16.10.2026 anhand des Quellcodes von Unraid-API v4.37.5 und Unraid-WebGUI 7.3; nichts davon ist umgesetzt oder auf Unraid getestet.
 
-**A. Bridging aus, Docker-Netzwerk auf `eth0`, Host access an (Empfehlung von Unraid 6.12.4)**
-- *So:* *Settings → Network Settings*: Bridging für `eth0` aus. Docker-Netzwerk `eth0` statt `br0` (macvlan direkt auf der Netzwerkkarte), Host access an; der Host nutzt dann `vhost0`.
-- *Vorteile:* Weg, den Unraid selbst empfiehlt; macvlan auf einer physischen Schnittstelle gilt als zuverlässig. TwinRaid behält eigene IP und MAC und erreicht Klein direkt unter `servers.source.host`. Kein zusätzlicher Code.
-- *Nachteile:* Betrifft alle Container mit eigener IP auf Klein (Netzwerk `br0` → `eth0`, Templates prüfen) und alle VMs auf Klein (Netzwerkquelle `vhost0` statt `br0`). Umbau mit kurzer Unterbrechung aller Dienste.
+**Anforderungen des Nutzers (16.10.2026):**
 
-**B. ipvlan statt macvlan**
-- *So:* *Settings → Docker → Docker custom network type* auf `ipvlan` (Standard von Unraid seit 6.11.5), dann Host access an.
-- *Vorteile:* Keine macvlan-Call-Traces, Bridging bleibt, nur eine Einstellung.
-- *Nachteile:* Alle Container teilen sich die MAC von Klein. Die feste MAC (siehe 5.1) und die Reservierung per MAC in UniFi funktionieren dann nicht mehr pro Container; UniFi sieht mehrere IPs hinter einer MAC. Unraid nennt eingeschränkte Funktion mit Netzwerkverwaltung von Ubiquiti. Betrifft ebenfalls alle Container mit eigener IP.
+1. TwinRaid darf Container auf Klein **nur stoppen und starten**: keine Parameter ändern, keine Image-Updates, nichts löschen, nichts anlegen.
+2. TwinRaid erkennt seinen eigenen Container zuverlässig und stoppt ihn nie, fest im Code und unabhängig von der Konfiguration.
+3. „Host access to custom networks“ bleibt aus. Änderungen, die alle anderen Container auf Klein betreffen (Bridging aus, ipvlan), möglichst vermeiden.
 
-**C. Umweg über den Router**
-- *C1 – Adresse von Klein in einem anderen VLAN, TwinRaid bleibt im Server-Netz:* Der Hinweg läuft über den Router, die Antwort aber nicht: Klein kennt das Server-Netz als direkt angeschlossen und antwortet über `br0` direkt an den Container. Wegen der macvlan-Trennung kommt die Antwort dort nicht an. Es ginge nur mit Policy-Routing auf Klein (eigene Routing-Tabelle für die VLAN-Adresse, in Unraid nur per Startskript). Fehleranfällig und schwer nachvollziehbar.
-- *C2 – TwinRaid in ein eigenes VLAN* (Docker-Netzwerk `br0.<VLAN>`, Klein ohne eigene Adresse darin): Hin- und Rückweg laufen über den Router, das funktioniert. *Vorteile:* Docker-Einstellungen von Klein und die übrigen Container bleiben unverändert; die Router-Firewall kann TwinRaid genau begrenzen. *Nachteile:* VLAN in UniFi und auf Klein einrichten (Switchport mit Tag). Der gesamte Sync-Verkehr (bis etwa 1 TB) läuft durch den Router, dessen Routing-Leistung unter 2,5 GbE liegen kann. Wake-on-LAN muss ins Server-Netz, gerichtete Broadcasts über den Router sind meist gesperrt; das bräuchte eine eigene Lösung. Abhängig vom Router. Die eigene IP im Server-Netz (5.1) entfällt.
+**Befund: Was `DOCKER:UPDATE_ANY` erlaubt (Unraid-API v4.37.5)**
 
-**D. Zweite Netzwerkkarte nur für Docker**
-- *So:* Klein bekommt eine zweite Netzwerkkarte (`eth1`) im Server-Netz, ohne eigene Adresse und ohne Bridging. TwinRaid hängt per macvlan an `eth1`. Der Verkehr zu Klein geht über den Switch zu `eth0`/`br0` und zurück, die macvlan-Trennung greift nicht.
-- *Vorteile:* Bridging, Host access und die übrigen Container bleiben unverändert. macvlan auf einer physischen Schnittstelle, wie Unraid es empfiehlt. Eigene IP und MAC bleiben, kein zusätzlicher Code.
-- *Nachteile:* Zweite Netzwerkkarte, Switchport und Kabel nötig. Der Sync-Verkehr läuft über diese Karte, sie sollte also ebenfalls 2,5 GbE haben. Unraid rät in 6.12.4 bei seiner `eth0`-Lösung vom Aufteilen auf zwei Karten ab; hier wäre es bewusst nur für TwinRaid.
+Die Rechte der API bestehen nur aus Ressource und Aktion (Casbin-Regel `obj` und `act` müssen exakt passen); es gibt keine Einschränkung auf einzelne Befehle oder Container. `UPDATE_OWN` ist ein eigener Wert und gewährt kein `UPDATE_ANY`. Eine engere Berechtigung als `DOCKER:UPDATE_ANY` gibt es für Start und Stopp nicht.
+
+| Befehl der API (`docker { … }` bzw. `Mutation`) | Recht | Bemerkung |
+|---|---|---|
+| `start`, `stop` | `DOCKER:UPDATE_ANY` | gebraucht |
+| `restart`, `pause`, `unpause` | `DOCKER:UPDATE_ANY` | nicht gebraucht |
+| `updateContainer`, `updateContainers`, `updateAllContainers` | `DOCKER:UPDATE_ANY` | **Image-Update**: neues Image ziehen und Container neu anlegen |
+| `updateAutostartConfiguration`, Ordner und Ansicht (`createDockerFolder` …), `syncDockerTemplatePaths`, `resetDockerTemplateMappings` | `DOCKER:UPDATE_ANY` | nur mit Feature-Flag `ENABLE_NEXT_DOCKER_RELEASE`; ob Unraid 7.3.3 es setzt, ist nicht geprüft |
+| `removeContainer` (auch mit Image) | `DOCKER:DELETE_ANY` | nicht enthalten |
+| Container anlegen, Parameter ändern, Befehle im Container ausführen | – | gibt es in der API nicht |
+| Containerliste mit Labels, Mounts, Netzwerk, Ports, Befehlszeile; **Container-Logs** (`logs`); Statistiken | `DOCKER:READ_ANY` | zum Finden der Container nötig; die Logs können Geheimnisse enthalten |
+
+**Restrisiko eines gestohlenen Keys** mit `DOCKER:READ_ANY` und `DOCKER:UPDATE_ANY`: Container stoppen, starten, neu starten oder pausieren (Ausfall von Diensten), alle Container auf das neueste Image aktualisieren (ungewollte Versionswechsel, bei einem kompromittierten Image auch Schadcode), Container-Logs und Konfigurationsdetails lesen. Nicht möglich: Container löschen, anlegen, Parameter ändern, Befehle im Container ausführen. Begrenzen lässt es sich so:
+
+- Der Key liegt nur beim Worker in `/data/secrets` (wie der Key für Groß) und wird nie über das Netz im Klartext übertragen (HTTPS mit bestätigtem Fingerabdruck oder Unix-Socket).
+- Eigener Key nur mit `DOCKER:READ_ANY` und `DOCKER:UPDATE_ANY`, ohne Rolle, nur für TwinRaid.
+- **Besser:** Der Key bleibt gar nicht in TwinRaid, sondern bei einem Wächter auf Klein, der nur Start und Stopp ausführt (Option I). Dann erfüllt TwinRaid Anforderung 1 auch dann, wenn der Container übernommen wird.
+
+**Eigenen Container erkennen (für alle Optionen)**
+
+- Die vollständige Container-ID steht in `/proc/self/mountinfo` in den Pfaden `…/containers/<64 Hex-Zeichen>/hostname`, `hosts` und `resolv.conf`; geprüft mit Docker 29 (bei cgroup v2 steht in `/proc/self/cgroup` nur `0::/`, der Hostname ist nur die Kurzform und kann im Template überschrieben werden).
+- Diese ID muss genau einmal in der Containerliste der API vorkommen. Fehlt sie oder ist sie mehrdeutig, stoppt TwinRaid **keinen** Container (Phase B entfällt mit Warnung).
+- Die eigene ID wird fest im Code ausgenommen, unabhängig von `never_stop`. Option I prüft zusätzlich auf Klein selbst (Image `ghcr.io/mantua1/twinraid`).
+
+**Optionen im Vergleich**
+
+| | Netzwerk ändert sich | andere Container betroffen | Aufwand | Rechte in TwinRaid |
+|---|---|---|---|---|
+| A. Bridging aus, Netzwerk `eth0`, Host access an | ja, grundlegend | **ja, alle mit eigener IP und alle VMs** | mittel (Umbau mit Unterbrechung) | `DOCKER:UPDATE_ANY` |
+| B. ipvlan, Host access an | ja | **ja, alle mit eigener IP** (eine MAC für alle) | klein | `DOCKER:UPDATE_ANY` |
+| C2. TwinRaid in eigenem VLAN | ja (VLAN, Switchport, Firewall) | nein | groß | `DOCKER:UPDATE_ANY` |
+| D. Zweite Netzwerkkarte nur für TwinRaid | ja (zweite Karte im Server-Netz) | nein | mittel (Hardware) | `DOCKER:UPDATE_ANY` |
+| E. Bridge-Netz mit Portfreigabe | nein, aber TwinRaid verliert eigene IP | nein | klein | `DOCKER:UPDATE_ANY` |
+| F. Zweites Netzwerk (`br0` + Docker-Bridge) | klein (Interface Extra) | nein | mittel | `DOCKER:UPDATE_ANY` |
+| G. Unix-Socket der API einbinden | nein | nein | klein | `DOCKER:UPDATE_ANY` |
+| **I. Wächter auf Klein mit Auftragsdateien** | **nein** | **nein** | mittel (Skript auf Klein) | **nur „Start“ und „Stopp“ anfordern** |
+| H. Kein Container-Stopp | nein | nein | keiner | keine |
+
+**A. Bridging aus, Docker-Netzwerk `eth0`, Host access an** (Empfehlung von Unraid 6.12.4)
+- *Einstellungen:* Unraid: *Settings → Network Settings* → Bridging für `eth0` aus; *Settings → Docker* → Netzwerk `eth0`, Host access an; alle Container mit eigener IP auf `eth0` umstellen, VMs auf `vhost0`. UniFi: nichts.
+- *Sicherheit:* TwinRaid erreicht Klein direkt; Key mit `DOCKER:UPDATE_ANY` in TwinRaid.
+- *Bewertung:* betrifft alle Container und VMs auf Klein → widerspricht Anforderung 3.
+
+**B. ipvlan statt macvlan, Host access an**
+- *Einstellungen:* *Settings → Docker* → Netzwerktyp `ipvlan`, Host access an. UniFi: Reservierungen per MAC funktionieren nicht mehr pro Container.
+- *Bewertung:* alle Container teilen die MAC von Klein, die feste MAC von TwinRaid (5.1) entfällt → widerspricht Anforderung 3.
+
+**C1. Adresse von Klein in einem anderen VLAN** – verworfen (asymmetrisches Routing, nur mit Policy-Routing per Startskript).
+
+**C2. TwinRaid in ein eigenes VLAN** (`br0.<VLAN>`, Klein ohne Adresse darin)
+- *Einstellungen:* UniFi: neues VLAN, Switchport von Klein mit Tag, Firewall-Regeln (TwinRaid → Klein:443/80, → Groß:22/80/443, Client-Netz → TwinRaid:8443). Unraid: VLAN-Schnittstelle in *Network Settings*, Docker-Netzwerk `br0.<VLAN>`, neue IP und MAC im Template; `web.allowed_networks` anpassen.
+- *Sicherheit:* Die Router-Firewall begrenzt TwinRaid genau; Key mit `DOCKER:UPDATE_ANY` in TwinRaid.
+- *Nachteile:* Der Sync (bis 1 TB) läuft durch den Router; Wake-on-LAN muss ins Server-Netz, gerichtete Broadcasts sind meist gesperrt; die eigene IP im Server-Netz (5.1) entfällt.
+
+**D. Zweite Netzwerkkarte nur für TwinRaid**
+- *Einstellungen:* zweite Karte (2,5 GbE) mit Kabel zum Switch. Unraid: `eth1` ohne IP und ohne Bridging, eigenes Docker-Netzwerk auf `eth1`, im Template statt `br0` wählen. UniFi: Switchport im Server-Netz, Reservierung bleibt per MAC.
+- *Sicherheit:* wie heute, Key mit `DOCKER:UPDATE_ANY` in TwinRaid.
+- *Bewertung:* sauber und ohne Code, aber Hardware nötig; erfüllt Anforderung 1 nicht.
 
 **E. Bridge-Netz mit Portfreigabe statt eigener IP**
-- *So:* Container im Docker-Netz `bridge`, Port 8443 auf der IP von Klein freigegeben. Der Container erreicht Klein über dessen IP, der Verkehr bleibt im Host.
-- *Vorteile:* Kein Umbau am Netzwerk, Unraid-Standard.
-- *Nachteile:* Keine eigene IP und MAC; die Firewall-Regel zielt auf Klein. `web.tls.ip_addresses` muss die IP von Klein enthalten, die IP steht dann an zwei Stellen (siehe 5.1). Das Wake-on-LAN-Paket aus dem NAT-Netz kommt vermutlich nicht im Server-Netz an, weil Linux Broadcasts nicht weiterleitet (in Phase 4 zu prüfen). Der SSH-Key auf Groß lässt sich nur noch auf die IP von Klein beschränken (`from=`), nicht mehr auf TwinRaid allein. Ob Netzfilter und Rate-Limit die echte Client-IP sehen, hängt von der Portweiterleitung von Docker ab und muss geprüft werden.
+- *Einstellungen:* Template auf `bridge`, Port 8443 freigeben, `web.tls.ip_addresses` = IP von Klein, neue CA auf allen Geräten; UniFi-Regel auf die IP von Klein.
+- *Nachteile:* Wake-on-LAN aus dem NAT-Netz erreicht das Server-Netz nicht (Linux leitet Broadcasts nicht weiter, `bc_forwarding` müsste auf Klein geändert werden); `from=` beim SSH-Key nur noch auf die IP von Klein; keine eigene IP und MAC mehr.
 
-**F. Zweites Netzwerk für den Container (`br0` plus Docker-Bridge zum Host)**
-- *So:* TwinRaid bleibt mit eigener IP und MAC auf `br0` und hängt zusätzlich an einer internen Docker-Bridge, über deren Gateway er Klein erreicht.
-- *Vorteile:* Eigene IP und MAC im Server-Netz bleiben; Unraid-Netzwerk und andere Container bleiben unverändert.
-- *Nachteile:*
-  - **IP-Erkennung:** `twinraid-init` findet dann zwei verwendbare Adressen und verweigert den Start (siehe 5.1). Lösung wäre `web.tls.ip_addresses` (die IP steht dann wieder an zwei Stellen) oder eine geänderte Erkennung, z. B. nur die Schnittstelle der Standardroute oder ausdrücklich ausgenommene Bridge-Adressen. Das wäre eine Konzeptänderung; auch die Warnung bei `172.16.0.0/12` müsste angepasst werden.
-  - Unraid 7.3.3 hat im Template kein Feld für weitere Netzwerke (`ExtraNetworks` gibt es erst im Entwicklungszweig von Unraid). Mit `--network` in den Extra Parameters übernimmt Unraid das Netzwerk nicht mehr selbst und ignoriert die Felder für IP und MAC; beides stünde dann in den Extra Parameters. Alternativ `docker network connect` nach jedem Start per Skript.
-  - Die Weboberfläche von Unraid und damit die API lauscht nur auf Schnittstellen `br*`, `bond*`, `eth*`, `wlan*` und `wg*` (`rc.library.source`). Die Docker-Bridge müsste unter *Settings → Network Settings → Interface Extra* ergänzt werden.
-  - Die Standardroute muss über `br0` bleiben (bei Docker ab 28 über `gw-priority`).
+**F. Zweites Netzwerk für TwinRaid (`br0` plus Docker-Bridge zu Klein)**
+- *Einstellungen:* Unraid 7.3.3 hat kein Template-Feld für ein zweites Netzwerk; `--network` in den *Extra Parameters* oder `docker network connect` nach jedem Start per Skript. Die Unraid-Oberfläche (und damit die API) lauscht nur auf Schnittstellen nach dem Muster `^(br|bond|eth|wlan|wg)[0-9]+` (`rc.library.source`); Docker-Bridges heißen `br-<hash>` und passen nicht → unter *Settings → Network Settings → Interface Extra* ergänzen. Die Standardroute muss über `br0` bleiben (`gw-priority`).
+- *Code:* Die IP-Erkennung (5.1) fände zwei Adressen → Erkennung über die Schnittstelle der Standardroute nötig (Konzeptänderung).
+- *Zu prüfen:* ob ein `--internal`-Netz mit Docker 29 den Host über das Gateway erreicht.
 
-**G. Unix-Socket der Unraid-API einbinden**
-- *So:* Die Unraid-API lauscht auf Klein unter `/var/run/unraid-api.sock`; nginx leitet `/graphql` dorthin weiter. Nur diese eine Datei wird in den Container eingebunden, der Worker spricht GraphQL über den Socket.
-- *Vorteile:* Kein Netzwerkweg nötig; Netzwerk von Klein und andere Container bleiben unverändert. Laut Quellcode der Unraid-API gilt am Socket dieselbe Anmeldung wie über das Netz (API-Key), die Rechte bleiben also über einen Key mit minimalen Rechten begrenzt (zu prüfen).
-- *Nachteile:* Weicht von 3.4 und 3.5 ab (API über HTTP). Interne Schnittstelle, die sich mit Unraid-Updates ändern kann. Startet die API neu, legt sie den Socket neu an, und die eingebundene Datei zeigt ins Leere; dann ist ein Neustart des Containers nötig. Der Socket liegt im selben Ordner wie `/var/run/docker.sock`: Der Ordner selbst darf nie eingebunden werden (Sicherheitsregel 1). Startprüfung und Starttest müssten sicherstellen, dass am eingebundenen Pfad wirklich die Unraid-API antwortet und nicht Docker.
+**G. Unix-Socket der Unraid-API einbinden** (`/var/run/unraid-api.sock`)
+- *Einstellungen:* Im Template nur diese eine Datei einbinden (nie den Ordner `/var/run`, dort liegt auch `docker.sock`). Netzwerk und UniFi bleiben unverändert.
+- *Sicherheit:* Am Socket gilt dieselbe Anmeldung wie über das Netz (API-Key, alternativ Cookie oder lokale Sitzung). Key mit `DOCKER:UPDATE_ANY` in TwinRaid. Startprüfung und Starttest müssen sicherstellen, dass hinter dem Socket die Unraid-API antwortet und nicht Docker.
+- *Nachteile:* Startet die Unraid-API neu, legt sie den Socket neu an, und die eingebundene Datei zeigt ins Leere → Neustart des Containers nötig. Abweichung von 3.5 (API über HTTP).
+
+**I. Wächter auf Klein mit Auftragsdateien (neu)**
+- *So:* Ein kleines Skript auf Klein (Ablage in `/boot/config/twinraid/`, gestartet aus `/boot/config/go`, wartet auf das Array) prüft alle 1–2 s einen festen Ordner im Datenordner von TwinRaid (`/mnt/user/appdata/twinraid/data/worker/docker-requests`, auf dem Host root-Rechte). Der Worker legt dort Aufträge in festem Format ab („stop `<Name>`“, „start `<Name>`“). Der Wächter führt nur diese beiden Befehle über die Unraid-API am lokalen Socket aus und schreibt das Ergebnis zurück. Der Key mit `DOCKER:READ_ANY`/`DOCKER:UPDATE_ANY` liegt **nur auf Klein** (root, `0600`), nie in TwinRaid.
+- *Grenzen im Wächter, fest im Code:* nur `start` und `stop`; Namen nach den Regeln von Docker geprüft und in der Containerliste vorhanden; Container mit dem Image `ghcr.io/mantua1/twinraid` werden nie gestoppt; `start` nur für Container, die der Wächter selbst innerhalb desselben Laufs gestoppt hat; jeder Auftrag im Syslog von Klein.
+- *Einstellungen:* Unraid: Skript ablegen, eine Zeile in `/boot/config/go`, API-Key für Klein anlegen (ohne Rolle, nur Docker) und beim Wächter hinterlegen. Netzwerk und UniFi: nichts. Kein zusätzliches Volume für TwinRaid (der Datenordner ist schon eingebunden).
+- *Sicherheit:* Erfüllt Anforderung 1 auch bei einem übernommenen Container: TwinRaid kann nur Start und Stopp anfordern, keine Updates, kein Pausieren, keine Logs lesen. Der Wächter läuft als root auf Klein und muss so klein und streng sein wie `guard.sh`. Die Steuerung läuft weiterhin über die Unraid-API (CLAUDE.md, Regel 1), nur nicht aus dem Container.
+- *Nachteile:* ein zusätzliches Programm auf Klein (Pflege bei Updates, wie `guard.sh`); läuft der Wächter nicht, findet kein Container-Stopp statt (TwinRaid erkennt das an fehlenden Antworten und lässt Phase B mit Warnung aus); bis zu 2 s Verzögerung je Auftrag. JSON-Verarbeitung auf Klein am besten mit dem vorhandenen PHP von Unraid statt Bash.
 
 **H. Konsistenzlauf ohne Container-Stopp**
-- *So:* `sync.stop_containers: false`; Phase B entfällt oder kopiert nur die Templates.
-- *Vorteile:* Kein Zugriff auf Klein nötig, sofort möglich.
-- *Nachteile:* appdata laufender Container, etwa SQLite-Datenbanken, kann inkonsistent auf Groß ankommen. Das Ziel „alle Container mit dem Stand des letzten Syncs sofort starten“ (siehe 1) ist dann nur eingeschränkt erreicht. Höchstens als Übergang denkbar.
+- `sync.stop_containers: false`; keine Rechte, keine Änderung. appdata laufender Container (z. B. SQLite) kann inkonsistent auf Groß ankommen. Höchstens als Übergang.
 
-**Verworfen:** Host access trotz macvlan mit Bridging einschalten (Risiko laut 5.1). Netzwerk `host` für TwinRaid: kein eigener Netzwerk-Namespace, alle Ports von Klein sichtbar, die IP-Erkennung fände viele Adressen.
+**Verworfen:** Host access trotz macvlan mit Bridging (Risiko laut 5.1); Netzwerk `host` für TwinRaid; Docker-Socket-Proxy (gibt TwinRaid über einen zweiten Container Zugriff auf `docker.sock`, widerspricht Regel 1; Freigaben nur je API-Bereich, nicht je Befehl); Weg über Groß (Groß müsste die API von Klein aufrufen).
 
-**Vorläufige Einschätzung (nicht entschieden):** Mit dem geringsten Eingriff kommen D aus, falls eine zweite Netzwerkkarte vorhanden ist, und G, falls sich die Prüfungen bestätigen. Die von Unraid empfohlene Dauerlösung ist A, betrifft aber alle Container und VMs mit eigener IP auf Klein.
+**Empfehlung (Entscheidung steht aus):** **Option I**. Sie ist die einzige, die alle drei Anforderungen erfüllt: kein Eingriff ins Netzwerk, keine Auswirkung auf andere Container, und TwinRaid selbst kann nur Start und Stopp anfordern. Alle Optionen, bei denen TwinRaid die API von Klein selbst aufruft (A bis G), brauchen `DOCKER:UPDATE_ANY` und erlauben damit auch Image-Updates und Pausieren. Als einfachere Rückfallebene bleibt **G** (keine Netzänderung, aber der breite Key liegt in TwinRaid), bis zur Umsetzung von I oder als Übergang **H**.
 
 ---
 
