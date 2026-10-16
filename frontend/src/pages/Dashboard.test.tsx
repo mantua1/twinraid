@@ -219,7 +219,7 @@ describe("actions", () => {
     expect(result.querySelector("p")).toHaveClass("text-muted-foreground");
   });
 
-  it("explains a missing permission of the API key", async () => {
+  it("explains a command rejected by guard.sh", async () => {
     const status: StatusSnapshot = {
       ...STATUS_VM_RUNNING,
       vm: { state: "offline", reason: null },
@@ -230,7 +230,7 @@ describe("actions", () => {
             running: null,
             last: {
               action: "vm_start",
-              outcome: "api_forbidden",
+              outcome: "ssh_denied",
               finished_at: "2026-10-13T12:05:00Z",
             },
           },
@@ -239,7 +239,84 @@ describe("actions", () => {
     };
     const { vm } = await openDashboard({ status });
     expect(await within(vm).findByTestId("action-result")).toHaveTextContent(
-      "Keine Berechtigung: Der API-Key darf VMs nicht starten oder ausschalten. In Unraid die Berechtigung VMS: Update (any) ergänzen.",
+      "guard.sh auf dem Server hat den Befehl abgelehnt (guard.sh Version 2 kopiert, Zeilen in authorized_keys richtig?).",
+    );
+  });
+
+  it("explains a poweroff refused by guard.sh", async () => {
+    const status: StatusSnapshot = {
+      ...STATUS_VM_RUNNING,
+      actions: actionsSnapshot(
+        {},
+        {
+          target: {
+            running: null,
+            last: {
+              action: "shutdown_target",
+              outcome: "vm_running",
+              finished_at: "2026-10-13T12:05:00Z",
+            },
+          },
+        },
+      ),
+    };
+    const { target } = await openDashboard({ status });
+    expect(await within(target).findByTestId("action-result")).toHaveTextContent(
+      "Der Server wurde nicht ausgeschaltet, weil die VM noch lief.",
+    );
+  });
+
+  it("shows notices in the tile they belong to", async () => {
+    const status: StatusSnapshot = {
+      ...STATUS_VM_RUNNING,
+      notices: ["target_connect_plugin", "target_flash_backup", "vm_name_mismatch"],
+    };
+    const { target, vm } = await openDashboard({ status });
+    const targetNotices = await within(target).findAllByTestId("status-notice");
+    expect(targetNotices.map((notice) => notice.dataset.notice)).toEqual([
+      "target_connect_plugin",
+      "target_flash_backup",
+    ]);
+    expect(targetNotices[0]).toHaveTextContent(
+      "Auf Unraid Groß ist das Plugin Unraid Connect installiert.",
+    );
+    expect(targetNotices[1]).toHaveTextContent(
+      "Flash Backup von Unraid Connect ist auf Unraid Groß aktiv.",
+    );
+    const vmNotices = within(vm).getAllByTestId("status-notice");
+    expect(vmNotices.map((notice) => notice.dataset.notice)).toEqual(["vm_name_mismatch"]);
+    expect(vmNotices[0]).toHaveTextContent("Bitte die UUID in power.conf prüfen.");
+    // Hinweise sperren keine Aktion.
+    expect(within(target).getByRole("button", { name: "Herunterfahren" })).toBeEnabled();
+  });
+
+  it("shows no notices without any", async () => {
+    const { target, vm } = await openDashboard({ status: STATUS_VM_RUNNING });
+    expect(within(target).queryByTestId("status-notice")).toBeNull();
+    expect(within(vm).queryByTestId("status-notice")).toBeNull();
+  });
+
+  it("names the step while waiting for the VM service", async () => {
+    const status: StatusSnapshot = {
+      ...STATUS_VM_RUNNING,
+      vm: { state: "starting", reason: null },
+      actions: actionsSnapshot(
+        { vm_start: "busy" },
+        {
+          vm: {
+            running: {
+              action: "vm_start",
+              step: "waiting_for_vm_service",
+              started_at: "2026-10-13T12:05:00Z",
+            },
+            last: null,
+          },
+        },
+      ),
+    };
+    const { vm } = await openDashboard({ status });
+    expect(await within(vm).findByTestId("action-running")).toHaveTextContent(
+      "Wartet auf den VM-Dienst …",
     );
   });
 

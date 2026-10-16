@@ -1,15 +1,18 @@
-import { ArrowLeft, Download, Lock, LockOpen, Power, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Download, KeyRound, Power, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { CA_CERTIFICATE_URL } from "@/api/client";
-import type { AppInfo, TlsInfo } from "@/api/types";
+import type { AppInfo, StatusNotice, TlsInfo } from "@/api/types";
 import { ErrorNotice } from "@/components/ErrorNotice";
+import { NoticeList } from "@/components/NoticeList";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface SettingsPageProps {
   info: AppInfo | null;
   tls: TlsInfo | null;
+  // Hinweise aus dem Live-Status, z. B. zu Unraid Connect auf Groß.
+  notices: readonly StatusNotice[];
   onBack: () => void;
 }
 
@@ -110,32 +113,28 @@ function CertificateCard({ tls }: { tls: TlsInfo | null }) {
   );
 }
 
-function ConnectionCard({ info }: { info: AppInfo }) {
+/** Wie TwinRaid mit Groß spricht: SSH über guard.sh, ohne API-Key (Konzept 3.5). */
+function ConnectionCard({ info, notices }: { info: AppInfo; notices: readonly StatusNotice[] }) {
   const { t } = useTranslation();
   const name = info.names.target;
+  const targetNotices = notices.filter((notice) => notice.startsWith("target_"));
   return (
     <Card>
       <CardHeader>
         <div>
           <CardTitle className="flex items-center gap-2">
-            {info.target_connection_encrypted ? (
-              <Lock className="size-5" aria-hidden="true" />
-            ) : (
-              <LockOpen className="size-5" aria-hidden="true" />
-            )}
+            <KeyRound className="size-5" aria-hidden="true" />
             {t("settings.connection.title", { name })}
           </CardTitle>
           <CardDescription>{t("settings.connection.description")}</CardDescription>
         </div>
       </CardHeader>
-      <CardContent>
-        {info.target_connection_encrypted ? (
-          <p className="text-sm" data-testid="connection-encrypted">
-            {t("settings.connection.encrypted")}
-          </p>
-        ) : (
-          <ErrorNotice message={t("settings.connection.unencrypted", { name })} />
-        )}
+      <CardContent className="flex flex-col gap-3">
+        <p className="text-sm" data-testid="connection-ssh">
+          {t("settings.connection.ssh", { name })}
+        </p>
+        <p className="text-sm text-muted-foreground">{t("settings.connection.webgui")}</p>
+        <NoticeList notices={targetNotices} target={name} />
       </CardContent>
     </Card>
   );
@@ -177,7 +176,7 @@ function ActionsCard({ info }: { info: AppInfo }) {
   );
 }
 
-export function SettingsPage({ info, tls, onBack }: SettingsPageProps) {
+export function SettingsPage({ info, tls, notices, onBack }: SettingsPageProps) {
   const { t } = useTranslation();
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-6">
@@ -202,7 +201,7 @@ export function SettingsPage({ info, tls, onBack }: SettingsPageProps) {
           <CertificateCard tls={tls} />
         </CardContent>
       </Card>
-      {info !== null && <ConnectionCard info={info} />}
+      {info !== null && <ConnectionCard info={info} notices={notices} />}
       {info !== null && <ActionsCard info={info} />}
     </div>
   );

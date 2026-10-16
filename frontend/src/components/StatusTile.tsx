@@ -11,6 +11,8 @@ const NEUTRAL_REASONS = new Set<StatusReason>([
   "runs_here",
   "target_offline",
   "target_starting",
+  "watch_connecting",
+  "vm_service_unavailable",
   "vm_paused",
   "vm_suspended",
 ]);

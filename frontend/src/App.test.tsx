@@ -197,7 +197,7 @@ describe("live status", () => {
     expect(latestStream().url).toBe("/api/events");
   });
 
-  it("updates live and distinguishes API problems", async () => {
+  it("updates live and distinguishes problems of the status session", async () => {
     installFakeApi({ authenticated: true });
     render(<App />);
     await screen.findByText("Server offline");
@@ -205,18 +205,28 @@ describe("live status", () => {
       latestStream().emit("status", {
         ...STATUS,
         target: { state: "online", reason: null },
-        vm: { state: "unknown", reason: "api_key_invalid" },
+        vm: { state: "unknown", reason: "ssh_auth_failed" },
       });
     });
-    expect(await screen.findByText("API-Key ungültig")).toBeInTheDocument();
+    const rejected = await screen.findByText(/lehnt den SSH-Key „status“ ab/);
+    expect(rejected).toHaveClass("text-destructive");
     act(() => {
       latestStream().emit("status", {
         ...STATUS,
         target: { state: "online", reason: null },
-        vm: { state: "unknown", reason: "api_cert_changed" },
+        vm: { state: "unknown", reason: "vm_not_configured" },
       });
     });
-    expect(await screen.findByText(/Zertifikat geändert/)).toBeInTheDocument();
+    expect(await screen.findByText(/power\.conf/)).toBeInTheDocument();
+    act(() => {
+      latestStream().emit("status", {
+        ...STATUS,
+        target: { state: "online", reason: null },
+        vm: { state: "unknown", reason: "vm_service_unavailable" },
+      });
+    });
+    // Kurz nach dem Start von Groß normal: nur ein neutraler Hinweis.
+    expect(await screen.findByText("VM-Dienst nicht bereit")).toHaveClass("text-muted-foreground");
   });
 
   it("shows that TwinRaid runs on the source server as a neutral note", async () => {
@@ -388,28 +398,35 @@ describe("settings", () => {
     expect(screen.queryByRole("link", { name: "CA-Zertifikat herunterladen" })).toBeNull();
   });
 
-  it("warns that the connection to the target is unencrypted", async () => {
+  it("describes the SSH connection without an API key or HTTPS warning", async () => {
     installFakeApi({ authenticated: true });
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("Unraid Klein");
     await user.click(screen.getByRole("button", { name: "Einstellungen" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Verbindung zu Unraid Groß unverschlüsselt, API-Key wird im Klartext übertragen.",
+    expect(await screen.findByTestId("connection-ssh")).toHaveTextContent(
+      "per SSH über guard.sh auf Unraid Groß",
     );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText(/unverschlüsselt/)).toBeNull();
+    expect(screen.queryByTestId("status-notice")).toBeNull();
   });
 
-  it("confirms an encrypted connection", async () => {
+  it("shows the Unraid Connect notice on the settings page", async () => {
     installFakeApi({
       authenticated: true,
-      info: { ...INFO_EN, default_language: "de", target_connection_encrypted: true },
+      status: { ...STATUS, notices: ["target_connect_plugin", "vm_name_mismatch"] },
     });
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("Unraid Klein");
     await user.click(screen.getByRole("button", { name: "Einstellungen" }));
-    expect(await screen.findByTestId("connection-encrypted")).toHaveTextContent("HTTPS");
-    expect(screen.queryByRole("alert")).toBeNull();
+    await screen.findByTestId("connection-ssh");
+    const notices = screen.getAllByTestId("status-notice");
+    expect(notices.map((notice) => notice.dataset.notice)).toEqual(["target_connect_plugin"]);
+    expect(notices[0]).toHaveTextContent(
+      "Auf Unraid Groß ist das Plugin Unraid Connect installiert",
+    );
   });
 });
 

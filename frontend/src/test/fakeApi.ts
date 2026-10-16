@@ -23,7 +23,6 @@ export const INFO: AppInfo = {
   read_only: false,
   actions: { wake: true, vm: true, shutdown: true },
   vm_shutdown_timeout_minutes: 3,
-  target_connection_encrypted: false,
 };
 
 /** Aktionsteil des Status; availability überschreibt einzelne Gründe. */
@@ -58,6 +57,7 @@ export const STATUS: StatusSnapshot = {
   password_set: true,
   actions: actionsSnapshot(),
   other_vms_running: null,
+  notices: [],
 };
 
 /** Groß und VM laufen: Herunterfahren ist möglich, Erzwingen noch nicht. */
