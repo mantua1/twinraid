@@ -10,7 +10,8 @@
 # trust-host-key mit Verbindungstest, guard.sh lehnt fremde Befehle ab, kein Terminal,
 # keine Weiterleitung, der Key gilt nur von der Adresse von TwinRaid, strikte
 # Hostkey-Prüfung; dazu die Abläufe: Rechtetest mit Lese-Key, VM starten, herunterfahren
-# und erzwingen, Groß herunterfahren (VM zuerst) und wecken.
+# und erzwingen, Groß herunterfahren (VM zuerst) und wecken, sowie „Erzwingen und danach
+# Server herunterfahren“ nach einem an der VM gescheiterten Herunterfahren.
 #
 # Aufruf aus dem Repo-Hauptordner:   docker/ssh-test.sh [IMAGE]   (Standard: twinraid:dev)
 set -euo pipefail
@@ -234,6 +235,27 @@ run_action wake_target success
 expect_contains "the magic packet reached the target with its MAC" "$(fake_read wol.log)" "${MAC,,}"
 wait_for_status "target is online again" '"target":{"state":"online","reason":null}'
 
+# --- 8a. Erzwingen und danach Server herunterfahren (Konzept 4.2, Ergänzung zu E10) ---------------
+expect_contains "force-and-shutdown is not offered without an aborted shutdown" \
+  "$(worker shutdown_target_force_vm)" '"blocked_by":"not_offered"'
+run_action vm_start success
+fake touch /state/vm-hang
+run_action shutdown_target vm_stop_timeout 100
+expect_equal "the aborted shutdown left the target on" "$(fake_read poweroff.log)" "poweroff"
+expect_contains "status offers force-and-shutdown" "$(worker get_status)" '"forced_shutdown_until":"'
+run_action shutdown_target_force_vm success
+fake rm /state/vm-hang
+force_log="$(admin show-action-log --lines 20)"
+expect_contains "the VM was forced as part of it" "${force_log}" \
+  "vm_force_stop  automatic (part of shutdown_target_force_vm): success"
+expect_contains "then the target was shut down" "${force_log}" \
+  "shutdown_target  automatic (part of shutdown_target_force_vm): success"
+expect_equal "force went through the API" "$(fake_read mutations.log | grep -c forceStop)" "2"
+expect_equal "guard.sh ran poweroff once more" "$(fake_read poweroff.log | wc -l | tr -d ' ')" "2"
+wait_for_status "target is reported as offline after force-and-shutdown" \
+  '"target":{"state":"offline","reason":"unreachable"}'
+run_action wake_target success
+
 # --- 9. Einschränkungen der authorized_keys-Zeile ------------------------------------------------
 denied="$(ssh_from_app "root@${target_ip}" id 2>&1 || true)"
 expect_contains "guard.sh rejects other commands" "${denied}" "twinraid-guard: denied"
@@ -254,7 +276,7 @@ expect_contains "from=: the key does not work from another address" "${outsider}
 fake sh -c 'rm -f /etc/ssh/ssh_host_* && ssh-keygen -A >/dev/null && kill -HUP 1'
 sleep 2
 run_action shutdown_target ssh_host_key_mismatch
-expect_equal "no poweroff with a changed host key" "$(fake_read poweroff.log)" "poweroff"
+expect_equal "no poweroff with a changed host key" "$(fake_read poweroff.log | wc -l | tr -d ' ')" "2"
 expect_not_contains "the API key never appears in the log" "$(docker logs "${APP}" 2>&1)" "${API_KEY}"
 
 echo
