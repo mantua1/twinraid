@@ -183,7 +183,8 @@
       "shutdown_target": "Server herunterfahren",
       "vm_start": "VM starten",
       "vm_stop": "VM herunterfahren",
-      "vm_force_stop": "VM erzwingen"
+      "vm_force_stop": "VM erzwingen",
+      "shutdown_target_force_vm": "VM erzwingen und Server herunterfahren"
     },
     "results": {
       "success": "erfolgreich",
@@ -232,14 +233,16 @@
       "shutdown_target": "Herunterfahren",
       "vm_start": "Starten",
       "vm_stop": "Herunterfahren",
-      "vm_force_stop": "Erzwingen"
+      "vm_force_stop": "Erzwingen",
+      "shutdown_target_force_vm": "Erzwingen und danach Server herunterfahren"
     },
     "names": {
       "wake_target": "Server wecken",
       "shutdown_target": "Server herunterfahren",
       "vm_start": "VM starten",
       "vm_stop": "VM herunterfahren",
-      "vm_force_stop": "VM erzwingen"
+      "vm_force_stop": "VM erzwingen",
+      "shutdown_target_force_vm": "VM erzwingen und Server herunterfahren"
     },
     "steps": {
       "waking": "Magic Packet gesendet, der Server startet …",
@@ -260,12 +263,13 @@
       "vm_off": "die VM ist aus",
       "vm_unknown": "der Zustand der VM ist unbekannt",
       "force_not_yet": "erst nach Ablauf der Wartezeit nach „Herunterfahren“ möglich",
-      "tour": "im Rundlauf der Simulation nicht verfügbar"
+      "tour": "im Rundlauf der Simulation nicht verfügbar",
+      "not_offered": "nur kurz nach einem an der VM gescheiterten Herunterfahren des Servers möglich"
     },
     "outcomes": {
       "success": "erfolgreich",
       "wol_failed": "Das Magic Packet konnte nicht gesendet werden.",
-      "boot_timeout": "Der Server war nicht rechtzeitig bereit (boot_timeout_minutes). Wake-on-LAN im BIOS und mit ethtool prüfen.",
+      "boot_timeout": "Der Server war nicht rechtzeitig bereit (boot_timeout_minutes).",
       "api_unreachable": "Die Unraid-API ist nicht erreichbar.",
       "api_redirected": "Unraid leitet auf HTTPS um – in twinraid.yaml webgui.scheme auf https stellen.",
       "api_key_missing": "Kein API-Key gesetzt (twinraid-admin set-api-key target).",
@@ -276,7 +280,7 @@
       "api_error": "Unerwartete Antwort der Unraid-API.",
       "vm_not_found": "Die VM wurde nicht gefunden (gaming_vm.unraid_vm_name).",
       "vm_start_timeout": "Die VM läuft nach dem Start nicht.",
-      "vm_stop_timeout": "Die VM hat sich nicht rechtzeitig heruntergefahren. „Erzwingen“ ist jetzt möglich.",
+      "vm_stop_timeout": "Die VM hat sich nicht rechtzeitig heruntergefahren.",
       "ssh_key_missing": "Kein SSH-Key „power“ (twinraid-admin init-ssh-keys).",
       "ssh_host_untrusted": "Der SSH-Hostkey des Servers ist nicht bestätigt (twinraid-admin trust-host-key target).",
       "ssh_host_key_mismatch": "Der SSH-Hostkey des Servers hat sich geändert. Prüfen und neu bestätigen.",
@@ -285,7 +289,7 @@
       "ssh_denied": "guard.sh auf dem Server hat den Befehl abgelehnt.",
       "ssh_failed": "Die SSH-Verbindung ist fehlgeschlagen.",
       "remote_failed": "Der Befehl ist auf dem Server fehlgeschlagen.",
-      "shutdown_timeout": "Der Server ist nach 15 Minuten noch erreichbar.",
+      "shutdown_timeout": "Der Server war nach 15 Minuten noch erreichbar.",
       "interrupted": "abgebrochen, weil TwinRaid neu gestartet wurde",
       "internal_error": "Interner Fehler – bitte das Container-Log prüfen."
     },
@@ -317,7 +321,20 @@
         "title": "{{vm}} sofort ausschalten?",
         "description": "Die VM wird sofort ausgeschaltet, wie beim Ziehen des Netzsteckers. Nicht gespeicherte Daten in der VM gehen verloren.",
         "confirm": "Jetzt erzwingen"
+      },
+      "forceAndShutdown": {
+        "title": "{{vm}} erzwingen und danach {{target}} herunterfahren?",
+        "description": "Achtung: Erzwingen ist für die VM wie Stecker ziehen. Sie wird sofort ausgeschaltet, ohne herunterzufahren. Nicht gespeicherte Daten in der VM gehen verloren, laufende Windows-Updates werden unterbrochen. Danach fährt TwinRaid {{target}} sauber herunter. Bleibt die VM trotzdem an, läuft der Server weiter.",
+        "confirm": "VM erzwingen und Server herunterfahren"
       }
-    }
+    },
+    "hints": {
+      "forceNow": "„Erzwingen“ ist jetzt möglich.",
+      "forceAndShutdownUntil": "„Erzwingen und danach Server herunterfahren“ ist bis {{time}} möglich.",
+      "inVmTile": "In der Kachel {{vm}}: {{hint}}",
+      "checkWake": "Wake-on-LAN im BIOS und mit ethtool prüfen, ebenso den Auto-Start des Arrays.",
+      "checkShutdown": "Bitte die Unraid-Oberfläche des Servers ansehen."
+    },
+    "validUntil": "gültig bis {{time}}"
   }
 }

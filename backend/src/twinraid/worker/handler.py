@@ -13,6 +13,7 @@ from twinraid.shared.ipc import (
     OkResponse,
     Response,
     ShutdownTarget,
+    ShutdownTargetForceVm,
     VerifyPassword,
     VmForceStop,
     VmStart,
@@ -63,7 +64,14 @@ class CommandHandler:
             case VerifyPassword(password=password):
                 outcome = await self._password_check.verify(password)
                 return OkResponse(result={"outcome": outcome.value})
-            case WakeTarget() | ShutdownTarget() | VmStart() | VmStop() | VmForceStop():
+            case (
+                WakeTarget()
+                | ShutdownTarget()
+                | ShutdownTargetForceVm()
+                | VmStart()
+                | VmStop()
+                | VmForceStop()
+            ):
                 return await self._action(ActionName(command.command))
         return ErrorResponse(  # pragma: no cover - alle Befehle sind oben abgedeckt
             error=ErrorCode.NOT_IMPLEMENTED, message="unknown command"

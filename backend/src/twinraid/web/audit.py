@@ -38,6 +38,7 @@ class AuditAction(StrEnum):
     # Anforderung einer Aktion über die Oberfläche (Konzept 5.3, ab Phase 4).
     WAKE_TARGET = "wake_target"
     SHUTDOWN_TARGET = "shutdown_target"
+    SHUTDOWN_TARGET_FORCE_VM = "shutdown_target_force_vm"
     VM_START = "vm_start"
     VM_STOP = "vm_stop"
     VM_FORCE_STOP = "vm_force_stop"

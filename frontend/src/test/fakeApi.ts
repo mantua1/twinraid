@@ -35,6 +35,7 @@ export function actionsSnapshot(
     availability: {
       wake_target: null,
       shutdown_target: "target_offline",
+      shutdown_target_force_vm: "not_offered",
       vm_start: null,
       vm_stop: "target_offline",
       vm_force_stop: "target_offline",
@@ -43,6 +44,7 @@ export function actionsSnapshot(
     target: { running: null, last: null },
     vm: { running: null, last: null },
     force_available_at: null,
+    forced_shutdown_until: null,
     ...extra,
   };
 }

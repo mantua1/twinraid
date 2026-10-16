@@ -192,7 +192,31 @@ describe("actions", () => {
     });
     const result = within(target).getByTestId("action-result");
     expect(result).toHaveTextContent("Zuletzt: Server wecken – Der Server war nicht rechtzeitig");
-    expect(result).toHaveClass("text-destructive");
+    // Groß ist noch aus: Der Hinweis trifft zu.
+    expect(within(target).getByTestId("action-hint-current")).toHaveTextContent(
+      "Wake-on-LAN im BIOS und mit ethtool prüfen",
+    );
+  });
+
+  it("drops the Wake-on-LAN hint once the target is online", async () => {
+    const lastWake = {
+      running: null,
+      last: {
+        action: "wake_target" as const,
+        outcome: "boot_timeout" as const,
+        finished_at: "2026-10-13T12:05:00Z",
+      },
+    };
+    const { target } = await openDashboard({
+      status: {
+        ...STATUS_VM_RUNNING,
+        actions: { ...STATUS_VM_RUNNING.actions, target: lastWake },
+      },
+    });
+    const result = await within(target).findByTestId("action-result");
+    expect(result).toHaveTextContent("Der Server war nicht rechtzeitig bereit");
+    expect(within(target).queryByTestId("action-hint-current")).toBeNull();
+    expect(result.querySelector("p")).toHaveClass("text-muted-foreground");
   });
 
   it("explains a missing permission of the API key", async () => {
@@ -219,13 +243,15 @@ describe("actions", () => {
     );
   });
 
-  it("explains a rejected request", async () => {
+  it("explains a rejected request until the next live status", async () => {
     const { user, target } = await openDashboard({ actionRejection: "busy" });
     await within(target).findByText("Nicht erreichbar");
     await user.click(button(target, "Wecken"));
     expect(await within(target).findByRole("alert")).toHaveTextContent(
       "Nicht ausgeführt: eine andere Aktion läuft gerade.",
     );
+    emit({ ...STATUS, actions: actionsSnapshot() });
+    expect(within(target).queryByRole("alert")).toBeNull();
   });
 
   it("lists the enabled action groups in the settings", async () => {
@@ -241,5 +267,127 @@ describe("actions", () => {
     expect(await screen.findByTestId("action-group-vm")).toHaveTextContent("freigeschaltet");
     expect(screen.getByTestId("action-group-wake")).toHaveTextContent("gesperrt");
     expect(screen.getByTestId("action-group-shutdown")).toHaveTextContent("gesperrt");
+  });
+});
+
+describe("force off, then shut down", () => {
+  const abortedShutdown = {
+    running: null,
+    last: {
+      action: "shutdown_target" as const,
+      outcome: "vm_stop_timeout" as const,
+      finished_at: "2026-10-13T12:05:00Z",
+    },
+  };
+  const offered: StatusSnapshot = {
+    ...STATUS_VM_RUNNING,
+    actions: actionsSnapshot(
+      {
+        ...STATUS_VM_RUNNING.actions.availability,
+        vm_force_stop: null,
+        shutdown_target_force_vm: null,
+      },
+      {
+        target: abortedShutdown,
+        vm: abortedShutdown,
+        force_available_at: "2026-10-13T12:05:00Z",
+        forced_shutdown_until: "2026-10-13T12:15:00Z",
+      },
+    ),
+  };
+
+  it("is offered after a shutdown that failed at the VM, with a strong warning", async () => {
+    const { server, user, vm, target } = await openDashboard({ status: offered });
+    const force = await within(vm).findByRole("button", {
+      name: "Erzwingen und danach Server herunterfahren",
+    });
+    expect(force).toBeEnabled();
+    expect(within(vm).getByTestId("action-note")).toHaveTextContent(
+      /^Erzwingen und danach Server herunterfahren: gültig bis /,
+    );
+    expect(within(target).getByTestId("action-hint-current")).toHaveTextContent(
+      "In der Kachel Gaming-VM: „Erzwingen und danach Server herunterfahren“ ist bis",
+    );
+    await user.click(force);
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("Gaming-VM erzwingen und danach Unraid Groß herunterfahren?");
+    expect(dialog).toHaveTextContent("wie Stecker ziehen");
+    expect(dialog).toHaveTextContent("Nicht gespeicherte Daten");
+    await user.click(within(dialog).getByRole("button", { name: "Abbrechen" }));
+    expect(server.actions).toEqual([]);
+    await user.click(force);
+    await user.click(
+      screen.getByRole("button", { name: "VM erzwingen und Server herunterfahren" }),
+    );
+    expect(server.actions).toEqual(["shutdown_target_force_vm"]);
+  });
+
+  it("is not offered without an aborted target shutdown", async () => {
+    const { vm } = await openDashboard({ status: STATUS_VM_RUNNING });
+    await within(vm).findByRole("button", { name: "Starten" });
+    expect(
+      within(vm).queryByRole("button", { name: "Erzwingen und danach Server herunterfahren" }),
+    ).toBeNull();
+  });
+
+  it("keeps the result as history but drops hints that no longer apply", async () => {
+    const { target, vm } = await openDashboard({ status: offered });
+    await within(target).findByTestId("action-hint-current");
+    // Die VM wurde erzwungen: Sie ist aus, das Angebot und „Erzwingen“ sind weg.
+    emit({
+      ...STATUS_VM_RUNNING,
+      vm: { state: "offline", reason: null },
+      actions: actionsSnapshot(
+        {
+          wake_target: "target_online",
+          shutdown_target: null,
+          vm_start: null,
+          vm_stop: "vm_off",
+          vm_force_stop: "vm_off",
+        },
+        {
+          target: abortedShutdown,
+          vm: {
+            running: null,
+            last: {
+              action: "vm_force_stop",
+              outcome: "success",
+              finished_at: "2026-10-13T12:07:00Z",
+            },
+          },
+        },
+      ),
+    });
+    const result = within(target).getByTestId("action-result");
+    expect(result).toHaveTextContent(
+      "Zuletzt: Server herunterfahren – Die VM hat sich nicht rechtzeitig heruntergefahren.",
+    );
+    expect(result).not.toHaveTextContent("Erzwingen");
+    expect(within(target).queryByTestId("action-hint-current")).toBeNull();
+    expect(result.querySelector("p")).toHaveClass("text-muted-foreground");
+    expect(
+      within(vm).queryByRole("button", { name: "Erzwingen und danach Server herunterfahren" }),
+    ).toBeNull();
+  });
+
+  it("points to plain force once the offer has expired", async () => {
+    const expired: StatusSnapshot = {
+      ...offered,
+      actions: {
+        ...offered.actions,
+        availability: { ...offered.actions.availability, shutdown_target_force_vm: "not_offered" },
+        forced_shutdown_until: null,
+      },
+    };
+    const { target, vm } = await openDashboard({ status: expired });
+    expect(await within(vm).findByTestId("action-hint-current")).toHaveTextContent(
+      "„Erzwingen“ ist jetzt möglich.",
+    );
+    expect(within(target).getByTestId("action-hint-current")).toHaveTextContent(
+      "In der Kachel Gaming-VM: „Erzwingen“ ist jetzt möglich.",
+    );
+    expect(
+      within(vm).queryByRole("button", { name: "Erzwingen und danach Server herunterfahren" }),
+    ).toBeNull();
   });
 });

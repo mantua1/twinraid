@@ -715,7 +715,7 @@ if wait_for_https "${real}" "$((PORT + 2))"; then
   expect_contains "VM is off because the target is offline" "${real_status}" '"vm":{"state":"offline","reason":"target_offline"}'
   expect_contains "info reports read-only mode" \
     "$(curl -s --cacert "${real_cert}" -b "${real_jar}" "${REAL_BASE}/api/info")" '"read_only":true'
-  for command in wake_target shutdown_target vm_start vm_stop vm_force_stop sync_start; do
+  for command in wake_target shutdown_target shutdown_target_force_vm vm_start vm_stop vm_force_stop sync_start; do
     action='import socket,sys;s=socket.socket(socket.AF_UNIX);s.connect("/run/twinraid/worker.sock");s.sendall(("{\"command\":\""+sys.argv[1]+"\"}\n").encode());print(s.recv(300).decode())'
     expect_contains "real mode locks ${command}" \
       "$(docker exec -u 10001:10001 "${real}" "${PY}" -c "${action}" "${command}" 2>&1)" '"error":"not_available"'

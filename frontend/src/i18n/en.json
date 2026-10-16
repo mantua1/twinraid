@@ -183,7 +183,8 @@
       "shutdown_target": "Shut down server",
       "vm_start": "Start VM",
       "vm_stop": "Shut down VM",
-      "vm_force_stop": "Force VM off"
+      "vm_force_stop": "Force VM off",
+      "shutdown_target_force_vm": "Force VM off and shut down server"
     },
     "results": {
       "success": "successful",
@@ -232,14 +233,16 @@
       "shutdown_target": "Shut down",
       "vm_start": "Start",
       "vm_stop": "Shut down",
-      "vm_force_stop": "Force off"
+      "vm_force_stop": "Force off",
+      "shutdown_target_force_vm": "Force off, then shut down server"
     },
     "names": {
       "wake_target": "Wake server",
       "shutdown_target": "Shut down server",
       "vm_start": "Start VM",
       "vm_stop": "Shut down VM",
-      "vm_force_stop": "Force VM off"
+      "vm_force_stop": "Force VM off",
+      "shutdown_target_force_vm": "Force VM off and shut down server"
     },
     "steps": {
       "waking": "Magic packet sent, the server is starting …",
@@ -260,12 +263,13 @@
       "vm_off": "the VM is off",
       "vm_unknown": "the state of the VM is unknown",
       "force_not_yet": "only possible after the waiting time following “Shut down”",
-      "tour": "not available during the simulation tour"
+      "tour": "not available during the simulation tour",
+      "not_offered": "only possible shortly after a server shutdown failed at the VM"
     },
     "outcomes": {
       "success": "successful",
       "wol_failed": "The magic packet could not be sent.",
-      "boot_timeout": "The server was not ready in time (boot_timeout_minutes). Check Wake-on-LAN in the BIOS and with ethtool.",
+      "boot_timeout": "The server was not ready in time (boot_timeout_minutes).",
       "api_unreachable": "The Unraid API is not reachable.",
       "api_redirected": "Unraid redirects to HTTPS – set webgui.scheme to https in twinraid.yaml.",
       "api_key_missing": "No API key is set (twinraid-admin set-api-key target).",
@@ -276,7 +280,7 @@
       "api_error": "Unexpected answer from the Unraid API.",
       "vm_not_found": "The VM was not found (gaming_vm.unraid_vm_name).",
       "vm_start_timeout": "The VM is not running after the start.",
-      "vm_stop_timeout": "The VM did not shut down in time. “Force off” is now possible.",
+      "vm_stop_timeout": "The VM did not shut down in time.",
       "ssh_key_missing": "No SSH key “power” (twinraid-admin init-ssh-keys).",
       "ssh_host_untrusted": "The SSH host key of the server is not confirmed (twinraid-admin trust-host-key target).",
       "ssh_host_key_mismatch": "The SSH host key of the server has changed. Check it and confirm it again.",
@@ -285,7 +289,7 @@
       "ssh_denied": "guard.sh on the server rejected the command.",
       "ssh_failed": "The SSH connection failed.",
       "remote_failed": "The command failed on the server.",
-      "shutdown_timeout": "The server is still reachable after 15 minutes.",
+      "shutdown_timeout": "The server was still reachable after 15 minutes.",
       "interrupted": "interrupted because TwinRaid was restarted",
       "internal_error": "Internal error – please check the container log."
     },
@@ -317,7 +321,20 @@
         "title": "Switch {{vm}} off immediately?",
         "description": "The VM is switched off at once, like pulling the power plug. Unsaved data in the VM is lost.",
         "confirm": "Force off now"
+      },
+      "forceAndShutdown": {
+        "title": "Force {{vm}} off and then shut down {{target}}?",
+        "description": "Warning: forcing is like pulling the power plug of the VM. It is switched off at once without shutting down. Unsaved data in the VM is lost, running Windows updates are interrupted. Then TwinRaid shuts down {{target}} cleanly. If the VM still stays on, the server keeps running.",
+        "confirm": "Force VM off and shut down server"
       }
-    }
+    },
+    "hints": {
+      "forceNow": "“Force off” is now possible.",
+      "forceAndShutdownUntil": "“Force off, then shut down server” is possible until {{time}}.",
+      "inVmTile": "In the tile {{vm}}: {{hint}}",
+      "checkWake": "Check Wake-on-LAN in the BIOS and with ethtool, as well as the array auto start.",
+      "checkShutdown": "Please look at the web interface of the server."
+    },
+    "validUntil": "valid until {{time}}"
   }
 }

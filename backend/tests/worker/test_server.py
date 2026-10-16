@@ -94,6 +94,7 @@ async def test_get_status_before_the_first_check(server: WorkerServer) -> None:
     assert isinstance(actions, dict)
     availability = actions["availability"]
     assert isinstance(availability, dict)
+    assert availability.pop("shutdown_target_force_vm") == "not_offered"
     assert set(availability.values()) == {"target_unknown"}
     assert actions["target"] == {"running": None, "last": None}
 

@@ -47,6 +47,7 @@ class Resource(StrEnum):
 _RESOURCES: dict[ActionName, frozenset[Resource]] = {
     ActionName.WAKE_TARGET: frozenset({Resource.TARGET}),
     ActionName.SHUTDOWN_TARGET: frozenset({Resource.TARGET, Resource.VM}),
+    ActionName.SHUTDOWN_TARGET_FORCE_VM: frozenset({Resource.TARGET, Resource.VM}),
     ActionName.VM_START: frozenset({Resource.TARGET, Resource.VM}),
     ActionName.VM_STOP: frozenset({Resource.VM}),
     ActionName.VM_FORCE_STOP: frozenset({Resource.VM}),
@@ -62,6 +63,10 @@ _TRANSIENT_VM_REASONS = frozenset(
 )
 # VM-Überlagerung, solange Groß nach dem Wecken bootet.
 _VM_WAITING = ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.TARGET_STARTING)
+# Die VM gilt als laufend (für das Angebot „Erzwingen und danach Server herunterfahren“).
+_VM_STILL_RUNNING = frozenset({ResourceState.ONLINE, ResourceState.STOPPING})
+# So lange gilt das Angebot nach einem abgebrochenen Herunterfahren (Konzept 4.2, E10).
+FORCED_SHUTDOWN_OFFER = timedelta(minutes=10)
 
 
 @dataclass(frozen=True)
@@ -128,6 +133,8 @@ class ActionCoordinator:
         self._last: dict[Resource, ActionResult] = {}
         # Zeitpunkt des letzten erfolgreich gesendeten ACPI-Signals (für Erzwingen).
         self._stop_sent_at: datetime | None = None
+        # Ende des Angebots „Erzwingen und danach Server herunterfahren“; nur im Speicher.
+        self._forced_shutdown_until: datetime | None = None
         self._tasks: set[asyncio.Task[None]] = set()
 
     # --- Freischaltung und Verfügbarkeit ---
@@ -154,6 +161,21 @@ class ActionCoordinator:
         if self._stop_sent_at is None:
             return None
         return self._stop_sent_at + self._shutdown_timeout
+
+    def forced_shutdown_until(self, status: ResourceStatus) -> datetime | None:
+        """Gilt das Angebot noch? Es verfällt nach Ablauf und bei jeder Zustandsänderung."""
+        until = self._forced_shutdown_until
+        if until is None:
+            return None
+        still_valid = (
+            self._clock() < until
+            and status.target.state is ResourceState.ONLINE
+            and status.vm.state in _VM_STILL_RUNNING
+        )
+        if not still_valid:
+            self._forced_shutdown_until = None
+            return None
+        return until
 
     def availability(self, status: ResourceStatus) -> dict[ActionName, ActionBlocker | None]:
         if self._tour_active():
@@ -205,6 +227,14 @@ class ActionCoordinator:
                         ActionBlocker.VM_UNKNOWN,
                     ),
                 ]
+            case ActionName.SHUTDOWN_TARGET_FORCE_VM:
+                enabled = self.enabled(ActionGroup.VM) and self.enabled(ActionGroup.SHUTDOWN)
+                checks = [
+                    (not enabled, ActionBlocker.NOT_ENABLED),
+                    (busy, ActionBlocker.BUSY),
+                    (self._jobs.is_running(), ActionBlocker.SYNC_RUNNING),
+                    (self.forced_shutdown_until(status) is None, ActionBlocker.NOT_OFFERED),
+                ]
             case ActionName.VM_STOP | ActionName.VM_FORCE_STOP:
                 force = name is ActionName.VM_FORCE_STOP
                 available_at = self.force_available_at()
@@ -233,6 +263,7 @@ class ActionCoordinator:
             target=self._activity(Resource.TARGET),
             vm=self._activity(Resource.VM),
             force_available_at=self.force_available_at(),
+            forced_shutdown_until=self.forced_shutdown_until(status),
         )
         if self._tour_active():
             return status, actions
@@ -280,6 +311,8 @@ class ActionCoordinator:
         blocker = self.availability(self._status.current())[name]
         if blocker is not None:
             return blocker
+        # Jede neue Aktion beendet das Angebot; die erzwungene Variante verbraucht es.
+        self._forced_shutdown_until = None
         resources = _RESOURCES[name]
         run = _Run(new_action_id(), name, self._clock(), _first_step(name), held=resources)
         for resource in resources:
@@ -315,6 +348,9 @@ class ActionCoordinator:
         result = ActionResult(action=run.action, outcome=outcome, finished_at=self._clock())
         for resource in run.held:
             self._last[resource] = result
+        if run.action is ActionName.SHUTDOWN_TARGET and outcome is ActionOutcome.VM_STOP_TIMEOUT:
+            # Nur dieser Abbruch erzeugt das Angebot (Ergänzung zu E10).
+            self._forced_shutdown_until = result.finished_at + FORCED_SHUTDOWN_OFFER
         # Erst den Status auffrischen, dann freigeben: Die Buttons passen sofort zum neuen Stand.
         with contextlib.suppress(Exception):
             await self._status.check_once()
@@ -334,6 +370,8 @@ class ActionCoordinator:
                 await self._force_stop_vm(run)
             case ActionName.SHUTDOWN_TARGET:
                 await self._shutdown_target(run)
+            case ActionName.SHUTDOWN_TARGET_FORCE_VM:
+                await self._shutdown_target_force_vm(run)
 
     @contextlib.asynccontextmanager
     async def _part(self, run: _Run, action: ActionName) -> AsyncIterator[None]:
@@ -436,6 +474,19 @@ class ActionCoordinator:
             # „VM zuerst herunterfahren?“ (Entscheidung E10): Bleibt sie an, bricht der Ablauf ab.
             async with self._part(run, ActionName.VM_STOP):
                 await self._stop_vm(run)
+        await self._power_off(run)
+
+    async def _shutdown_target_force_vm(self, run: _Run) -> None:
+        """Nach ausdrücklicher Bestätigung: VM erzwingen, danach Groß sauber herunterfahren.
+
+        Ist die VM nach dem Erzwingen nicht aus, bricht der Ablauf ab und Groß bleibt an.
+        """
+        async with self._part(run, ActionName.VM_FORCE_STOP):
+            await self._force_stop_vm(run)
+        async with self._part(run, ActionName.SHUTDOWN_TARGET):
+            await self._power_off(run)
+
+    async def _power_off(self, run: _Run) -> None:
         run.step = ActionStep.SHUTTING_DOWN
         await self._control.power_off()
         deadline = self._monotonic() + self._timings.shutdown_wait_seconds
@@ -452,4 +503,5 @@ def _first_step(name: ActionName) -> ActionStep:
         ActionName.VM_STOP: ActionStep.STOPPING_VM,
         ActionName.VM_FORCE_STOP: ActionStep.FORCING_VM,
         ActionName.SHUTDOWN_TARGET: ActionStep.SHUTTING_DOWN,
+        ActionName.SHUTDOWN_TARGET_FORCE_VM: ActionStep.FORCING_VM,
     }[name]

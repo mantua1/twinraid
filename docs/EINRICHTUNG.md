@@ -1,6 +1,6 @@
 # TwinRaid auf Unraid einrichten
 
-> **Stand: Version 0.4.0.** Diese Version zeigt den Status beider Server und der Gaming-VM an und kann Unraid Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Die Aktionen werden einzeln freigeschaltet (Abschnitt 11). Der Sync folgt in einer späteren Version. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
+> **Stand: Version 0.4.1.** Diese Version zeigt den Status beider Server und der Gaming-VM an und kann Unraid Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Die Aktionen werden einzeln freigeschaltet (Abschnitt 11). Der Sync folgt in einer späteren Version. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
 
 Diese Anleitung führt Schritt für Schritt durch die Installation auf **Unraid Klein** (dem stromsparenden Server, der immer läuft). Am Ende:
 
@@ -125,11 +125,11 @@ Steht dort `nobody users` oder beginnt die Zeile mit `drwxrwxrwx`, die beiden Be
 
 > **Hinweis zu `appdata`:** TwinRaid speichert eine kleine SQLite-Datenbank. Am zuverlässigsten liegt `appdata` auf einem Pool (z. B. Cache) mit der Share-Einstellung *Exclusive access*. Bei den Unraid-Standardeinstellungen ist das meist schon so.
 
-**3.2 Beispielkonfiguration herunterladen.** Die Version im Pfad (`v0.4.0`) passt zur installierten Version.
+**3.2 Beispielkonfiguration herunterladen.** Die Version im Pfad (`v0.4.1`) passt zur installierten Version.
 
 ```bash
 wget -O /mnt/user/appdata/twinraid/config/twinraid.yaml \
-  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.0/config.example.yaml
+  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.1/config.example.yaml
 chmod 644 /mnt/user/appdata/twinraid/config/twinraid.yaml
 ```
 
@@ -176,7 +176,7 @@ Im Simulationsmodus spricht TwinRaid keine echten Server an. So prüfst du zuers
 
 ```bash
 wget -O /boot/config/plugins/dockerMan/templates-user/my-TwinRaid.xml \
-  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.0/docker/unraid-template.xml
+  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.1/docker/unraid-template.xml
 ```
 
 **4.2 Container anlegen:**
@@ -403,6 +403,7 @@ actions:
 | VM herunterfahren | SSH-Key „power“: `guard.sh` sendet nur das Signal zum Herunterfahren (wie der Netzschalter) | `vm` |
 | VM erzwingen | Unraid-API, frühestens `shutdown_timeout_minutes` nach „Herunterfahren“ | `vm` |
 | Groß herunterfahren | SSH-Key „power“: `guard.sh` ruft `/sbin/poweroff` auf (wie der Button in der Unraid-Oberfläche); läuft die VM, wird sie zuerst heruntergefahren | `shutdown` (bei laufender VM zusätzlich `vm`) |
+| Erzwingen und danach Server herunterfahren (ab 0.4.1) | nur bis zu 10 Minuten nach einem Herunterfahren von Groß, das an der VM gescheitert ist: VM über die API erzwingen, dann Groß wie oben herunterfahren | `vm` und `shutdown` |
 
 Nach jeder Änderung an `twinraid.yaml` den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart**). Jede Aktion steht im Aktionslog des Workers; anzeigen in der **Container-Konsole** mit `twinraid-admin show-action-log`.
 
@@ -458,7 +459,7 @@ In `nano` ans Ende diese Zeile anfügen, dann `Strg+O`, `Enter`, `Strg+X`:
    ```bash
    mkdir -p /boot/config/twinraid
    wget -O /boot/config/twinraid/guard.sh \
-     https://raw.githubusercontent.com/mantua1/twinraid/v0.4.0/host-scripts/guard.sh
+     https://raw.githubusercontent.com/mantua1/twinraid/v0.4.1/host-scripts/guard.sh
    head -3 /boot/config/twinraid/guard.sh
    ```
 
@@ -483,7 +484,7 @@ Für die VM-Tests kannst du statt der Gaming-VM vorübergehend eine Test-VM verw
 
 Für den Test von **Erzwingen** brauchst du eine VM, die auf das Signal zum Herunterfahren **nicht** reagiert. Am einfachsten stellst du in einer Windows-Test-VM den Netzschalter vorübergehend auf **Nichts unternehmen** (siehe 11.1). Alternativ reagiert eine VM ohne Betriebssystem, die in der UEFI-Shell steht, in der Regel ebenfalls nicht.
 
-Am Ende (11.12) trägst du die Gaming-VM wieder ein.
+Am Ende (11.15) trägst du die Gaming-VM wieder ein.
 
 ### 11.3 Testprotokoll: Ausgangslage
 
@@ -513,7 +514,7 @@ Der API-Key aus Schritt 9 darf nur VMs lesen. Bevor du ihn erweiterst, prüfst d
 |---|---|
 | VM-Kachel | kurz **Startet …**, dann rot: „Zuletzt: VM starten – Keine Berechtigung: Der API-Key darf VMs nicht starten oder ausschalten. In Unraid die Berechtigung VMS: Update (any) ergänzen.“ |
 | Unraid Groß, Reiter **VMs** | die VM ist weiterhin **aus** |
-| Kachel **Verlauf** | „VM starten – angefordert“ |
+| Kachel **Verlauf** | „VM starten“ mit dem Ergebnis „angefordert“ |
 | `twinraid-admin show-action-log` | `vm_start  dashboard: started` und danach `vm_start  dashboard: api_forbidden` |
 
 > **Startet die VM trotzdem, hier aufhören.** Dann setzt die Unraid-API die Rechte nicht durch. Die VM in Unraid wieder ausschalten, `vm: false` setzen und das Ergebnis melden.
@@ -590,7 +591,7 @@ Meldet der Befehl einen Fehler, steht die Abhilfe dabei, zum Beispiel bei abgele
    | Erwartet | |
    |---|---|
    | sofort | **Fährt herunter …** und ein grauer Button **Erzwingen** mit „Erzwingen: möglich ab hh:mm:ss“ |
-   | nach `shutdown_timeout_minutes` | rot: „Zuletzt: VM herunterfahren – Die VM hat sich nicht rechtzeitig heruntergefahren. „Erzwingen“ ist jetzt möglich.“; **Erzwingen** ist aktiv |
+   | nach `shutdown_timeout_minutes` | rot: „Zuletzt: VM herunterfahren – Die VM hat sich nicht rechtzeitig heruntergefahren.“ und darunter „„Erzwingen“ ist jetzt möglich.“; **Erzwingen** ist aktiv. „Erzwingen und danach Server herunterfahren“ erscheint hier **nicht** (nur nach einem Herunterfahren von Groß) |
    | **Erzwingen** → **Jetzt erzwingen** | die VM ist sofort **Offline**, „Zuletzt: VM erzwingen – erfolgreich“ |
 
 4. In der Test-VM den Netzschalter wieder auf **Herunterfahren** stellen.
@@ -641,14 +642,53 @@ Steht nach `boot_timeout_minutes` „Der Server war nicht rechtzeitig bereit“:
 | Kachel Groß | danach **Fährt herunter …**, dann **Offline** |
 | `twinraid-admin show-action-log` | `vm_stop  automatic (part of shutdown_target): success` und `shutdown_target  dashboard: success` |
 
-Reagiert die VM nicht (zum Beispiel weil Windows gerade Updates installiert), bricht TwinRaid nach `shutdown_timeout_minutes` ab: Groß bleibt **an**, die Meldung lautet „Die VM hat sich nicht rechtzeitig heruntergefahren …“, und in der VM-Kachel ist **Erzwingen** möglich.
+Reagiert die VM nicht (zum Beispiel weil Windows gerade Updates installiert), bricht TwinRaid nach `shutdown_timeout_minutes` ab: Groß bleibt **an**, die Meldung lautet „Die VM hat sich nicht rechtzeitig heruntergefahren.“ In der VM-Kachel sind dann **Erzwingen** und, 10 Minuten lang, **Erzwingen und danach Server herunterfahren** möglich (Test 9).
 
-### 11.12 Abschluss
+### 11.12 Test 9: Erzwingen und danach Server herunterfahren
+
+Ab Version 0.4.1. Du brauchst die Test-VM, die nicht auf das Herunterfahren reagiert (siehe 11.2), `actions.vm` und `actions.shutdown`.
+
+1. Test-VM **Starten**, bis sie **Online** ist.
+2. In der Kachel **Unraid Groß** **Herunterfahren** → **VM und Server herunterfahren**.
+3. Nach `shutdown_timeout_minutes` bricht TwinRaid ab.
+
+   | Erwartet | |
+   |---|---|
+   | Kachel Groß | **Online**; rot „Zuletzt: Server herunterfahren – Die VM hat sich nicht rechtzeitig heruntergefahren.“, darunter „In der Kachel <Name der VM>: „Erzwingen und danach Server herunterfahren“ ist bis hh:mm möglich.“ |
+   | Kachel VM | **Online**; Buttons **Erzwingen** und **Erzwingen und danach Server herunterfahren**, darunter „… gültig bis hh:mm“ (10 Minuten nach dem Abbruch) |
+
+4. **Erzwingen und danach Server herunterfahren** klicken. Der Dialog warnt, dass Erzwingen für die VM wie Stecker ziehen ist. Zuerst **Abbrechen**: nichts passiert, die Buttons bleiben. Dann erneut klicken und **VM erzwingen und Server herunterfahren** bestätigen.
+
+   | Erwartet | |
+   |---|---|
+   | Kachel VM | sofort **Fährt herunter …** („Die VM wird ausgeschaltet …“), dann **Offline** |
+   | Kachel Groß | danach **Fährt herunter …**, dann **Offline**; „Zuletzt: VM erzwingen und Server herunterfahren – erfolgreich“ |
+   | `twinraid-admin show-action-log` | `shutdown_target_force_vm  dashboard: started`, `vm_force_stop  automatic (part of shutdown_target_force_vm): success`, `shutdown_target  automatic (part of shutdown_target_force_vm): success`, `shutdown_target_force_vm  dashboard: success` |
+   | Kachel **Verlauf** | „VM erzwingen und Server herunterfahren“ mit dem Ergebnis „angefordert“ |
+
+### 11.13 Test 10: Die Option verfällt
+
+Groß wieder **Wecken**. Für jede Variante zuerst wie in Test 9, Schritte 1 bis 3, ein Herunterfahren an der Test-VM scheitern lassen; der Button **Erzwingen und danach Server herunterfahren** ist dann da.
+
+| Variante | Erwartet |
+|---|---|
+| **Ablauf:** 10 Minuten warten | Der Button verschwindet. In beiden Kacheln steht statt des Hinweises auf die Option jetzt „„Erzwingen“ ist jetzt möglich.“, denn das einfache **Erzwingen** bleibt möglich |
+| **Andere Aktion:** in der VM-Kachel nur **Erzwingen** | Die VM ist aus, der Button ist weg. Die Kachel Groß zeigt „Zuletzt: Server herunterfahren – Die VM hat sich nicht rechtzeitig heruntergefahren.“ grau und **ohne** Hinweis auf „Erzwingen“ (das war der Fehler aus 0.4.0) |
+| **Zustand ändert sich:** die Test-VM in Unraid selbst ausschalten (Reiter **VMs** → Symbol der VM → **Force Stop**; auf „Stop“ reagiert sie ja nicht) | Nach etwa 10 Sekunden ist die VM **Offline** und der Button weg; er kommt auch nicht wieder, wenn du die VM erneut startest |
+| **Neustart:** den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart**) | Nach dem Neustart gibt es den Button nicht mehr; das Ergebnis des Abbruchs ist ebenfalls weg |
+
+Klickt jemand den Button genau in dem Moment, in dem das Angebot verfällt, lehnt TwinRaid ab: „Nicht ausgeführt: nur kurz nach einem an der VM gescheiterten Herunterfahren des Servers möglich.“ Die Meldung verschwindet mit der nächsten Statusänderung.
+
+### 11.14 Test 8 zur Kontrolle wiederholen
+
+Mit der Gaming-VM (Netzschalter auf **Herunterfahren**, siehe 11.1) Test 8 aus 11.11 wiederholen. Erwartet wie dort: erst die VM **Offline**, dann Groß **Offline**, „Zuletzt: Server herunterfahren – erfolgreich“. Die Option „Erzwingen und danach Server herunterfahren“ erscheint dabei **nicht**.
+
+### 11.15 Abschluss
 
 1. In `twinraid.yaml` wieder die Gaming-VM eintragen (`unraid_vm_name`) und `shutdown_timeout_minutes` auf den gewünschten Wert setzen (Standard 3), Container neu starten.
 2. Mit der Gaming-VM einmal **Starten** und **Herunterfahren**.
 3. `twinraid-admin show-action-log` ansehen: Jede Aktion steht dort mit Beginn und Ergebnis.
-4. Die Ergebnisse (besonders Test 1) bitte im Pull Request bzw. Issue zu Phase 4 festhalten.
+4. Die Ergebnisse bitte im Pull Request festhalten (für 0.4.0 besonders Test 1, für 0.4.1 die Tests 9 und 10).
 
 ---
 
@@ -731,7 +771,8 @@ Der Befehl zeigt den Fingerabdruck, den Unraid Groß gerade ausliefert. Vergleic
 | „guard.sh auf dem Server hat den Befehl abgelehnt“ | `guard.sh` auf Groß ist veraltet | `guard.sh` wie in 11.1 neu holen (Version im Pfad = installierte Version) |
 | „Der Befehl ist auf dem Server fehlgeschlagen“ | `guard.sh` fehlt unter `/boot/config/twinraid/guard.sh`, oder `virsh` meldet einen Fehler | Ablage von `guard.sh` prüfen (11.1); Syslog von Groß ansehen (*Tools → System Log*, `twinraid-guard`) |
 | „Der Server war nicht rechtzeitig bereit“ | Groß ist nach dem Wecken nicht (rechtzeitig) gestartet, oder das Array startet nicht automatisch | Wake-on-LAN im BIOS und mit `ethtool` prüfen, Auto-Start des Arrays einschalten (11.1); bei langem Start `boot_timeout_minutes` erhöhen |
-| „Die VM hat sich nicht rechtzeitig heruntergefahren“ | Die VM reagiert nicht auf das Signal (Netzschalter-Einstellung in Windows, laufende Updates) | Netzschalter auf „Herunterfahren“ stellen (11.1), `shutdown_timeout_minutes` erhöhen oder **Erzwingen** |
+| „Die VM hat sich nicht rechtzeitig heruntergefahren“ | Die VM reagiert nicht auf das Signal (Netzschalter-Einstellung in Windows, laufende Updates) | Netzschalter auf „Herunterfahren“ stellen (11.1), `shutdown_timeout_minutes` erhöhen oder **Erzwingen**; nach einem gescheiterten Herunterfahren von Groß 10 Minuten lang auch **Erzwingen und danach Server herunterfahren** (11.12) |
+| Meldung grau, ohne Hinweis darunter | Das Ergebnis ist nur noch Verlauf: Der Hinweis (z. B. auf „Erzwingen“) trifft nicht mehr zu, etwa weil die VM inzwischen aus ist | Nichts zu tun |
 | Herunterfahren gesperrt: „der Zustand der VM ist unbekannt“ | TwinRaid kann die VM über die API gerade nicht lesen | Ursache in der VM-Kachel beheben (z. B. API-Key) oder Groß ausnahmsweise über die Unraid-Oberfläche herunterfahren |
 | „Der Server ist nach 15 Minuten noch erreichbar“ | Groß hängt beim Herunterfahren | Unraid-Oberfläche von Groß ansehen; *Disk Settings → Shutdown time-out* prüfen |
 | Log: `cannot derive the Wake-on-LAN broadcast address`, Container startet nicht | Wecken ist freigeschaltet, aber Groß liegt nicht im Netz von TwinRaid | `servers.target.wol_broadcast` eintragen (Broadcast-Adresse des Netzes von Groß) |
@@ -774,7 +815,7 @@ Danach den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart
 - Jedes Image wird ausschließlich von GitHub Actions aus diesem Repository gebaut und hat einen signierten Herkunftsnachweis. Prüfen kannst du ihn auf einem PC mit der GitHub-CLI (`gh`):
 
 ```bash
-gh attestation verify oci://ghcr.io/mantua1/twinraid:0.4.0 --owner mantua1
+gh attestation verify oci://ghcr.io/mantua1/twinraid:0.4.1 --owner mantua1
 ```
 
 Steht am Ende `Verification succeeded!`, stammt das Image nachweislich aus diesem Repository.

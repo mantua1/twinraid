@@ -16,6 +16,7 @@ from twinraid.shared.ipc import (
     GetStatus,
     ProtocolError,
     ShutdownTarget,
+    ShutdownTargetForceVm,
     VerifyPassword,
     VmForceStop,
     VmStart,
@@ -60,6 +61,7 @@ class WorkerApi(Protocol):
 _ACTION_COMMANDS: dict[ActionName, Command] = {
     ActionName.WAKE_TARGET: WakeTarget(command="wake_target"),
     ActionName.SHUTDOWN_TARGET: ShutdownTarget(command="shutdown_target"),
+    ActionName.SHUTDOWN_TARGET_FORCE_VM: ShutdownTargetForceVm(command="shutdown_target_force_vm"),
     ActionName.VM_START: VmStart(command="vm_start"),
     ActionName.VM_STOP: VmStop(command="vm_stop"),
     ActionName.VM_FORCE_STOP: VmForceStop(command="vm_force_stop"),

@@ -22,6 +22,8 @@ export function Dashboard({ data }: { data: DashboardData }) {
     vm: info?.names.vm ?? t("tiles.vm.fallbackTitle"),
   };
   const vmRunning = status?.vm.state === "online" || status?.vm.state === "stopping";
+  const shortTime = (value: string) =>
+    new Intl.DateTimeFormat(i18n.resolvedLanguage, { timeStyle: "short" }).format(new Date(value));
 
   const targetActions: PanelAction[] = [
     { name: "wake_target", label: t("actions.buttons.wake_target"), variant: "default" },
@@ -55,6 +57,21 @@ export function Dashboard({ data }: { data: DashboardData }) {
       },
     },
   ];
+  // Nur kurz nach einem an der VM gescheiterten Herunterfahren von Groß (Konzept 4.2, E10).
+  if (actions?.forced_shutdown_until != null) {
+    vmActions.push({
+      name: "shutdown_target_force_vm",
+      label: t("actions.buttons.shutdown_target_force_vm"),
+      variant: "destructive",
+      note: t("actions.validUntil", { time: shortTime(actions.forced_shutdown_until) }),
+      confirm: {
+        title: t("actions.dialog.forceAndShutdown.title", names),
+        description: t("actions.dialog.forceAndShutdown.description", names),
+        confirmLabel: t("actions.dialog.forceAndShutdown.confirm"),
+        destructive: true,
+      },
+    });
+  }
   // „Erzwingen“ erscheint erst, wenn ein Herunterfahren läuft oder gescheitert ist (Konzept 4.1).
   if (actions?.force_available_at != null) {
     vmActions.push({
@@ -117,7 +134,12 @@ export function Dashboard({ data }: { data: DashboardData }) {
           description={t("tiles.target.description")}
           info={status?.target ?? UNKNOWN}
         >
-          <ActivityLine activity={actions?.target} />
+          <ActivityLine
+            activity={actions?.target}
+            status={status}
+            tile="target"
+            vmName={names.vm}
+          />
           <ActionPanel actions={targetActions} snapshot={actions} onRun={data.runAction} />
         </StatusTile>
         <StatusTile
@@ -126,7 +148,7 @@ export function Dashboard({ data }: { data: DashboardData }) {
           description={t("tiles.vm.description")}
           info={status?.vm ?? UNKNOWN}
         >
-          <ActivityLine activity={actions?.vm} />
+          <ActivityLine activity={actions?.vm} status={status} tile="vm" vmName={names.vm} />
           <ActionPanel actions={vmActions} snapshot={actions} onRun={data.runAction} />
         </StatusTile>
         <PlaceholderTile
