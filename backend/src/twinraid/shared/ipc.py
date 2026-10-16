@@ -43,6 +43,16 @@ class ShutdownTarget(StrictModel):
     command: Literal["shutdown_target"]
 
 
+class ShutdownTargetForceVm(StrictModel):
+    """VM erzwingen und danach Groß herunterfahren (Konzept 4.2, ab v0.4.1).
+
+    Nimmt der Worker nur an, solange sein eigenes Angebot nach einem abgebrochenen
+    Herunterfahren gilt.
+    """
+
+    command: Literal["shutdown_target_force_vm"]
+
+
 class VmStart(StrictModel):
     command: Literal["vm_start"]
 
@@ -74,6 +84,7 @@ Command = Annotated[
     | VerifyPassword
     | WakeTarget
     | ShutdownTarget
+    | ShutdownTargetForceVm
     | VmStart
     | VmStop
     | VmForceStop
@@ -91,6 +102,7 @@ COMMAND_NAMES: frozenset[str] = frozenset(
         "verify_password",
         "wake_target",
         "shutdown_target",
+        "shutdown_target_force_vm",
         "vm_start",
         "vm_stop",
         "vm_force_stop",

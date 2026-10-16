@@ -57,10 +57,11 @@ class Setup:
         time: FakeTime,
         mode: RunMode = RunMode.MOCK,
         config: TwinRaidConfig = CONFIG,
+        lab: MockLab | None = None,
     ) -> None:
         self.dir = tmp_path
         self.time = time
-        self.lab = MockLab(
+        self.lab = lab or MockLab(
             config.gaming_vm.unraid_vm_name, tmp_path, monotonic=time.monotonic, clock=time.clock
         )
         self.monitor = StatusMonitor(self.lab, clock=time.clock)
@@ -133,7 +134,9 @@ async def spin(times: int = 200) -> None:
 
 
 async def test_nothing_is_possible_before_the_first_check(setup: Setup) -> None:
-    assert set(setup.availability().values()) == {ActionBlocker.TARGET_UNKNOWN}
+    availability = setup.availability()
+    assert availability.pop(ActionName.SHUTDOWN_TARGET_FORCE_VM) is ActionBlocker.NOT_OFFERED
+    assert set(availability.values()) == {ActionBlocker.TARGET_UNKNOWN}
 
 
 async def test_availability_with_target_off(setup: Setup) -> None:
@@ -141,6 +144,7 @@ async def test_availability_with_target_off(setup: Setup) -> None:
     assert setup.availability() == {
         ActionName.WAKE_TARGET: None,
         ActionName.SHUTDOWN_TARGET: ActionBlocker.TARGET_OFFLINE,
+        ActionName.SHUTDOWN_TARGET_FORCE_VM: ActionBlocker.NOT_OFFERED,
         ActionName.VM_START: None,
         ActionName.VM_STOP: ActionBlocker.TARGET_OFFLINE,
         ActionName.VM_FORCE_STOP: ActionBlocker.TARGET_OFFLINE,
@@ -153,6 +157,7 @@ async def test_availability_with_vm_running(setup: Setup) -> None:
     assert setup.availability() == {
         ActionName.WAKE_TARGET: ActionBlocker.TARGET_ONLINE,
         ActionName.SHUTDOWN_TARGET: None,
+        ActionName.SHUTDOWN_TARGET_FORCE_VM: ActionBlocker.NOT_OFFERED,
         ActionName.VM_START: ActionBlocker.VM_RUNNING,
         ActionName.VM_STOP: None,
         ActionName.VM_FORCE_STOP: ActionBlocker.FORCE_NOT_YET,
@@ -385,3 +390,165 @@ async def test_close_marks_running_actions_as_interrupted(tmp_path: Path) -> Non
     await spin()
     await setup.actions.close()
     assert setup.log()[-1] == ("wake_target", "dashboard", "interrupted", None)
+
+
+# --- Erzwingen und danach Server herunterfahren (Konzept 4.2, Ergänzung zu E10) ---
+
+
+async def _aborted_shutdown(setup: Setup) -> None:
+    """Groß herunterfahren scheitert an einer VM, die nicht reagiert."""
+    await setup.boot()
+    await setup.start_vm()
+    set_flag(fault_flag(setup.dir, "vm-hang"), True)
+    await setup.run(ActionName.SHUTDOWN_TARGET)
+    await setup.refresh()
+    assert setup.last("target") is ActionOutcome.VM_STOP_TIMEOUT
+
+
+def _offer(setup: Setup) -> datetime | None:
+    return setup.actions.snapshot(setup.monitor.current())[1].forced_shutdown_until
+
+
+async def test_aborted_shutdown_offers_force_and_shutdown(setup: Setup) -> None:
+    await _aborted_shutdown(setup)
+    until = _offer(setup)
+    assert until is not None
+    # Gültig ab dem Abbruch für 10 Minuten.
+    assert until == setup.time.clock() + timedelta(minutes=10)
+    availability = setup.availability()
+    assert availability[ActionName.SHUTDOWN_TARGET_FORCE_VM] is None
+    # Das einfache Erzwingen bleibt ebenfalls möglich.
+    assert availability[ActionName.VM_FORCE_STOP] is None
+
+
+async def test_force_and_shutdown(setup: Setup) -> None:
+    await _aborted_shutdown(setup)
+    await setup.run(ActionName.SHUTDOWN_TARGET_FORCE_VM)
+    await setup.refresh()
+    status = setup.monitor.current()
+    assert status.target.state is ResourceState.OFFLINE
+    assert setup.last("target") is ActionOutcome.SUCCESS
+    assert setup.last("vm") is ActionOutcome.SUCCESS
+    assert setup.log()[-6:] == [
+        ("shutdown_target_force_vm", "dashboard", "started", None),
+        ("vm_force_stop", "automatic", "started", "shutdown_target_force_vm"),
+        ("vm_force_stop", "automatic", "success", "shutdown_target_force_vm"),
+        ("shutdown_target", "automatic", "started", "shutdown_target_force_vm"),
+        ("shutdown_target", "automatic", "success", "shutdown_target_force_vm"),
+        ("shutdown_target_force_vm", "dashboard", "success", None),
+    ]
+    assert _offer(setup) is None
+
+
+async def test_force_and_shutdown_shows_intermediate_states(tmp_path: Path) -> None:
+    time = FakeTime()
+    setup = Setup(tmp_path, time)
+    await _aborted_shutdown(setup)
+    time.auto = False
+    assert await setup.request(ActionName.SHUTDOWN_TARGET_FORCE_VM) is None
+    status, actions = setup.actions.snapshot(setup.monitor.current())
+    assert actions.vm.running is not None
+    assert actions.vm.running.step is ActionStep.FORCING_VM
+    assert status.vm.state is ResourceState.STOPPING
+    assert actions.availability[ActionName.SHUTDOWN_TARGET_FORCE_VM] is ActionBlocker.BUSY
+    while setup.actions.busy:
+        time.advance(3)
+        await spin()
+    assert setup.last("target") is ActionOutcome.SUCCESS
+
+
+async def test_plain_vm_stop_timeout_offers_nothing(setup: Setup) -> None:
+    await setup.boot()
+    await setup.start_vm()
+    set_flag(fault_flag(setup.dir, "vm-hang"), True)
+    await setup.run(ActionName.VM_STOP)
+    await setup.refresh()
+    assert setup.last("vm") is ActionOutcome.VM_STOP_TIMEOUT
+    assert _offer(setup) is None
+    assert await setup.request(ActionName.SHUTDOWN_TARGET_FORCE_VM) is ActionBlocker.NOT_OFFERED
+
+
+async def test_offer_expires_after_ten_minutes(setup: Setup) -> None:
+    await _aborted_shutdown(setup)
+    setup.time.advance(9 * 60 + 59)
+    await setup.refresh()
+    assert _offer(setup) is not None
+    setup.time.advance(1)
+    await setup.refresh()
+    assert _offer(setup) is None
+    assert await setup.request(ActionName.SHUTDOWN_TARGET_FORCE_VM) is ActionBlocker.NOT_OFFERED
+
+
+async def test_offer_expires_when_the_vm_is_off(setup: Setup) -> None:
+    await _aborted_shutdown(setup)
+    setup.lab._vm_state = "SHUTOFF"  # die VM fährt doch noch von selbst herunter
+    await setup.refresh()
+    assert _offer(setup) is None
+    # Auch wenn die VM wieder läuft, bleibt das Angebot weg.
+    setup.lab._vm_state = "RUNNING"
+    await setup.refresh()
+    assert _offer(setup) is None
+
+
+async def test_offer_expires_when_the_target_is_off(setup: Setup) -> None:
+    await _aborted_shutdown(setup)
+    setup.lab._power = "off"  # Groß wurde anderweitig ausgeschaltet
+    await setup.refresh()
+    assert _offer(setup) is None
+
+
+@pytest.mark.parametrize("other", [ActionName.VM_FORCE_STOP, ActionName.VM_STOP])
+async def test_offer_expires_with_another_action(setup: Setup, other: ActionName) -> None:
+    await _aborted_shutdown(setup)
+    assert await setup.request(other) is None
+    assert _offer(setup) is None
+    await setup.settle()
+    await setup.refresh()
+    assert setup.availability()[ActionName.SHUTDOWN_TARGET_FORCE_VM] is ActionBlocker.NOT_OFFERED
+
+
+async def test_offer_is_lost_on_restart(setup: Setup) -> None:
+    """Das Angebot liegt nur im Speicher des Workers (Konzept 4.2)."""
+    await _aborted_shutdown(setup)
+    restarted = Setup(setup.dir, setup.time, lab=setup.lab)
+    await restarted.refresh()
+    status = restarted.monitor.current()
+    assert status.target.state is ResourceState.ONLINE
+    assert status.vm.state is ResourceState.ONLINE
+    availability = restarted.availability()
+    assert availability[ActionName.SHUTDOWN_TARGET_FORCE_VM] is ActionBlocker.NOT_OFFERED
+
+
+async def test_offer_needs_vm_and_shutdown_in_real_mode(tmp_path: Path) -> None:
+    only_shutdown = CONFIG.actions.model_copy(update={"shutdown": True})
+    setup = Setup(
+        tmp_path,
+        FakeTime(),
+        mode=RunMode.REAL,
+        config=CONFIG.model_copy(update={"actions": only_shutdown}),
+    )
+    await setup.refresh()
+    assert setup.availability()[ActionName.SHUTDOWN_TARGET_FORCE_VM] is ActionBlocker.NOT_ENABLED
+
+
+async def test_offer_is_locked_while_a_sync_runs(setup: Setup) -> None:
+    await _aborted_shutdown(setup)
+    setup.jobs.set_running(True)
+    assert setup.availability()[ActionName.SHUTDOWN_TARGET_FORCE_VM] is ActionBlocker.SYNC_RUNNING
+
+
+async def test_failed_force_keeps_the_target_on(setup: Setup) -> None:
+    await _aborted_shutdown(setup)
+    set_flag(fault_flag(setup.dir, "api-forbidden"), True)
+    await setup.run(ActionName.SHUTDOWN_TARGET_FORCE_VM)
+    await setup.refresh()
+    assert setup.last("target") is ActionOutcome.API_FORBIDDEN
+    assert setup.monitor.current().target.state is ResourceState.ONLINE
+    assert (
+        "shutdown_target",
+        "automatic",
+        "started",
+        "shutdown_target_force_vm",
+    ) not in setup.log()
+    # Das Angebot ist verbraucht.
+    assert _offer(setup) is None

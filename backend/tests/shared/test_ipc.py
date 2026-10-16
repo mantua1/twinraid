@@ -25,6 +25,7 @@ CONCEPT_COMMANDS = {
     "verify_password",
     "wake_target",
     "shutdown_target",
+    "shutdown_target_force_vm",
     "vm_start",
     "vm_stop",
     "vm_force_stop",

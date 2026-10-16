@@ -15,6 +15,8 @@ class ActionName(StrEnum):
 
     WAKE_TARGET = "wake_target"
     SHUTDOWN_TARGET = "shutdown_target"
+    # VM erzwingen und danach Groß herunterfahren (ab v0.4.1, Ergänzung zu E10).
+    SHUTDOWN_TARGET_FORCE_VM = "shutdown_target_force_vm"
     VM_START = "vm_start"
     VM_STOP = "vm_stop"
     VM_FORCE_STOP = "vm_force_stop"
@@ -44,6 +46,8 @@ class ActionBlocker(StrEnum):
     VM_UNKNOWN = "vm_unknown"
     # Erzwingen erst shutdown_timeout_minutes nach dem letzten Herunterfahren-Versuch.
     FORCE_NOT_YET = "force_not_yet"
+    # Kein gültiges Angebot für „Erzwingen und danach Server herunterfahren“.
+    NOT_OFFERED = "not_offered"
     # Simulationsmodus: Der feste Rundlauf ist eingeschaltet (twinraid-admin mock-tour).
     TOUR = "tour"
 
@@ -129,6 +133,8 @@ class ActionsSnapshot(StrictModel):
     vm: ResourceActivity
     # Ein Herunterfahren der VM läuft oder ist gescheitert: ab dann ist Erzwingen möglich.
     force_available_at: datetime | None = None
+    # Bis wann „Erzwingen und danach Server herunterfahren“ angeboten wird (Konzept 4.2).
+    forced_shutdown_until: datetime | None = None
 
     @classmethod
     def blocked(cls, blocker: ActionBlocker) -> ActionsSnapshot:
