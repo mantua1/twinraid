@@ -147,7 +147,8 @@ guard.sh sync         Key „sync“ (Phase 5); bis dahin wird alles abgelehnt
 ```
 
 - Die Anfrage steht in `SSH_ORIGINAL_COMMAND` und wird nur mit festen Texten verglichen; Parameter gibt es nicht. Alles andere endet mit Exit-Code 2 („denied“) und einem Eintrag im Syslog von Groß.
-- Exit-Code 3 heißt: Die Anfrage ist erlaubt, eine Prüfung in guard.sh lehnt sie aber ab. Auf stderr steht dann `twinraid-guard: refused <Grund>` mit `vm-not-configured`, `vm-running`, `other-vms-running` oder `vm-state-unknown`.
+- Exit-Code 3 heißt: Die Anfrage ist erlaubt, eine Prüfung in guard.sh lehnt sie aber ab. Auf stderr steht dann `twinraid-guard: refused <Grund>` mit `vm-not-configured`, `vm-running`, `other-vms-running`, `vm-state-unknown` oder `watch-busy`.
+- Höchstens zwei `vm-watch`-Schleifen laufen gleichzeitig (Sperrdateien `/var/run/twinraid-guard-watch.<1|2>.lock` mit `flock`). Eine dritte Sitzung lehnt guard.sh mit `watch-busy` ab; TwinRaid versucht es wie nach einem Abbruch erneut. Zwei Plätze genügen, weil eine alte Schleife nach einem Abbruch spätestens beim nächsten Lebenszeichen endet. So kann auch ein übernommener TwinRaid auf Groß nicht beliebig viele Schleifen starten.
 - Jeder Aufruf von virsh läuft mit `LC_ALL=C` und einem Zeitlimit (`timeout`): 10 s für Abfragen, 90 s für `vm-start`, 60 s für `vm-force-stop`, 30 s für `vm-shutdown`. Ausgaben von virsh gibt guard.sh nie weiter.
 - Ins Syslog kommen nur feste Texte und die geprüfte UUID, nie die Anfrage selbst.
 - **Version:** TwinRaid 0.4.3 verlangt guard.sh Version 2. `check` und jede Statuszeile nennen die Version; ist sie älter, lautet die Ursache `guard_outdated` mit dem Hinweis, guard.sh neu zu kopieren. guard.sh Version 1 kennt den Modus `status` nicht und lehnt ab (`ssh_denied`); auch dann weist die Oberfläche auf das Kopieren hin.
@@ -171,7 +172,7 @@ watch 2 vm=<Zustand> name=<Hex|-> others=<Anzahl|?> names=<Hex>,<Hex>…|- conne
 |---|---|---|
 | Online-Prüfung von Groß (TCP auf den WebGUI-Port) | alle 10 s, Zeitlimit 2 s | Worker |
 | Aufbau der Sitzung `vm-watch` mit dem Key „status“ | einmal, sobald Groß online ist; danach nur nach einem Abbruch (Neuversuche unten) | Worker |
-| VM-Zustände lesen (`virsh domstate`, `virsh list --all --uuid`, `virsh list --uuid --state-shutoff`) | alle 3 s | guard.sh, lokal |
+| VM-Zustände lesen (`virsh list --all --uuid`, `virsh list --inactive --uuid`, `virsh domstate`) | alle 3 s | guard.sh, lokal |
 | Namen weiterer VMs (`virsh domname`) | nur für VMs, die nicht aus sind | guard.sh |
 | `power.conf` und Name der eingetragenen VM neu lesen; Merkmale von Unraid Connect | alle 15 s bzw. alle 60 s | guard.sh |
 | Zeile an TwinRaid | bei jeder Änderung, sonst alle 15 s als Lebenszeichen | guard.sh |
@@ -203,7 +204,7 @@ watch 2 vm=<Zustand> name=<Hex|-> others=<Anzahl|?> names=<Hex>,<Hex>…|- conne
 **Warnung zu Unraid Connect:**
 
 - **Merkmal:** die Datei `/boot/config/plugins/dynamix.unraid.net.plg`; genau sie prüft die Unraid-API 4.37.5 selbst (`isConnectPluginInstalled()`). Zusätzlich zählen `/var/log/plugins/dynamix.unraid.net.plg` (im laufenden Betrieb geladen) und der ältere Name `dynamix.unraid.net.staging.plg` an beiden Orten. Eines davon genügt für `connect=present`. Kein Merkmal ist der Ordner `/boot/config/plugins/dynamix.my.servers`: Seit Unraid 7.2 legt die eingebaute API dort ihre Keys ab.
-- **Flash Backup:** aus `/var/local/emhttp/flashbackup.ini`, Schlüssel `activated`. Nicht leer: `active`; Datei oder Wert fehlt: `inactive`; nicht lesbar: `unknown`.
+- **Flash Backup:** aus `/var/local/emhttp/flashbackup.ini`, Schlüssel `activated`. Ein Wert außer leer, `0`, `false`, `no` und `off`: `active`; Datei oder Wert fehlt: `inactive`; nicht lesbar: `unknown`.
 - **Anzeige:** ein gelber Hinweis in der Kachel von Groß, solange das Merkmal besteht (Hinweis `target_connect_plugin`; bei aktivem Flash Backup zusätzlich `target_flash_backup`). Nur feste Texte; TwinRaid liest keine Daten von Connect (Konto, Servername).
 - Auf Klein prüft das ab v0.5.0 der Container-Wächter (E7).
 
