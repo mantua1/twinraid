@@ -1,7 +1,11 @@
 #!/bin/sh
 # Platzhalter für virsh: schreibt den Aufruf mit; „shutdown“ schaltet die VM aus,
-# außer /state/vm-hang existiert (VM reagiert nicht auf ACPI).
+# außer /state/vm-hang existiert (VM reagiert nicht auf ACPI). Existiert
+# /state/other-vm-on-shutdown, startet dabei eine zweite VM (/state/other-vm).
 echo "$*" >>/state/virsh.log
+if [ -e /state/other-vm-on-shutdown ]; then
+  touch /state/other-vm
+fi
 if [ "${1:-}" = "shutdown" ] && [ ! -e /state/vm-hang ]; then
   echo SHUTOFF >/state/vm-state
 fi
