@@ -10,6 +10,8 @@ export interface PanelAction {
   name: ActionName;
   label: string;
   variant?: "default" | "outline" | "destructive";
+  // Kurzer Zusatz unter den Buttons, z. B. „gültig bis 20:45“.
+  note?: string;
   confirm?: {
     title: string;
     description: string;
@@ -42,7 +44,11 @@ export function ActionPanel({ actions, snapshot, onRun }: ActionPanelProps) {
   // bleiben die Buttons gesperrt (sonst wären sie bis zu 2 s lang wieder klickbar).
   const [sentWith, setSentWith] = useState<ActionsSnapshot | null>(null);
   const [confirming, setConfirming] = useState<PanelAction | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  // Meldung zur letzten Anfrage, gültig nur für den Stand, bei dem sie entstand: Mit dem
+  // nächsten Live-Status verschwindet sie (Konzept 4.2, ab v0.4.1).
+  const [message, setMessage] = useState<{ text: string; with: ActionsSnapshot | null } | null>(
+    null,
+  );
 
   const waiting = pending !== null || (sentWith !== null && sentWith === snapshot);
   const blockerOf = (name: ActionName): ActionBlocker | null =>
@@ -56,16 +62,13 @@ export function ActionPanel({ actions, snapshot, onRun }: ActionPanelProps) {
       .then((result) => {
         setSentWith(result.kind === "accepted" ? current : null);
         if (result.kind === "rejected") {
-          setMessage(
-            t("actions.rejected", {
-              reason:
-                result.reason === "rejected"
-                  ? t("actions.rejectedUnknown")
-                  : t(`actions.blockers.${result.reason}`),
-            }),
-          );
+          const reason =
+            result.reason === "rejected"
+              ? t("actions.rejectedUnknown")
+              : t(`actions.blockers.${result.reason}`);
+          setMessage({ text: t("actions.rejected", { reason }), with: current });
         } else if (result.kind === "failed") {
-          setMessage(t("actions.requestFailed"));
+          setMessage({ text: t("actions.requestFailed"), with: current });
         }
       })
       .finally(() => {
@@ -116,14 +119,21 @@ export function ActionPanel({ actions, snapshot, onRun }: ActionPanelProps) {
           </Button>
         ))}
       </div>
+      {actions
+        .filter((action) => action.note !== undefined)
+        .map((action) => (
+          <p key={action.name} className="text-xs text-muted-foreground" data-testid="action-note">
+            {t("actions.hint", { actions: action.label, reason: action.note })}
+          </p>
+        ))}
       {[...hints].map(([text, labels]) => (
         <p key={text} className="text-xs text-muted-foreground" data-testid="action-hint">
           {t("actions.hint", { actions: labels.join(", "), reason: text })}
         </p>
       ))}
-      {message !== null && (
+      {message !== null && message.with === snapshot && (
         <p role="alert" className="text-sm text-destructive">
-          {message}
+          {message.text}
         </p>
       )}
       {confirming?.confirm && (

@@ -35,6 +35,7 @@ export interface ResourceInfo {
 export const ACTION_NAMES = [
   "wake_target",
   "shutdown_target",
+  "shutdown_target_force_vm",
   "vm_start",
   "vm_stop",
   "vm_force_stop",
@@ -52,6 +53,7 @@ export const ACTION_BLOCKERS = [
   "vm_off",
   "vm_unknown",
   "force_not_yet",
+  "not_offered",
   "tour",
 ] as const;
 export type ActionBlocker = (typeof ACTION_BLOCKERS)[number];
@@ -119,6 +121,8 @@ export interface ActionsSnapshot {
   vm: ResourceActivity;
   // Gesetzt, sobald ein Herunterfahren der VM läuft oder gescheitert ist.
   force_available_at: string | null;
+  // Bis wann „Erzwingen und danach Server herunterfahren“ angeboten wird (Konzept 4.2).
+  forced_shutdown_until: string | null;
 }
 
 export interface StatusSnapshot {
