@@ -50,16 +50,19 @@ cd backend && ./scripts/dev-admin.sh set-password
 
 Danach im Browser: <https://127.0.0.1:8443>. Die Zertifikatswarnung einmal bestätigen oder die CA aus `.run/tls/ca.pem` im Browser importieren (Fingerabdruck mit dem Log vergleichen). Für Änderungen am Frontend mit sofortiger Vorschau zusätzlich `cd frontend && npm run dev` starten und <https://127.0.0.1:5173> öffnen.
 
-Die Simulation ist interaktiv: Groß und die VM starten ausgeschaltet, die Buttons wirken mit festen Wartezeiten (Groß bootet 20 s, die API braucht weitere 10 s). Weitere Schalter im zweiten Terminal (`off` schaltet jeweils wieder aus):
+Die Simulation ist interaktiv: Groß und die VM starten ausgeschaltet, die Buttons wirken mit festen Wartezeiten (Groß bootet 20 s, der VM-Dienst braucht weitere 10 s). Weitere Schalter im zweiten Terminal (`off` schaltet jeweils wieder aus):
 
 ```bash
 ./scripts/dev-admin.sh mock-job on                # laufenden Kopierjob vortäuschen
 ./scripts/dev-admin.sh mock-tour on               # Rundlauf durch alle Zustände und Ursachen
 ./scripts/dev-admin.sh mock-fault vm-hang on      # VM reagiert nicht auf Herunterfahren
-./scripts/dev-admin.sh mock-fault api-forbidden on  # API-Key ohne VMS:UPDATE_ANY
 ./scripts/dev-admin.sh mock-fault ssh-denied on   # guard.sh lehnt ab
 ./scripts/dev-admin.sh mock-fault no-boot on      # Groß reagiert nicht auf Wake-on-LAN
 ./scripts/dev-admin.sh mock-fault other-vm on     # auf Groß läuft eine weitere VM
+./scripts/dev-admin.sh mock-fault vm-not-configured on  # power.conf auf Groß fehlt
+./scripts/dev-admin.sh mock-fault libvirt-down on # VM-Dienst auf Groß nicht bereit
+./scripts/dev-admin.sh mock-fault guard-outdated on  # guard.sh auf Groß zu alt
+./scripts/dev-admin.sh mock-fault connect-plugin on  # Unraid Connect mit Flash Backup auf Groß
 ./scripts/dev-admin.sh show-action-log            # Aktionslog des Workers
 ```
 
@@ -75,7 +78,7 @@ docker/ssh-test.sh                     # SSH und Aktionen gegen ein nachgebautes
 
 Alle Befehle der Admin-CLI stehen in [docs/EINRICHTUNG.md, Abschnitt 15](docs/EINRICHTUNG.md#15-befehle-der-admin-cli).
 
-Tests sprechen nie echte Server an: Eine Sperre in `backend/tests/conftest.py` lässt nur Verbindungen (auch UDP wie Wake-on-LAN) zu `127.0.0.1` und zum nie gerouteten Testnetz `192.0.2.0/24` zu. Der Starttest prüft den Modus `real` ebenfalls nur mit Adressen aus diesem Testnetz. `docker/ssh-test.sh` startet ein nachgebautes Unraid Groß als Wegwerf-Container (`docker/fake-target`) in einem eigenen Docker-Netz und prüft dagegen `guard.sh`, die Einschränkungen der `authorized_keys`-Zeile, die strikte Hostkey-Prüfung und alle Aktionen.
+Tests sprechen nie echte Server an: Eine Sperre in `backend/tests/conftest.py` lässt nur Verbindungen (auch UDP wie Wake-on-LAN) zu `127.0.0.1` und zum nie gerouteten Testnetz `192.0.2.0/24` zu. Der Starttest prüft den Modus `real` ebenfalls nur mit Adressen aus diesem Testnetz. `docker/ssh-test.sh` startet ein nachgebautes Unraid Groß als Wegwerf-Container (`docker/fake-target`) in einem eigenen Docker-Netz und prüft dagegen `guard.sh`, die Einschränkungen der `authorized_keys`-Zeilen der Keys „status“ und „power“, die strikte Hostkey-Prüfung, die Sitzung `vm-watch` und alle Aktionen.
 
 ### openssh-client aktualisieren
 
