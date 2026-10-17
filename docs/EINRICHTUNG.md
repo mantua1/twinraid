@@ -501,7 +501,7 @@ Für die VM-Tests kannst du statt der Gaming-VM vorübergehend eine Test-VM verw
 
 Für den Test von **Erzwingen** brauchst du eine VM, die auf das Signal zum Herunterfahren **nicht** reagiert. Am einfachsten stellst du in einer Windows-Test-VM den Netzschalter vorübergehend auf **Nichts unternehmen** (siehe 11.1). Alternativ reagiert eine VM ohne Betriebssystem, die in der UEFI-Shell steht, in der Regel ebenfalls nicht.
 
-Am Ende (11.22) trägst du die Gaming-VM wieder ein. Für Test 11 (11.14) brauchst du die Gaming-VM und die Test-VM gleichzeitig.
+Am Ende (11.23) trägst du die Gaming-VM wieder ein. Für Test 11 (11.14) brauchst du die Gaming-VM und die Test-VM gleichzeitig.
 
 ### 11.3 Testprotokoll: Ausgangslage
 
@@ -514,7 +514,7 @@ TwinRaid 0.4.3 läuft im Echtbetrieb, der Key „status“ ist eingerichtet (Abs
 | **Einstellungen → Aktionen** | alle drei Gruppen „gesperrt“ |
 | **Einstellungen → Verbindung zu Unraid Groß** | „Status und VM-Aktionen laufen per SSH über guard.sh …“; kein Hinweis auf eine unverschlüsselte Verbindung |
 
-**Reihenfolge für 0.4.3:** G1, G2, dann die Tests 3 bis 9, aus Test 10 die Varianten „Andere Aktion“ und „Zustand ändert sich“, Test 11, Test 8 zur Kontrolle, G3 bis G6, G7 nur wenn du willst. Erst mit der Test-VM in `power.conf`, zum Schluss mit der Gaming-VM.
+**Reihenfolge für 0.4.3:** G1, G2, dann die Tests 3 bis 9, aus Test 10 die Varianten „Andere Aktion“ und „Zustand ändert sich“, Test 11, Test 8 zur Kontrolle, G3 bis G6, G7 nur wenn du willst, G8 nur, wenn sich zwei VMs eine Grafikkarte teilen. Erst mit der Test-VM in `power.conf`, zum Schluss mit der Gaming-VM.
 
 ### 11.4 Test G1: guard.sh direkt auf Groß prüfen
 
@@ -789,16 +789,40 @@ SSH_ORIGINAL_COMMAND=poweroff bash /boot/config/twinraid/guard.sh power; echo $?
 
 Erwartet: `twinraid-guard: refused vm-running` (steht die Test-VM in `power.conf`) bzw. `twinraid-guard: refused other-vms-running` (steht dort die Gaming-VM), Exit `3`. Groß bleibt an; im Syslog steht `twinraid-guard: refused: …`.
 
-### 11.21 Simulation (optional)
+### 11.21 Test G8: Eine andere VM belegt die Grafikkarte
+
+Nur, wenn auf Groß eine zweite VM dieselbe durchgereichte Grafikkarte nutzt wie die Gaming-VM und beide nie gleichzeitig laufen. TwinRaid kennt diese Zuordnung nicht und sperrt **Starten** deshalb nicht; den Start lehnt libvirt auf Groß ab. Der Test prüft, dass die zweite VM dabei nichts abbekommt.
+
+Ausgangslage: In `power.conf` (und in `twinraid.yaml` bei `unraid_vm_name`) steht die **Gaming-VM**, `actions.vm` ist freigeschaltet, Groß ist an, die Gaming-VM ist aus.
+
+> **Vorher in der zweiten VM alles speichern.** Lehnt libvirt den Start wider Erwarten nicht ab, nimmt die Gaming-VM der zweiten VM die Grafikkarte weg; die zweite VM verhält sich dann wie nach einem Ausfall der Grafikkarte.
+
+1. Prüfen, dass beide VMs wirklich dieselbe Karte haben: Reiter **VMs** → Symbol der VM → **Edit**, bei beiden VMs zeigen **Graphics Card** und, falls eingetragen, **Sound Card** dieselben Geräte.
+2. Die **zweite VM** in der Unraid-Oberfläche von Groß starten (Reiter **VMs** → Symbol → **Start**) und warten, bis sie ein Bild zeigt.
+3. In TwinRaid in der VM-Kachel **Starten** klicken.
+
+   | Erwartet | |
+   |---|---|
+   | VM-Kachel | kurz **Startet …**, nach wenigen Sekunden wieder **Offline**; rot „Zuletzt: VM starten – Der Befehl ist auf dem Server fehlgeschlagen.“ |
+   | Kachel Groß | bleibt **Online**; **Herunterfahren** ist grau mit dem Hinweis auf weitere VMs und dem Namen der zweiten VM (wie in Test 11) |
+   | zweite VM | läuft ohne Unterbrechung weiter: Bild, Ton, USB-Geräte und Programme in der VM arbeiten wie vorher; im Reiter **VMs** weiterhin **Started** |
+   | `twinraid-admin show-action-log` | `vm_start  dashboard: remote_failed` |
+   | Syslog von Groß (*Tools → System Log*) | `twinraid-guard: vm-start of VM … requested by TwinRaid` |
+   | Grund, im **Unraid-Terminal von Groß** | `grep -i 'in use' /var/log/libvirt/libvirtd.log \| tail -n 3` zeigt eine Zeile mit `Requested operation is not valid: PCI device … is in use by driver QEMU, domain …` |
+
+   Die Meldung in TwinRaid ist allgemein, weil `guard.sh` Ausgaben von `virsh` nie an TwinRaid weitergibt (Konzept 3.5); den genauen Grund nennt nur das Log von libvirt.
+4. Die zweite VM in Unraid herunterfahren (**Stop**) und warten, bis sie aus ist. Dann in TwinRaid **Starten**: Die Gaming-VM startet normal, „Zuletzt: VM starten – erfolgreich“. Danach wieder **Herunterfahren**.
+
+### 11.22 Simulation (optional)
 
 Im Simulationsmodus lässt sich das Verhalten ohne Server ausprobieren: `twinraid-admin mock-fault other-vm on` lässt auf dem simulierten Groß eine weitere VM namens „Test-VM“ laufen. Seit 0.4.3 gibt es zusätzlich `vm-not-configured` (`power.conf` fehlt), `libvirt-down` (VM-Dienst nicht bereit), `guard-outdated` (guard.sh zu alt) und `connect-plugin` (Unraid Connect mit Flash Backup). `off` schaltet jeweils wieder aus.
 
-### 11.22 Abschluss
+### 11.23 Abschluss
 
 1. In `power.conf` wieder die Gaming-VM eintragen (9.3), in `twinraid.yaml` ihren Namen bei `unraid_vm_name` und `shutdown_timeout_minutes` auf den gewünschten Wert setzen (Standard 3), Container neu starten.
 2. Mit der Gaming-VM einmal **Starten** und **Herunterfahren**.
 3. `twinraid-admin show-action-log` ansehen: Jede Aktion steht dort mit Beginn und Ergebnis.
-4. Die Ergebnisse bitte im Pull Request festhalten (für 0.4.0 besonders Test 1, für 0.4.1 die Tests 9 und 10, für 0.4.2 Test 11, für 0.4.3 die Tests G1 bis G7). Dort nur „Klein“ und „Groß“ schreiben, keine IP-Adressen, Hostnamen, Fingerabdrücke oder UUIDs.
+4. Die Ergebnisse bitte im Pull Request festhalten (für 0.4.0 besonders Test 1, für 0.4.1 die Tests 9 und 10, für 0.4.2 Test 11, für 0.4.3 die Tests G1 bis G8). Dort nur „Klein“ und „Groß“ schreiben, keine IP-Adressen, Hostnamen, Fingerabdrücke oder UUIDs.
 
 ---
 
