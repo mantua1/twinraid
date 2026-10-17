@@ -2,7 +2,7 @@
 
 import asyncio
 import socket
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -15,10 +15,15 @@ from twinraid.integrations.factory import build_integrations, build_job_state
 from twinraid.integrations.jobs import NoJobs
 from twinraid.integrations.mocks.jobs import MockJobSwitch
 from twinraid.integrations.mocks.lab import MockLab
-from twinraid.integrations.mocks.status import SCENARIO, STEP_SECONDS, MockStatusProvider
+from twinraid.integrations.mocks.status import (
+    SCENARIO,
+    STEP_SECONDS,
+    TRANSIENT_REASONS,
+    MockStatusProvider,
+)
 from twinraid.integrations.network import tcp_reachable
 from twinraid.integrations.status import RealStatusProvider, map_vm_state
-from twinraid.integrations.vm_watch import WatchReport
+from twinraid.integrations.vm_watch import PERMANENT_REASONS, WatchReport, WatchView
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.mode import RunMode
 from twinraid.shared.status import (
@@ -26,6 +31,7 @@ from twinraid.shared.status import (
     ResourceState,
     StatusNotice,
     StatusReason,
+    WatchRetry,
 )
 
 pytestmark = pytest.mark.anyio
@@ -62,6 +68,22 @@ async def test_everything_online() -> None:
     assert status.notices == ()
     # Die Sitzung erfährt jedes Ergebnis der TCP-Prüfung.
     assert watch.online_calls == [True]
+
+
+async def test_next_attempt_comes_from_the_session() -> None:
+    """Wartet die Sitzung nach einem Fehler, steht der nächste Versuch im Status (ab v0.4.4)."""
+    retry = WatchRetry(at=NOW + timedelta(minutes=30), paused=True)
+    watch = StubWatch(WatchView(None, StatusReason.SSH_AUTH_FAILED, retry))
+    status = await _provider(watch, target_up=True).get_status()
+    assert status.vm == ResourceInfo(
+        state=ResourceState.UNKNOWN, reason=StatusReason.SSH_AUTH_FAILED
+    )
+    assert status.watch_retry == retry
+    # Ist Groß aus, gibt es keine Sitzung und keinen Versuch.
+    status = await _provider(watch, target_up=False).get_status()
+    assert status.watch_retry is None
+    # Mit einem Stand der Sitzung auch nicht.
+    assert (await _provider(StubWatch(), target_up=True).get_status()).watch_retry is None
 
 
 async def test_source_is_online_without_a_check() -> None:
@@ -233,6 +255,29 @@ async def test_mock_scenario_cycles_through_all_states() -> None:
     assert seen_notices == set(StatusNotice)
     # Nach einem Durchlauf beginnt der Ablauf von vorn.
     assert provider.step() == 0
+
+
+async def test_mock_scenario_shows_the_next_attempt() -> None:
+    """Bei Fehlern der Statusverbindung zeigt der Rundlauf den nächsten Versuch (ab v0.4.4)."""
+    now = [0.0]
+    provider = MockStatusProvider(monotonic=lambda: now[0], clock=lambda: NOW)
+    seen_paused: set[bool] = set()
+    for step, (_source, _target, vm, _notices) in enumerate(SCENARIO):
+        started = NOW + timedelta(seconds=step * STEP_SECONDS)
+        now[0] = step * STEP_SECONDS + 7.5
+        retry = (await provider.get_status()).watch_retry
+        if vm.reason in PERMANENT_REASONS:
+            assert retry == WatchRetry(at=started + timedelta(minutes=30), paused=True)
+        elif vm.reason in TRANSIENT_REASONS:
+            assert retry == WatchRetry(at=started + timedelta(seconds=STEP_SECONDS), paused=False)
+        else:
+            assert retry is None
+        # Innerhalb eines Schritts bleibt der Zeitpunkt gleich.
+        now[0] += 5
+        assert (await provider.get_status()).watch_retry == retry
+        if retry is not None:
+            seen_paused.add(retry.paused)
+    assert seen_paused == {True, False}
 
 
 def test_mock_job_switch(tmp_path: Path) -> None:
