@@ -1,5 +1,14 @@
-#!/bin/sh
-# Platzhalter für /sbin/poweroff: Groß „schaltet aus“ (die API verschwindet).
-echo poweroff >>/state/poweroff.log
-echo SHUTOFF >/state/vm-state
-touch /state/power-off
+#!/usr/bin/env python3
+"""Platzhalter für /sbin/poweroff: Groß „schaltet aus“ (alle VMs aus, Port 80 zu)."""
+
+import json
+from pathlib import Path
+
+STATE = Path("/state")
+with (STATE / "poweroff.log").open("a") as handle:
+    handle.write("poweroff\n")
+vms = json.loads((STATE / "vms.json").read_text())
+for vm in vms:
+    vm["state"] = "shut off"
+(STATE / "vms.json").write_text(json.dumps(vms))
+(STATE / "power-off").touch()
