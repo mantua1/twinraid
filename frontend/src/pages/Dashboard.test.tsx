@@ -129,6 +129,42 @@ describe("actions", () => {
     expect(server.actions).toEqual(["vm_force_stop"]);
   });
 
+  it("names the time from which force is possible while the VM shuts down", async () => {
+    // So meldet der Worker es ab v0.4.4: Herunterfahren läuft, die VM ist belegt.
+    const stopping: StatusSnapshot = {
+      ...STATUS_VM_RUNNING,
+      vm: { state: "stopping", reason: null },
+      actions: actionsSnapshot(
+        {
+          ...STATUS_VM_RUNNING.actions.availability,
+          vm_start: "busy",
+          vm_stop: "busy",
+          shutdown_target: "busy",
+          vm_force_stop: "force_not_yet",
+        },
+        {
+          vm: {
+            running: {
+              action: "vm_stop",
+              step: "stopping_vm",
+              started_at: "2026-10-13T12:00:00Z",
+            },
+            last: null,
+          },
+          force_available_at: "2026-10-13T12:03:00Z",
+        },
+      ),
+    };
+    const { vm } = await openDashboard({ status: stopping });
+    expect(await within(vm).findByTestId("action-running")).toHaveTextContent(
+      "Die VM fährt herunter",
+    );
+    expect(button(vm, "Erzwingen")).toBeDisabled();
+    expect(within(vm).getByTestId("action-hint")).toHaveTextContent(
+      /^Erzwingen: möglich ab \d{1,2}:\d{2}:\d{2}$/,
+    );
+  });
+
   it("explains actions that are not enabled", async () => {
     const status: StatusSnapshot = {
       ...STATUS,
@@ -469,6 +505,58 @@ describe("force off, then shut down", () => {
   });
 });
 
+describe("status connection", () => {
+  const rejected: StatusSnapshot = {
+    ...STATUS_VM_RUNNING,
+    vm: { state: "unknown", reason: "ssh_auth_failed" },
+    other_vms_running: null,
+    watch_retry: { at: "2026-10-13T12:30:05Z", paused: true },
+  };
+
+  it("names the next attempt after a rejected key and how to end the wait", async () => {
+    const { vm } = await openDashboard({ status: rejected });
+    expect(await within(vm).findByTestId("status-reason")).toHaveTextContent(
+      "Der Server lehnt den SSH-Key „status“ ab",
+    );
+    const retry = within(vm).getByTestId("watch-retry");
+    expect(retry).toHaveAttribute("data-paused", "true");
+    expect(retry).toHaveTextContent(
+      /^Nächster Versuch um \d{1,2}:\d{2}:\d{2}\. Ist die Ursache behoben, verbindet sich TwinRaid sofort nach einem erfolgreichen „twinraid-admin trust-host-key target“/,
+    );
+  });
+
+  it("names only the time after an interruption", async () => {
+    const { vm } = await openDashboard({
+      status: {
+        ...rejected,
+        vm: { state: "unknown", reason: "watch_interrupted" },
+        watch_retry: { at: "2026-10-13T12:00:20Z", paused: false },
+      },
+    });
+    const retry = await within(vm).findByTestId("watch-retry");
+    expect(retry).toHaveAttribute("data-paused", "false");
+    expect(retry).toHaveTextContent(/^Nächster Versuch um \d{1,2}:\d{2}:\d{2}\.$/);
+  });
+
+  it("explains it in English", async () => {
+    const { user, vm } = await openDashboard({ status: rejected });
+    await within(vm).findByTestId("watch-retry");
+    await user.click(screen.getByRole("button", { name: "Englisch" }));
+    expect(within(vm).getByTestId("watch-retry")).toHaveTextContent(
+      /^Next attempt at .+\. Once the cause is fixed, TwinRaid connects right away after a successful “twinraid-admin trust-host-key target”/,
+    );
+  });
+
+  it("drops the line once the connection stands", async () => {
+    const { target, vm } = await openDashboard({ status: rejected });
+    await within(vm).findByTestId("watch-retry");
+    // Gehört zur VM-Kachel, nicht zu der von Groß.
+    expect(within(target).queryByTestId("watch-retry")).toBeNull();
+    emit(STATUS_VM_RUNNING);
+    expect(within(vm).queryByTestId("watch-retry")).toBeNull();
+  });
+});
+
 describe("other running VMs", () => {
   const blocked: StatusSnapshot = {
     ...STATUS_VM_RUNNING,
@@ -521,6 +609,39 @@ describe("other running VMs", () => {
       "text-muted-foreground",
     );
     expect(within(target).queryByTestId("action-hint")).toBeNull();
+  });
+
+  it("lists them in the tile of Groß as long as they run", async () => {
+    const listed: StatusSnapshot = {
+      ...STATUS_VM_RUNNING,
+      other_vms_running: ["Test-VM", "Linux"],
+    };
+    const { target, vm } = await openDashboard({ status: listed });
+    // Auch ohne gesperrten Button, nur Anzeige (ab v0.4.4).
+    expect(await within(target).findByTestId("other-vms")).toHaveTextContent(
+      "Weitere laufende VMs: Test-VM, Linux",
+    );
+    expect(button(target, "Herunterfahren")).toBeEnabled();
+    expect(within(vm).queryByTestId("other-vms")).toBeNull();
+    emit({ ...listed, other_vms_running: ["Linux"] });
+    expect(within(target).getByTestId("other-vms")).toHaveTextContent(
+      "Weitere laufende VMs: Linux",
+    );
+    // Ausgeschaltete VMs meldet guard.sh nicht: Die Liste ist leer, die Zeile weg.
+    emit({ ...listed, other_vms_running: [] });
+    expect(within(target).queryByTestId("other-vms")).toBeNull();
+    // Unbekannte Liste (Groß aus oder VM-Dienst nicht bereit): keine Zeile.
+    emit({ ...STATUS, other_vms_running: null });
+    expect(within(target).queryByTestId("other-vms")).toBeNull();
+  });
+
+  it("lists them in English", async () => {
+    const { user, target } = await openDashboard({ status: blocked });
+    await within(target).findByTestId("other-vms");
+    await user.click(screen.getByRole("button", { name: "Englisch" }));
+    expect(within(target).getByTestId("other-vms")).toHaveTextContent(
+      "Other running VMs: Test-VM, Linux",
+    );
   });
 
   it("names the VMs when a request is rejected for this reason", async () => {

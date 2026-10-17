@@ -79,6 +79,7 @@ def test_status_from_worker(tmp_path: Path) -> None:
     assert body.pop("actions")["availability"]["vm_start"] == "target_unknown"
     assert body.pop("other_vms_running") is None
     assert body.pop("notices") == []
+    assert body.pop("watch_retry") is None
     assert body == {
         "source": unknown,
         "target": unknown,

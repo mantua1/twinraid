@@ -482,6 +482,110 @@ def test_guard_test_finds_swapped_lines(
     )
 
 
+class FakeS6:
+    """Merkt sich die Signale an den Worker (s6-svc)."""
+
+    def __init__(self, env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.calls: list[list[str]] = []
+        self.binary = env / "s6-svc"
+        self.binary.write_text("")
+        self.service = env / "service" / "twinraid-worker"
+        self.service.mkdir(parents=True)
+        monkeypatch.setattr(admin_cli, "S6_SVC", self.binary)
+        monkeypatch.setattr(admin_cli, "SERVICE_DIR", env / "service")
+        real_run = subprocess.run
+
+        def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            if args and args[0] == str(self.binary):
+                self.calls.append(args)
+                return subprocess.CompletedProcess(args, 0)
+            return real_run(args, **kwargs)  # type: ignore[call-overload,no-any-return]
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+    def signals(self) -> list[str]:
+        return [call[1] for call in self.calls]
+
+
+def test_trust_host_key_ends_the_wait_of_the_status_connection(
+    env: Path, guard: FakeGuard, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Bestandener Test mit dem Key „status“: SIGUSR2 an den Worker (Konzept 3.5, ab v0.4.4)."""
+    s6 = FakeS6(env, monkeypatch)
+    assert admin_cli.main(["init-ssh-keys"]) == 0
+    assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 0
+    assert s6.calls == [[str(s6.binary), "-2", str(s6.service)]]
+    assert "TwinRaid connects with the key 'status' right away." in capsys.readouterr().out
+    # Auch wenn der Hostkey schon bestätigt war: Die Zeile auf Groß kann neu sein.
+    assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 0
+    out = capsys.readouterr().out
+    assert "This host key was already confirmed." in out
+    assert "right away" in out
+    assert s6.signals() == ["-2", "-2"]
+
+
+@pytest.mark.parametrize(
+    ("stderr", "exit_code"),
+    [
+        ("root@x: Permission denied (publickey).", 255),
+        ("twinraid-guard: denied\n", 2),
+    ],
+)
+def test_no_signal_when_the_status_test_fails(
+    env: Path,
+    guard: FakeGuard,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stderr: str,
+    exit_code: int,
+) -> None:
+    s6 = FakeS6(env, monkeypatch)
+    assert admin_cli.main(["init-ssh-keys"]) == 0
+    guard.ssh.behave(exit_code=exit_code, stderr=stderr)
+    assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 1
+    assert s6.calls == []
+    assert "right away" not in capsys.readouterr().out
+
+
+def test_no_signal_for_an_outdated_guard_on_the_status_key(
+    env: Path, guard: FakeGuard, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s6 = FakeS6(env, monkeypatch)
+    assert admin_cli.main(["init-ssh-keys"]) == 0
+    guard.answer(status="1 status")
+    assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 1
+    assert s6.calls == []
+
+
+def test_a_failed_power_test_still_ends_the_wait(
+    env: Path, guard: FakeGuard, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Die Statusverbindung braucht nur den Key „status“."""
+    s6 = FakeS6(env, monkeypatch)
+    assert admin_cli.main(["init-ssh-keys", "--key", "status"]) == 0
+    assert admin_cli.main(["init-ssh-keys", "--key", "power"]) == 0
+    guard.answer(power="1 power")
+    assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 1
+    assert s6.signals() == ["-2"]
+
+
+def test_no_signal_without_the_key_status(
+    env: Path, guard: FakeGuard, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s6 = FakeS6(env, monkeypatch)
+    assert admin_cli.main(["init-ssh-keys", "--key", "power"]) == 0
+    assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 0
+    assert s6.calls == []
+
+
+def test_without_s6_the_cli_explains_the_restart(
+    env: Path, guard: FakeGuard, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert admin_cli.main(["init-ssh-keys"]) == 0
+    assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 0
+    assert "restart it to connect right away" in capsys.readouterr().err
+
+
 def test_trust_host_key_without_keys(
     env: Path, guard: FakeGuard, capsys: pytest.CaptureFixture[str]
 ) -> None:

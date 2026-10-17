@@ -386,6 +386,28 @@ docker exec "${main}" twinraid-admin mock-tour off >/dev/null
 expect_contains "mock-fault switches a simulated fault" \
   "$(docker exec "${main}" twinraid-admin mock-fault vm-hang on 2>&1)" "'vm-hang' is now on"
 docker exec "${main}" twinraid-admin mock-fault vm-hang off >/dev/null
+# Abgelehnter Key „status“: Pause mit dem nächsten Versuch, wie im Modus real (ab v0.4.4).
+# Groß bootet in der Simulation seit dem Wecken oben; danach erst gibt es eine Sitzung.
+expect_contains "mock-fault knows the rejected key status" \
+  "$(docker exec "${main}" twinraid-admin mock-fault status-key-rejected on 2>&1)" \
+  "'status-key-rejected' is now on"
+paused_status=""
+for _ in $(seq 1 45); do
+  paused_status="$(https_get -b "${JAR}" "${BASE}/api/status")"
+  [[ "${paused_status}" == *'"paused":true'* ]] && break
+  sleep 1
+done
+expect_contains "status reports the rejected key status" "${paused_status}" \
+  '"vm":{"state":"unknown","reason":"ssh_auth_failed"}'
+expect_contains "status names the next attempt of the pause" "${paused_status}" '"watch_retry":{"at":"'
+docker exec "${main}" twinraid-admin mock-fault status-key-rejected off >/dev/null
+# Der Worker prüft alle 10 Sekunden; ohne den Fehler endet die Pause wie nach trust-host-key.
+for _ in $(seq 1 15); do
+  paused_status="$(https_get -b "${JAR}" "${BASE}/api/status")"
+  [[ "${paused_status}" == *'"watch_retry":null'* ]] && break
+  sleep 1
+done
+expect_contains "without the fault there is no next attempt" "${paused_status}" '"watch_retry":null'
 expect_equal "logout without CSRF token is rejected" \
   "$(status_of -b "${JAR}" -H "${ORIGIN}" -X POST "${BASE}/api/auth/logout")" "403"
 expect_equal "logout with CSRF token" \

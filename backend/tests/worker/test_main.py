@@ -2,8 +2,11 @@
 
 import asyncio
 import logging
+import os
+import signal
 from ipaddress import IPv4Address, ip_address
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -11,7 +14,11 @@ from tests.conftest import EXAMPLE_CONFIG
 from twinraid.config import load_config
 from twinraid.integrations.wol import BroadcastError
 from twinraid.shared.mode import RunMode
-from twinraid.worker.main import EXIT_STARTUP_ERROR, heartbeat, main, wake_on_lan
+from twinraid.worker.actions import ActionCoordinator
+from twinraid.worker.main import EXIT_STARTUP_ERROR, _serve, heartbeat, main, wake_on_lan
+from twinraid.worker.monitor import StatusMonitor
+from twinraid.worker.password_check import PasswordCheck
+from twinraid.worker.server import WorkerServer
 
 CONFIG = load_config(EXAMPLE_CONFIG)
 # Groß in einem anderen Netz als die Testschnittstelle (192.168.10.20/24).
@@ -67,6 +74,61 @@ def test_heartbeat_updates_file(tmp_path: Path) -> None:
     assert times == sorted(times)
     assert times[0] < times[-1]
     assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_signals_from_the_admin_cli(tmp_path: Path) -> None:
+    """SIGUSR1 kommt von unlock, SIGUSR2 von trust-host-key (s6-svc -1/-2, Konzept 3.5)."""
+    calls: list[str] = []
+
+    class Server:
+        path = tmp_path / "worker.sock"
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+
+        async def start(self) -> None:
+            self.started.set()
+
+        async def close(self) -> None:
+            calls.append("server closed")
+
+    class Check:
+        def reset(self) -> None:
+            calls.append("throttle reset")
+
+    class Monitor:
+        async def run(self) -> None:
+            await asyncio.Event().wait()
+
+    class Actions:
+        async def close(self) -> None:
+            calls.append("actions closed")
+
+    async def run() -> None:
+        server = Server()
+        task = asyncio.create_task(
+            _serve(
+                cast("WorkerServer", server),
+                cast("PasswordCheck", Check()),
+                cast("StatusMonitor", Monitor()),
+                cast("ActionCoordinator", Actions()),
+                retry_status_now=lambda: calls.append("status retry"),
+            )
+        )
+        # Die Handler stehen, bevor der Server startet.
+        await server.started.wait()
+        os.kill(os.getpid(), signal.SIGUSR2)
+        os.kill(os.getpid(), signal.SIGUSR1)
+        for _ in range(100):
+            if len(calls) == 2:
+                break
+            await asyncio.sleep(0.01)
+        os.kill(os.getpid(), signal.SIGTERM)
+        await task
+
+    asyncio.run(run())
+    assert sorted(calls[:2]) == ["status retry", "throttle reset"]
+    assert calls[2:] == ["actions closed", "server closed"]
 
 
 def test_wake_on_lan_is_not_used_in_simulation() -> None:

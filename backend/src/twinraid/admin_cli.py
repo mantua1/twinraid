@@ -479,8 +479,23 @@ def cmd_trust_host_key(context: Context, args: argparse.Namespace) -> int:
     if not keys:
         warn("No SSH keys yet. Run: twinraid-admin init-ssh-keys")
         return 0
-    results = [_test_guard(context, key) for key in keys]
-    return 0 if all(results) else 1
+    results = {key: _test_guard(context, key) for key in keys}
+    if results.get(GuardKey.STATUS, False):
+        _retry_status_connection()
+    return 0 if all(results.values()) else 1
+
+
+def _retry_status_connection() -> None:
+    """Beendet eine Wartezeit der Statusverbindung im Worker (Konzept 3.5, ab v0.4.4).
+
+    Viele Ursachen (Zeile in authorized_keys, guard.sh) behebt man auf Groß, ohne dass sich
+    in TwinRaid eine Datei ändert. Nach dem bestandenen Test mit dem Key „status“ bekommt
+    der Worker deshalb SIGUSR2 über s6; das Signal trägt keine Daten.
+    """
+    if _s6("-2", "twinraid-worker"):
+        say("TwinRaid connects with the key 'status' right away.")
+    else:
+        warn("The worker is not managed by s6 here; restart it to connect right away.")
 
 
 def cmd_show_action_log(context: Context, args: argparse.Namespace) -> int:

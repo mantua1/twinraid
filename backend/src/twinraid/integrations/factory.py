@@ -37,6 +37,10 @@ def _never() -> bool:
     return False
 
 
+def _nothing() -> None:
+    """Simulationsmodus: Es gibt keine Statusverbindung, die warten könnte."""
+
+
 @dataclass(frozen=True)
 class Integrations:
     """Status für den Monitor und Aktionen für die Abläufe des Workers."""
@@ -49,6 +53,8 @@ class Integrations:
     background: tuple[BackgroundTask, ...] = ()
     # Gesetzt, wenn sich der Status ohne neue Prüfung geändert hat; der Monitor prüft dann sofort.
     status_changed: asyncio.Event | None = None
+    # Beendet jede Wartezeit der Statusverbindung (twinraid-admin trust-host-key, ab v0.4.4).
+    retry_status_now: Callable[[], None] = _nothing
 
 
 def build_integrations(
@@ -69,6 +75,7 @@ def build_integrations(
         _never,
         background=(watch.run,),
         status_changed=watch.changed,
+        retry_status_now=watch.retry_now,
     )
 
 

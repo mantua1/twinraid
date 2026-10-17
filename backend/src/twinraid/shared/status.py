@@ -66,6 +66,15 @@ class ResourceInfo(StrictModel):
     reason: StatusReason | None = None
 
 
+class WatchRetry(StrictModel):
+    """Nächster Versuch der Statusverbindung vm-watch (Konzept 3.5, ab v0.4.4)."""
+
+    # Zeitpunkt des nächsten Versuchs, auf volle Sekunden aufgerundet.
+    at: datetime
+    # Pause nach einem dauerhaften Fehler; ein erfolgreiches trust-host-key beendet sie sofort.
+    paused: bool
+
+
 UNKNOWN = ResourceInfo(state=ResourceState.UNKNOWN)
 
 
@@ -82,6 +91,8 @@ class ResourceStatus(StrictModel):
     other_vms_running: tuple[str, ...] | None = None
     # Hinweise zu den Kacheln (ab v0.4.3).
     notices: tuple[StatusNotice, ...] = ()
+    # Der Worker wartet nach einem Fehler der Statusverbindung (ab v0.4.4); sonst None.
+    watch_retry: WatchRetry | None = None
 
 
 NOT_CHECKED = ResourceStatus(source=UNKNOWN, target=UNKNOWN, vm=UNKNOWN, checked_at=None)

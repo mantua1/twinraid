@@ -1,6 +1,6 @@
 """Interaktive Simulation (Konzept 6.4, Entscheidung E11)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -16,7 +16,7 @@ from twinraid.integrations.mocks.lab import (
 )
 from twinraid.integrations.mocks.status import SCENARIO
 from twinraid.shared.actions import ActionOutcome
-from twinraid.shared.status import ResourceState, StatusNotice, StatusReason
+from twinraid.shared.status import ResourceState, StatusNotice, StatusReason, WatchRetry
 
 pytestmark = pytest.mark.anyio
 NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
@@ -114,6 +114,7 @@ async def test_no_boot_and_ssh_denied(tmp_path: Path) -> None:
         ("vm-not-configured", StatusReason.VM_NOT_CONFIGURED),
         ("libvirt-down", StatusReason.VM_SERVICE_UNAVAILABLE),
         ("guard-outdated", StatusReason.GUARD_OUTDATED),
+        ("status-key-rejected", StatusReason.SSH_AUTH_FAILED),
     ],
 )
 async def test_guard_faults_hide_the_vm(tmp_path: Path, fault: str, reason: StatusReason) -> None:
@@ -194,6 +195,7 @@ def test_fault_names_are_fixed(tmp_path: Path) -> None:
         "libvirt-down",
         "guard-outdated",
         "connect-plugin",
+        "status-key-rejected",
     )
     for name in ("../etc", "api-forbidden"):
         with pytest.raises(ValueError, match="unknown fault"):
@@ -227,3 +229,60 @@ async def test_other_vm_fault(tmp_path: Path) -> None:
     _fault(tmp_path, "other-vm")
     assert (await lab.get_status()).other_vms_running == ("Test-VM",)
     assert await lab.other_running_vms() == ("Test-VM",)
+
+
+@pytest.mark.parametrize("fault", ["status-key-rejected", "guard-outdated"])
+async def test_permanent_faults_pause_like_real_mode(tmp_path: Path, fault: str) -> None:
+    """Wie die Sitzung vm-watch: 30 Minuten Pause mit dem nächsten Versuch (ab v0.4.4)."""
+    clock = Clock()
+    wall = [NOW]
+    lab = MockLab(tmp_path, LabTimings(), monotonic=clock, clock=lambda: wall[0])
+    await lab.wake()
+    clock.now = 30
+    assert (await lab.get_status()).watch_retry is None
+    _fault(tmp_path, fault)
+    pause = WatchRetry(at=NOW + timedelta(minutes=30), paused=True)
+    assert (await lab.get_status()).watch_retry == pause
+    wall[0] = NOW + timedelta(minutes=29, seconds=59)
+    assert (await lab.get_status()).watch_retry == pause
+    # Nach der Pause scheitert der nächste Versuch wieder: neue Pause.
+    wall[0] = NOW + timedelta(minutes=30)
+    assert (await lab.get_status()).watch_retry == WatchRetry(
+        at=NOW + timedelta(minutes=60), paused=True
+    )
+    # Fehler aus wirkt wie ein erfolgreiches trust-host-key: sofort wieder ein Stand.
+    _fault(tmp_path, fault, on=False)
+    status = await lab.get_status()
+    assert status.vm.state is ResourceState.OFFLINE
+    assert status.watch_retry is None
+    # Eine neue Pause beginnt beim nächsten Fehler von vorn.
+    _fault(tmp_path, fault)
+    assert (await lab.get_status()).watch_retry == WatchRetry(
+        at=wall[0] + timedelta(minutes=30), paused=True
+    )
+
+
+@pytest.mark.parametrize("fault", ["vm-not-configured", "libvirt-down", "other-vm"])
+async def test_other_faults_need_no_pause(tmp_path: Path, fault: str) -> None:
+    """Die Sitzung läuft dabei; nur Fehler der Anmeldung lösen eine Pause aus."""
+    lab, _clock = await _booted(tmp_path)
+    _fault(tmp_path, fault)
+    assert (await lab.get_status()).watch_retry is None
+
+
+async def test_status_key_rejected_leaves_the_key_power_alone(tmp_path: Path) -> None:
+    """Groß lehnt nur den Key „status“ ab; Befehle mit dem Key „power“ kommen an."""
+    lab, clock = await _booted(tmp_path)
+    _fault(tmp_path, "status-key-rejected")
+    await lab.start_vm()
+    clock.now = 40
+    _fault(tmp_path, "status-key-rejected", on=False)
+    assert (await lab.get_status()).vm.state is ResourceState.ONLINE
+
+
+async def test_no_pause_while_the_target_is_off(tmp_path: Path) -> None:
+    lab = _lab(tmp_path, Clock())
+    _fault(tmp_path, "status-key-rejected")
+    status = await lab.get_status()
+    assert status.vm.reason is StatusReason.TARGET_OFFLINE
+    assert status.watch_retry is None

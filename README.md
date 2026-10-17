@@ -63,6 +63,7 @@ Die Simulation ist interaktiv: Groß und die VM starten ausgeschaltet, die Butto
 ./scripts/dev-admin.sh mock-fault libvirt-down on # VM-Dienst auf Groß nicht bereit
 ./scripts/dev-admin.sh mock-fault guard-outdated on  # guard.sh auf Groß zu alt
 ./scripts/dev-admin.sh mock-fault connect-plugin on  # Unraid Connect mit Flash Backup auf Groß
+./scripts/dev-admin.sh mock-fault status-key-rejected on  # Groß lehnt den Key „status“ ab
 ./scripts/dev-admin.sh show-action-log            # Aktionslog des Workers
 ```
 

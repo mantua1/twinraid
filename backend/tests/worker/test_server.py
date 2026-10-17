@@ -84,6 +84,7 @@ async def test_get_status_before_the_first_check(server: WorkerServer) -> None:
     actions = response.result.pop("actions")
     assert response.result.pop("other_vms_running") is None
     assert response.result.pop("notices") == []
+    assert response.result.pop("watch_retry") is None
     assert response.result == {
         "source": unknown,
         "target": unknown,

@@ -2,18 +2,21 @@
 
 Durchläuft einen festen Ablauf, der jeden Zustand, jede Ursache und jeden Hinweis
 mindestens einmal zeigt. Ein Schritt dauert 20 Sekunden; der Worker prüft alle 10 Sekunden.
+Bei Fehlern der Statusverbindung nennt er auch den nächsten Versuch (ab v0.4.4).
 """
 
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
+from twinraid.integrations.vm_watch import PERMANENT_REASONS, WatchTimings
 from twinraid.shared.status import (
     ResourceInfo,
     ResourceState,
     ResourceStatus,
     StatusNotice,
     StatusReason,
+    WatchRetry,
 )
 
 STEP_SECONDS = 20.0
@@ -22,6 +25,11 @@ _ON = ResourceInfo(state=ResourceState.ONLINE)
 _OFF = ResourceInfo(state=ResourceState.OFFLINE)
 _VM_TARGET_OFF = ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.TARGET_OFFLINE)
 _NONE: tuple[StatusNotice, ...] = ()
+# Ursachen, nach denen die Sitzung vm-watch kurz wartet und es dann erneut versucht.
+TRANSIENT_REASONS = frozenset(
+    {StatusReason.WATCH_INTERRUPTED, StatusReason.SSH_UNREACHABLE, StatusReason.SSH_FAILED}
+)
+_PAUSE = timedelta(seconds=WatchTimings().permanent_pause_seconds)
 
 
 def _vm(reason: StatusReason) -> ResourceInfo:
@@ -93,12 +101,30 @@ class MockStatusProvider:
         self._monotonic = monotonic
         self._clock = clock
         self._started = monotonic()
+        self._started_at = clock().replace(microsecond=0)
+
+    def _steps(self) -> int:
+        return int((self._monotonic() - self._started) // STEP_SECONDS)
 
     def step(self) -> int:
-        return int((self._monotonic() - self._started) // STEP_SECONDS) % len(SCENARIO)
+        return self._steps() % len(SCENARIO)
+
+    def _retry(self, reason: StatusReason | None) -> WatchRetry | None:
+        """Nächster Versuch: nach einer Pause in 30 Minuten, sonst mit dem nächsten Schritt."""
+        step_started = self._started_at + timedelta(seconds=self._steps() * STEP_SECONDS)
+        if reason in PERMANENT_REASONS:
+            return WatchRetry(at=step_started + _PAUSE, paused=True)
+        if reason in TRANSIENT_REASONS:
+            return WatchRetry(at=step_started + timedelta(seconds=STEP_SECONDS), paused=False)
+        return None
 
     async def get_status(self) -> ResourceStatus:
         source, target, vm, notices = SCENARIO[self.step()]
         return ResourceStatus(
-            source=source, target=target, vm=vm, checked_at=self._clock(), notices=notices
+            source=source,
+            target=target,
+            vm=vm,
+            checked_at=self._clock(),
+            notices=notices,
+            watch_retry=self._retry(vm.reason),
         )
