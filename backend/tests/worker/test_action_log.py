@@ -28,7 +28,7 @@ def test_entries_have_fixed_fields(tmp_path: Path) -> None:
     log = _log(tmp_path)
     log.record("0a1b2c3d", ActionName.VM_START, Trigger.DASHBOARD, STARTED)
     log.record("0a1b2c3d", ActionName.WAKE_TARGET, Trigger.AUTOMATIC, STARTED, ActionName.VM_START)
-    log.record("0a1b2c3d", ActionName.VM_START, Trigger.DASHBOARD, ActionOutcome.API_FORBIDDEN)
+    log.record("0a1b2c3d", ActionName.VM_START, Trigger.DASHBOARD, ActionOutcome.VM_NOT_CONFIGURED)
     lines = (tmp_path / "actions.jsonl").read_text().splitlines()
     assert [json.loads(line) for line in lines] == [
         {
@@ -51,7 +51,7 @@ def test_entries_have_fixed_fields(tmp_path: Path) -> None:
             "id": "0a1b2c3d",
             "action": "vm_start",
             "trigger": "dashboard",
-            "result": "api_forbidden",
+            "result": "vm_not_configured",
         },
     ]
 

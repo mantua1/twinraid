@@ -15,7 +15,7 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/mantua1/twinraid/issues</Support>
   <Project>https://github.com/mantua1/twinraid</Project>
-  <Overview>Steuert zwei Unraid-Server über eine Weboberfläche: Wake-on-LAN, Status, Gaming-VM und Spiegel-Backup. Läuft auf dem stromsparenden Server mit eigener IP im Netzwerk br0. Diese Version zeigt den Status und weckt bzw. fährt Unraid Groß und die Gaming-VM herunter; die Aktionen werden einzeln in twinraid.yaml freigeschaltet. Der Sync folgt. Einrichtung: docs/EINRICHTUNG.md im Repository.</Overview>
+  <Overview>Steuert zwei Unraid-Server über eine Weboberfläche: Wake-on-LAN, Status, Gaming-VM und Spiegel-Backup. Läuft auf dem stromsparenden Server mit eigener IP im Netzwerk br0. Diese Version zeigt den Status und weckt bzw. fährt Unraid Groß und die Gaming-VM herunter, über SSH und guard.sh ohne API-Key; die Aktionen werden einzeln in twinraid.yaml freigeschaltet. Der Sync folgt. Einrichtung: docs/EINRICHTUNG.md im Repository.</Overview>
   <Category>Tools: Network:Management</Category>
   <WebUI>https://[IP]:[PORT:8443]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/mantua1/twinraid/main/docker/unraid-template.xml</TemplateURL>

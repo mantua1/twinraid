@@ -6,9 +6,7 @@ Aufruf im Container als root, z. B. über die Container-Konsole in Unraid:
     twinraid-admin show-cert-fingerprint
     twinraid-admin renew-cert [--new-ca]
     twinraid-admin unlock
-    twinraid-admin set-api-key target
-    twinraid-admin trust-api-cert target
-    twinraid-admin init-ssh-keys [--new]
+    twinraid-admin init-ssh-keys [--key status|power] [--new]
     twinraid-admin trust-host-key target
     twinraid-admin show-action-log [--lines N]
     twinraid-admin mock-job on|off      (nur im Simulationsmodus)
@@ -31,25 +29,21 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from twinraid.config import ConfigError, TwinRaidConfig, load_config
-from twinraid.integrations.factory import target_api, target_ssh
 from twinraid.integrations.mocks.jobs import MockJobSwitch
 from twinraid.integrations.mocks.lab import FAULTS, fault_flag, set_flag, tour_flag
-from twinraid.integrations.network import tcp_reachable
 from twinraid.integrations.ssh import (
     GUARD_CHECK_PATTERN,
+    REQUIRED_GUARD_VERSION,
+    GuardClient,
+    GuardKey,
     SshError,
+    SshTarget,
     authorized_keys_line,
-    generate_power_key,
+    generate_key,
+    key_files,
     read_public_key,
     save_known_hosts,
     scan_host_key,
-)
-from twinraid.integrations.unraid_api import (
-    ApiEndpoint,
-    Credentials,
-    UnraidApiError,
-    normalize_fingerprint,
-    presented_fingerprint,
 )
 from twinraid.shared import runtime
 from twinraid.shared.actions import ActionOutcome
@@ -57,7 +51,6 @@ from twinraid.shared.addresses import AddressError, resolve_addresses
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.mode import RunMode, RunModeError, resolve_run_mode
 from twinraid.shared.passwords import PasswordPolicyError, PasswordStore
-from twinraid.shared.status import StatusReason
 from twinraid.shared.tls import TlsError, activate, certificate_info, read_runtime
 from twinraid.web.audit import AuditAction, AuditLog, AuditResult
 from twinraid.web.db import WebDatabase
@@ -113,9 +106,6 @@ class Context:
             raise CliError(exc.render()) from None
         except (runtime.RuntimeSettingError, RunModeError) as exc:
             raise CliError(str(exc)) from None
-
-    def target_credentials(self) -> Credentials:
-        return Credentials(self.paths.target_api_key, self.paths.target_api_cert)
 
     def require_owner(self) -> None:
         """Nur der Besitzer der Datenablage (im Container root) darf ändern."""
@@ -281,149 +271,6 @@ def cmd_renew_cert(context: Context, args: argparse.Namespace) -> int:
     return 0
 
 
-# Verständliche Erklärung je Ursache für die Diagnose nach set-api-key und trust-api-cert.
-_DIAGNOSIS: dict[StatusReason, str] = {
-    StatusReason.API_UNREACHABLE: (
-        "The server answers on {port}, but its API does not. Check webgui.scheme and "
-        "webgui.port in twinraid.yaml."
-    ),
-    StatusReason.API_REDIRECTED: (
-        "Unraid redirects to HTTPS. Set webgui.scheme: https (port 443) in twinraid.yaml, "
-        "restart the container and run: twinraid-admin trust-api-cert target"
-    ),
-    StatusReason.API_KEY_MISSING: "No API key is set. Run: twinraid-admin set-api-key target",
-    StatusReason.API_KEY_INVALID: (
-        "Unraid rejected the API key. Check that you copied the whole key, or create a new one."
-    ),
-    StatusReason.API_FORBIDDEN: (
-        "The API key may not read VMs. In Unraid give it the permission VMS: Read (any)."
-    ),
-    StatusReason.API_CERT_UNTRUSTED: (
-        "The certificate of the server is not confirmed yet. "
-        "Run: twinraid-admin trust-api-cert target"
-    ),
-    StatusReason.API_CERT_CHANGED: (
-        "The server presents a different certificate than the confirmed one. Check it in "
-        "your browser, then run: twinraid-admin trust-api-cert target"
-    ),
-    StatusReason.API_ERROR: "The Unraid API gave an unexpected answer.",
-}
-
-
-def _warn_unencrypted(context: Context) -> None:
-    target = context.config.servers.target
-    if not target.webgui.encrypted:
-        warn(
-            f"Note: the connection to {target.name} is unencrypted (webgui.scheme: http). "
-            "The API key is sent in plain text through the server network."
-        )
-
-
-def _diagnose_target(context: Context) -> bool:
-    """Testabfrage an Unraid Groß. Gibt True zurück, wenn der VM-Status lesbar ist."""
-    target = context.config.servers.target
-    endpoint = ApiEndpoint.of(target)
-    say(f"Testing {endpoint.url} ...")
-    if not asyncio.run(tcp_reachable(endpoint.host, endpoint.port)):
-        warn(f"{target.name} is not reachable on port {endpoint.port}. Is it switched on?")
-        return False
-    try:
-        states = target_api(context.config, context.paths).vm_states()
-    except UnraidApiError as exc:
-        warn(_DIAGNOSIS[exc.reason].format(port=endpoint.port))
-        return False
-    vm_name = context.config.gaming_vm.unraid_vm_name
-    if vm_name not in states:
-        warn(f"The API works, but there is no VM named {vm_name!r} on {target.name}.")
-        warn(f"VMs found: {', '.join(sorted(states)) or 'none'}")
-        return False
-    say(f"OK: the API key works. VM {vm_name!r} is {states[vm_name]}.")
-    return True
-
-
-def _confirm_certificate(context: Context, expected: str | None) -> str:
-    """Zeigt den Fingerabdruck von Groß und fragt nach Bestätigung (Konzept 3.5)."""
-    target = context.config.servers.target
-    endpoint = ApiEndpoint.of(target)
-    try:
-        presented = presented_fingerprint(endpoint)
-    except UnraidApiError:
-        raise CliError(
-            f"Cannot connect to {endpoint.url}. Is {target.name} on and set to HTTPS?"
-        ) from None
-    say(f"{target.name} ({endpoint.url}) presents a certificate with the")
-    say(f"SHA-256 fingerprint: {presented}")
-    if expected is not None:
-        try:
-            wanted = normalize_fingerprint(expected)
-        except ValueError as exc:
-            raise CliError(f"--fingerprint: {exc}") from None
-        if wanted != presented:
-            raise CliError("The fingerprint does not match --fingerprint. Nothing was saved.")
-        return presented
-    say("Compare it with your browser: open the Unraid web interface via https, click the")
-    say("warning or lock symbol and show the certificate (SHA-256 fingerprint).")
-    answer = input("Do both fingerprints match? Type 'yes' to trust this certificate: ")
-    if answer.strip().lower() != "yes":
-        raise CliError("Not confirmed. Nothing was saved.")
-    return presented
-
-
-def _require_target_https(context: Context) -> None:
-    if not context.config.servers.target.webgui.encrypted:
-        raise CliError(
-            "webgui.scheme of the target is http, so there is no certificate to trust. "
-            "Switch Unraid and twinraid.yaml to https first (see docs/EINRICHTUNG.md)."
-        )
-
-
-def cmd_set_api_key(context: Context, args: argparse.Namespace) -> int:
-    context.require_owner()
-    target = context.config.servers.target
-    if args.stdin:
-        key = sys.stdin.readline().strip()
-    else:
-        key = getpass.getpass(f"API key of {target.name} (input is hidden): ").strip()
-    credentials = context.target_credentials()
-    try:
-        credentials.save_api_key(key)
-    except ValueError as exc:
-        raise CliError(f"{exc}. Nothing was saved.") from None
-    _audit(context, AuditAction.CLI_SET_API_KEY)
-    say(f"API key for {target.name} saved. It is used from the next status check.")
-    _warn_unencrypted(context)
-    if context.mode is RunMode.MOCK:
-        say("Simulation mode: the key was saved but not tested. Switch to TWINRAID_MODE=real.")
-        return 0
-    if target.webgui.encrypted and credentials.pinned_fingerprint() is None:
-        if args.stdin:
-            warn("Confirm the certificate next: twinraid-admin trust-api-cert target")
-            return 0
-        credentials.save_fingerprint(_confirm_certificate(context, None))
-        _audit(context, AuditAction.CLI_TRUST_API_CERT)
-        say("Certificate confirmed.")
-    return 0 if _diagnose_target(context) else 1
-
-
-def cmd_trust_api_cert(context: Context, args: argparse.Namespace) -> int:
-    context.require_owner()
-    if context.mode is not RunMode.REAL:
-        raise CliError("This command contacts the target server and needs TWINRAID_MODE=real.")
-    _require_target_https(context)
-    credentials = context.target_credentials()
-    fingerprint = _confirm_certificate(context, args.fingerprint)
-    if credentials.pinned_fingerprint() == fingerprint:
-        say("This certificate was already confirmed.")
-    else:
-        credentials.save_fingerprint(fingerprint)
-        _audit(context, AuditAction.CLI_TRUST_API_CERT)
-        say("Certificate confirmed. It is used from the next status check.")
-    if credentials.api_key() is None:
-        warn("No API key is set yet. Run: twinraid-admin set-api-key target")
-        return 0
-    return 0 if _diagnose_target(context) else 1
-
-
 def cmd_mock_job(context: Context, args: argparse.Namespace) -> int:
     _require_mock(context, "mock-job")
     running = args.state == "on"
@@ -470,7 +317,7 @@ def cmd_mock_fault(context: Context, args: argparse.Namespace) -> int:
 # Verständliche Erklärung je Ursache für den Verbindungstest nach trust-host-key.
 _SSH_DIAGNOSIS: dict[ActionOutcome, str] = {
     ActionOutcome.SSH_KEY_MISSING: (
-        "There is no SSH key 'power' yet. Run: twinraid-admin init-ssh-keys"
+        "There is no SSH key '{key}' yet. Run: twinraid-admin init-ssh-keys --key {key}"
     ),
     ActionOutcome.SSH_HOST_UNTRUSTED: "The host key is not confirmed.",
     ActionOutcome.SSH_HOST_KEY_MISMATCH: (
@@ -478,48 +325,75 @@ _SSH_DIAGNOSIS: dict[ActionOutcome, str] = {
         "server, then run this command again."
     ),
     ActionOutcome.SSH_AUTH_FAILED: (
-        "The server rejects the key. Check the line under Users → root → SSH authorized keys "
-        "(it must be the line from twinraid-admin init-ssh-keys, including from= with the "
-        "address of TwinRaid)."
+        "The server rejects the key '{key}'. Check the line under Users → root → SSH "
+        "authorized keys (it must be the line from twinraid-admin init-ssh-keys --key {key}, "
+        "including from= with the address of TwinRaid)."
     ),
     ActionOutcome.SSH_UNREACHABLE: (
         "SSH does not answer. Enable it on the server: Settings → Management Access → Use SSH."
     ),
-    ActionOutcome.SSH_DENIED: "guard.sh rejected the test. Copy the current guard.sh again.",
+    ActionOutcome.SSH_DENIED: (
+        "guard.sh rejected the test. Copy host-scripts/guard.sh (version 2) to the server "
+        "again; version 1 does not know the mode 'status'."
+    ),
     ActionOutcome.REMOTE_FAILED: (
         "The key is accepted, but guard.sh did not answer. Check that guard.sh is stored as "
         "/boot/config/twinraid/guard.sh and that the authorized_keys line contains "
-        'command="/bin/bash /boot/config/twinraid/guard.sh power".'
+        'command="/bin/bash /boot/config/twinraid/guard.sh {key}".'
     ),
     ActionOutcome.SSH_FAILED: "The SSH connection failed.",
 }
 
 
+def _needed_keys(context: Context) -> list[GuardKey]:
+    """„status“ immer; „power“ nur für freigeschaltete VM- oder Shutdown-Aktionen (Konzept 5.5)."""
+    actions = context.config.actions
+    if context.mode is RunMode.MOCK or actions.vm or actions.shutdown:
+        return [GuardKey.STATUS, GuardKey.POWER]
+    return [GuardKey.STATUS]
+
+
+def _ensure_key(context: Context, key: GuardKey, replace: bool) -> str:
+    """Legt den Key an, falls er fehlt (oder ersetzt ihn); gibt den öffentlichen Teil zurück."""
+    private, public_path = key_files(context.paths, key)
+    public = read_public_key(public_path, key)
+    if not replace and public is not None and private.is_file():
+        say(f"The SSH key '{key}' already exists (use --key {key} --new to replace it).")
+        return public
+    public = generate_key(private, public_path, key)
+    _audit(context, AuditAction.CLI_INIT_SSH_KEYS)
+    say(f"Created the SSH key '{key}'.")
+    if replace:
+        target = context.config.servers.target
+        warn(f"The old key '{key}' no longer works. Replace its line on {target.name}.")
+    return public
+
+
 def cmd_init_ssh_keys(context: Context, args: argparse.Namespace) -> int:
     context.require_owner()
-    paths = context.paths
-    target = context.config.servers.target
-    public = read_public_key(paths.ssh_power_public_key)
-    if args.new or public is None or not paths.ssh_power_key.is_file():
-        replaced = public is not None
-        public = generate_power_key(paths.ssh_power_key, paths.ssh_power_public_key)
-        _audit(context, AuditAction.CLI_INIT_SSH_KEYS)
-        say("Created the SSH key 'power'.")
-        if replaced:
-            warn(f"The old key no longer works. Replace its line on {target.name}.")
-    else:
-        say("The SSH key 'power' already exists (use --new to replace it).")
+    if args.new and args.key is None:
+        raise CliError("--new replaces one key; name it with --key status or --key power.")
     try:
         addresses = resolve_addresses(context.config.web.tls)
     except AddressError as exc:
         raise CliError(str(exc)) from None
+    keys = [GuardKey(args.key)] if args.key is not None else _needed_keys(context)
+    lines = [
+        authorized_keys_line(_ensure_key(context, key, bool(args.new)), addresses.ip_addresses, key)
+        for key in keys
+    ]
+    target = context.config.servers.target
     say("")
-    say(f"On {target.name}: Users → root → SSH authorized keys. Add this single line and Save:")
+    say(f"On {target.name}: Users → root → SSH authorized keys. Add each line and Save:")
+    for line in lines:
+        say("")
+        say(line)
     say("")
-    say(authorized_keys_line(public, addresses.ip_addresses))
-    say("")
-    say("Then store host-scripts/guard.sh as /boot/config/twinraid/guard.sh on the server")
-    say("and confirm its host key: twinraid-admin trust-host-key target")
+    if args.key is None and GuardKey.POWER not in keys:
+        say("The key 'power' is only needed when actions.vm or actions.shutdown is enabled.")
+    say("Then store host-scripts/guard.sh (version 2) as /boot/config/twinraid/guard.sh,")
+    say("write the UUID of the gaming VM to /boot/config/twinraid/power.conf as 'vm <UUID>'")
+    say("and confirm the host key: twinraid-admin trust-host-key target")
     return 0
 
 
@@ -528,20 +402,38 @@ def _normalize_ssh_fingerprint(value: str) -> str:
     return text if text.startswith("SHA256:") else f"SHA256:{text}"
 
 
-def _test_guard(context: Context) -> bool:
+def guard_client(context: Context, key: GuardKey) -> GuardClient:
+    return GuardClient(SshTarget.of(context.config, context.paths, key))
+
+
+def _test_guard(context: Context, key: GuardKey) -> bool:
     """Verbindungstest mit "check"; verändert nichts auf dem Server."""
     target = context.config.servers.target
-    say(f"Testing SSH to {target.name} with the key 'power' (check, changes nothing) ...")
+    say(f"Testing SSH to {target.name} with the key '{key}' (check, changes nothing) ...")
     try:
-        answer = asyncio.run(target_ssh(context.config, context.paths).check())
+        answer = asyncio.run(guard_client(context, key).check())
     except SshError as exc:
-        warn(_SSH_DIAGNOSIS.get(exc.outcome, "The SSH connection failed."))
+        warn(_SSH_DIAGNOSIS.get(exc.outcome, "The SSH connection failed.").format(key=key))
         return False
-    if GUARD_CHECK_PATTERN.fullmatch(answer) is None:
+    match = GUARD_CHECK_PATTERN.fullmatch(answer)
+    if match is None:
         warn(
-            "WARNING: the key works, but guard.sh did not answer. The authorized_keys line "
-            "probably lacks command=… and allows a full shell. Replace it with the line from "
-            "twinraid-admin init-ssh-keys."
+            f"WARNING: the key '{key}' works, but guard.sh did not answer. The authorized_keys "
+            "line probably lacks command=… and allows a full shell. Replace it with the line "
+            f"from twinraid-admin init-ssh-keys --key {key}."
+        )
+        return False
+    version, mode = int(match.group(1)), match.group(2)
+    if mode != key.value:
+        warn(
+            f"The line for the key '{key}' runs guard.sh in mode '{mode}'. Replace it with the "
+            f"line from twinraid-admin init-ssh-keys --key {key}."
+        )
+        return False
+    if version < REQUIRED_GUARD_VERSION:
+        warn(
+            f"guard.sh on {target.name} is version {version}; TwinRaid needs version "
+            f"{REQUIRED_GUARD_VERSION}. Copy host-scripts/guard.sh to the server again."
         )
         return False
     say(f"OK: guard.sh answers ({answer}).")
@@ -583,10 +475,12 @@ def cmd_trust_host_key(context: Context, args: argparse.Namespace) -> int:
         save_known_hosts(known_hosts, host_key)
         _audit(context, AuditAction.CLI_TRUST_HOST_KEY)
         say("Host key confirmed. From now on TwinRaid only accepts exactly this key.")
-    if not context.paths.ssh_power_key.is_file():
-        warn("No SSH key 'power' yet. Run: twinraid-admin init-ssh-keys")
+    keys = [key for key in GuardKey if key_files(context.paths, key)[0].is_file()]
+    if not keys:
+        warn("No SSH keys yet. Run: twinraid-admin init-ssh-keys")
         return 0
-    return 0 if _test_guard(context) else 1
+    results = [_test_guard(context, key) for key in keys]
+    return 0 if all(results) else 1
 
 
 def cmd_show_action_log(context: Context, args: argparse.Namespace) -> int:
@@ -629,26 +523,18 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("unlock", help="clear all login locks and throttling").set_defaults(
         handler=cmd_unlock
     )
-    set_key = commands.add_parser("set-api-key", help="store the Unraid API key of a server")
-    # Der Key für Klein folgt in Phase 5.
-    set_key.add_argument("server", choices=["target"])
-    set_key.add_argument(
-        "--stdin", action="store_true", help="read the key from standard input (for scripts)"
-    )
-    set_key.set_defaults(handler=cmd_set_api_key)
-    trust = commands.add_parser(
-        "trust-api-cert", help="confirm the HTTPS certificate of a server's Unraid API"
-    )
-    trust.add_argument("server", choices=["target"])
-    trust.add_argument(
-        "--fingerprint", help="expected SHA-256 fingerprint; confirms without asking (scripts)"
-    )
-    trust.set_defaults(handler=cmd_trust_api_cert)
     init_keys = commands.add_parser(
-        "init-ssh-keys", help="create the SSH key 'power' and print its authorized_keys line"
+        "init-ssh-keys", help="create the SSH keys and print their authorized_keys lines"
     )
     init_keys.add_argument(
-        "--new", action="store_true", help="replace an existing key (update the server too)"
+        "--key",
+        choices=[key.value for key in GuardKey],
+        help="only this key (default: 'status', plus 'power' if VM or shutdown actions are on)",
+    )
+    init_keys.add_argument(
+        "--new",
+        action="store_true",
+        help="replace the key given with --key (update the server too)",
     )
     init_keys.set_defaults(handler=cmd_init_ssh_keys)
     trust_host = commands.add_parser(

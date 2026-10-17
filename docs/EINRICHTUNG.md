@@ -1,6 +1,6 @@
 # TwinRaid auf Unraid einrichten
 
-> **Stand: Version 0.4.2.** Diese Version zeigt den Status beider Server und der Gaming-VM an und kann Unraid Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Die Aktionen werden einzeln freigeschaltet (Abschnitt 11). Der Sync folgt in einer späteren Version. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
+> **Stand: Version 0.4.3.** Diese Version zeigt den Status beider Server und der Gaming-VM an und kann Unraid Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Status und VM laufen über SSH und `guard.sh` auf Groß; einen API-Key von Unraid braucht TwinRaid seit 0.4.3 nicht mehr. Die Aktionen werden einzeln freigeschaltet (Abschnitt 11). Wer von 0.4.2 kommt, beginnt mit Abschnitt 12. Der Sync folgt in einer späteren Version. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
 
 Diese Anleitung führt Schritt für Schritt durch die Installation auf **Unraid Klein** (dem stromsparenden Server, der immer läuft). Am Ende:
 
@@ -22,10 +22,10 @@ Die Begriffe und Sicherheitsregeln stehen in [KONZEPT.md](KONZEPT.md).
 6. [UniFi: IP reservieren und Zugriff aus dem Client-Netz erlauben](#6-unifi-ip-reservieren-und-zugriff-aus-dem-client-netz-erlauben)
 7. [Erste Anmeldung und CA-Zertifikat herunterladen](#7-erste-anmeldung-und-ca-zertifikat-herunterladen)
 8. [CA-Zertifikat auf den Geräten installieren](#8-ca-zertifikat-auf-den-geräten-installieren)
-9. [Unraid Groß: API-Key nur zum Lesen anlegen](#9-unraid-groß-api-key-nur-zum-lesen-anlegen)
+9. [Unraid Groß: SSH, guard.sh und power.conf vorbereiten](#9-unraid-groß-ssh-guardsh-und-powerconf-vorbereiten)
 10. [In den Echtbetrieb wechseln](#10-in-den-echtbetrieb-wechseln)
 11. [Aktionen einrichten und testen](#11-aktionen-einrichten-und-testen)
-12. [Später: Unraid Groß auf HTTPS umstellen](#12-später-unraid-groß-auf-https-umstellen)
+12. [Von 0.4.2 auf 0.4.3 umstellen](#12-von-042-auf-043-umstellen)
 13. [Fehlerbilder und Abhilfe](#13-fehlerbilder-und-abhilfe)
 14. [Updates einspielen und Herkunft prüfen](#14-updates-einspielen-und-herkunft-prüfen)
 15. [Befehle der Admin-CLI](#15-befehle-der-admin-cli)
@@ -54,8 +54,8 @@ Notiere dir vorab diese Werte. Die Beispiele passen zur Beispielkonfiguration; d
 | IP von Unraid Groß | `192.168.10.11` | Unraid Groß: *Settings → Network Settings* |
 | MAC-Adresse von Unraid Groß | `AA:BB:CC:DD:EE:FF` | Unraid Groß: *Settings → Network Settings* (für Wake-on-LAN) |
 | Broadcast-Adresse des Server-Netzes | `192.168.10.255` | Nur nötig, wenn Groß in einem anderen Netz liegt als TwinRaid. Sonst leitet TwinRaid sie selbst ab. Bei `/24` die letzte Adresse des Netzes |
-| SSL-Einstellung beider Server | `No` | Unraid: *Settings → Management Access → Use SSL/TLS* |
-| Name der Gaming-VM | `Windows 11 Gaming` | Unraid Groß: Reiter **VMs**, genau so geschrieben |
+| Port der Unraid-Oberfläche von Groß | `80` | Unraid Groß: *Settings → Management Access*. Bei *Use SSL/TLS* **No** der HTTP-Port (Standard 80), bei **Yes** der HTTPS-Port (Standard 443). TwinRaid prüft daran nur, ob Groß an ist. |
+| Name der Gaming-VM | `Windows 11 Gaming` | Unraid Groß: Reiter **VMs**, genau so geschrieben. Daraus ermittelst du in Schritt 9.3 ihre UUID. |
 | Shares zum Spiegeln | `appdata`, `dokumente`, `medien` | Reiter **Shares**; `system` und `domains` sind nie erlaubt |
 
 **Prüfen, ob die feste IP frei ist:** Im Unraid-Terminal `ping -c 3 192.168.10.20` (deine Adresse). Kommt *keine* Antwort („100% packet loss“), ist sie frei. Achtung: Container mit eigener IP auf Unraid Klein selbst antworten hier nie (siehe Schritt 2). Sieh deshalb zusätzlich im Reiter **Docker** (oben rechts **Advanced View**) nach, ob ein Container die Adresse schon verwendet.
@@ -97,7 +97,7 @@ Nichts ändern, nur ansehen.
 
 Im **Unraid-Terminal von Unraid Klein**:
 
-**3.1 Ordner anlegen.** Der Datenordner enthält das Passwort, die Schlüssel der CA und später den API-Key. Er muss **root gehören** und darf **nur für root beschreibbar** sein. Sonst startet TwinRaid aus Sicherheitsgründen nicht.
+**3.1 Ordner anlegen.** Der Datenordner enthält das Passwort, die Schlüssel der CA und später die SSH-Keys. Er muss **root gehören** und darf **nur für root beschreibbar** sein. Sonst startet TwinRaid aus Sicherheitsgründen nicht.
 
 > **Den Ordner nicht über den Unraid-Dateimanager, eine Netzwerkfreigabe (SMB) oder den Windows-Explorer anlegen.** So angelegte Ordner gehören `nobody:users` und sind für alle beschreibbar (`0777`). TwinRaid verweigert dann den Start mit der Meldung `/data is owned by uid 99, expected uid 0 (root)`. Lege die Ordner deshalb mit den folgenden Befehlen im Terminal an.
 
@@ -125,11 +125,11 @@ Steht dort `nobody users` oder beginnt die Zeile mit `drwxrwxrwx`, die beiden Be
 
 > **Hinweis zu `appdata`:** TwinRaid speichert eine kleine SQLite-Datenbank. Am zuverlässigsten liegt `appdata` auf einem Pool (z. B. Cache) mit der Share-Einstellung *Exclusive access*. Bei den Unraid-Standardeinstellungen ist das meist schon so.
 
-**3.2 Beispielkonfiguration herunterladen.** Die Version im Pfad (`v0.4.2`) passt zur installierten Version.
+**3.2 Beispielkonfiguration herunterladen.** Die Version im Pfad (`v0.4.3`) passt zur installierten Version.
 
 ```bash
 wget -O /mnt/user/appdata/twinraid/config/twinraid.yaml \
-  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.2/config.example.yaml
+  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.3/config.example.yaml
 chmod 644 /mnt/user/appdata/twinraid/config/twinraid.yaml
 ```
 
@@ -146,9 +146,9 @@ Ersetze die Beispielwerte durch deine Werte aus Schritt 1:
 - `web.tls.hostnames`: leer lassen (`[]`), außer du hast für TwinRaid einen Namen im DNS eingerichtet.
 - `web.port`: bleibt auskommentiert (Standard 8443, passend zum Template).
 - `servers.source.host` und `servers.target.host`: IPs von Klein und Groß.
-- `servers.*.webgui.scheme`: `http`, wenn bei dem Server *Use SSL/TLS* auf **No** steht; `https` bei **Yes**. Den Port kannst du weglassen (80 bzw. 443).
+- `servers.target.webgui`: der Port der Unraid-Oberfläche von Groß. TwinRaid baut dorthin nur eine Verbindung auf, um zu sehen, ob Groß an ist; es überträgt darüber nichts. `scheme: http` steht für Port 80, `scheme: https` für 443; ein anderer Port kommt als `port:` dazu. Ob Unraid HTTPS nutzt, spielt für TwinRaid keine Rolle. Bei `servers.source.webgui` (Klein) hat der Wert keine Wirkung, weil TwinRaid Klein nicht prüft.
 - `servers.target.mac`: die MAC von Groß für Wake-on-LAN. `wol_broadcast` bleibt auskommentiert, solange Groß im selben Netz wie TwinRaid liegt; TwinRaid leitet die Broadcast-Adresse dann selbst ab.
-- `gaming_vm.unraid_vm_name`: der Name der VM genau wie im Reiter **VMs**.
+- `gaming_vm.unraid_vm_name`: optional, der Name der VM genau wie im Reiter **VMs**. Welche VM gemeint ist, steht seit 0.4.3 nur auf Groß in `power.conf` (Schritt 9.3); der Name dient TwinRaid nur zum Abgleich. Passt er nicht, zeigt die VM-Kachel einen Hinweis.
 - `sync.shares`: deine Shares. Der Sync selbst kommt erst in einer späteren Version, die Werte werden aber schon geprüft.
 - `actions`: alles auf `false` lassen. Die Aktionen schaltest du erst in Abschnitt 11 einzeln frei.
 
@@ -176,7 +176,7 @@ Im Simulationsmodus spricht TwinRaid keine echten Server an. So prüfst du zuers
 
 ```bash
 wget -O /boot/config/plugins/dockerMan/templates-user/my-TwinRaid.xml \
-  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.2/docker/unraid-template.xml
+  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.3/docker/unraid-template.xml
 ```
 
 **4.2 Container anlegen:**
@@ -336,52 +336,76 @@ Die Ergebnisse dieser Schritte werden in GitHub-Issue #3 gesammelt. Wenn bei dir
 
 ---
 
-## 9. Unraid Groß: API-Key nur zum Lesen anlegen
+## 9. Unraid Groß: SSH, guard.sh und power.conf vorbereiten
 
-TwinRaid liest den Status der Gaming-VM über die Unraid-API. Dafür braucht es einen API-Key, der **nur VMs lesen** darf. Die Rolle *Viewer* ist dafür zu breit: Sie darf fast alles auf dem Server lesen.
+TwinRaid liest den Zustand der Gaming-VM per SSH: Solange Groß läuft, hält es eine Verbindung mit dem Key „status“ offen. Auf Groß beantwortet `guard.sh` diese Verbindung; das Skript fragt dort alle 3 Sekunden ab und schickt eine kurze Zeile, wenn sich etwas ändert. Welche VM gemeint ist, steht nur auf Groß in der Datei `power.conf`.
 
-**Variante A: Unraid-Oberfläche von Unraid Groß**
+**9.1 SSH einschalten.** Unraid-Oberfläche von **Groß**: *Settings → Management Access* → **Use SSH:** `Yes`, Port `22` lassen → **Apply**. (Bei einem anderen Port diesen in `twinraid.yaml` als `servers.target.ssh_port` eintragen.)
 
-1. *Settings → Management Access* → Bereich **API Keys** → **Create API Key** (oder ähnlich beschriftet).
-2. **Name:** `TwinRaid Status` (nur Buchstaben, Ziffern und Leerzeichen).
-3. **Roles:** keine auswählen.
-4. **Permissions:** Ressource **VMS**, Aktion **Read (any)** bzw. `READ_ANY`. Nichts weiter.
-5. Anlegen und den angezeigten Key kopieren. Er wird nur einmal vollständig angezeigt.
-
-**Variante B: Unraid-Terminal von Unraid Groß** (gleiches Ergebnis):
+**9.2 `guard.sh` holen.** Im **Unraid-Terminal von Groß** (die Version im Pfad passt zur installierten TwinRaid-Version):
 
 ```bash
-unraid-api apikey --create --name "TwinRaid Status" \
-  --permissions "VMS:READ_ANY" --description "TwinRaid: VM-Status lesen" --json
+mkdir -p /boot/config/twinraid
+wget -O /boot/config/twinraid/guard.sh \
+  https://raw.githubusercontent.com/mantua1/twinraid/v0.4.3/host-scripts/guard.sh
+head -2 /boot/config/twinraid/guard.sh
 ```
 
-Den Wert hinter `"key"` kopieren (ohne Anführungszeichen).
+Die beiden Zeilen lauten `#!/bin/bash` und `# TwinRaid: SSH-Wächter auf Unraid Groß, Version 2 (Konzept 3.5 und 5.6).` Ausführbar machen ist nicht nötig: Unraid ruft das Skript über `/bin/bash` auf.
 
-> Für das Starten und Erzwingen der VM bekommt dieser Key später zusätzlich das Recht `VMS:UPDATE_ANY`. Das passiert erst in Abschnitt 11.5, **nach** dem Rechtetest mit dem Lese-Key (11.4).
+**9.3 Die Gaming-VM in `power.conf` eintragen.** `virsh` kennt jede VM unter einer festen UUID. Im **Unraid-Terminal von Groß**, mit dem Namen deiner VM genau wie im Reiter **VMs**:
+
+```bash
+uuid="$(virsh domuuid "Windows 11 Gaming")" && printf 'vm %s\n' "$uuid" > /boot/config/twinraid/power.conf
+cat /boot/config/twinraid/power.conf
+```
+
+Die Ausgabe ist eine einzige Zeile wie `vm 0b5c4e1a-2f3d-4c5b-8a9e-112233445566`. Meldet `virsh` „failed to get domain“, ist der Name anders geschrieben; dann wird die Datei nicht angelegt. Die UUID steht auch in der Unraid-Oberfläche: Reiter **VMs** → VM anklicken → **Edit** → oben rechts von *Form View* auf *XML View* umschalten → Zeile `<uuid>…</uuid>`.
+
+`power.conf` enthält kein Geheimnis. TwinRaid kann sie weder lesen noch ändern; es sendet `guard.sh` nie den Namen oder die UUID einer VM. Eine andere VM trägst du ein, indem du die Datei auf Groß änderst; `guard.sh` liest sie spätestens nach 15 Sekunden neu, TwinRaid musst du dafür nicht neu starten.
+
+> **Was dürfen die Keys?** Der Key **„status“** darf nur zwei Dinge: einen Verbindungstest (`check`) und die Statusabfrage (`vm-watch`); er kann nichts verändern. Der Key **„power“** (für die Aktionen, Abschnitt 11) darf die VM aus `power.conf` starten, per Signal herunterfahren und erzwingen sowie Groß herunterfahren, Letzteres nur, wenn keine VM mehr läuft. Keine Anfrage nimmt Parameter an. Alles andere lehnt `guard.sh` ab und schreibt es ins Syslog von Groß (*Tools → System Log*, Kennung `twinraid-guard`). Beide Keys gelten nur von der IP von TwinRaid aus, ohne Terminal und ohne Weiterleitungen.
 
 ---
 
 ## 10. In den Echtbetrieb wechseln
 
-**10.1 Modus umstellen:** Reiter **Docker** → Symbol *TwinRaid* → **Edit** → **Betriebsmodus** auf `real` → **Apply**. Unraid legt den Container neu an; Passwort, Zertifikate und Einstellungen bleiben erhalten.
+**10.1 Modus umstellen:** Reiter **Docker** → Symbol *TwinRaid* → **Edit** → **Betriebsmodus** auf `real` → **Apply**. Unraid legt den Container neu an; Passwort, Zertifikate und Einstellungen bleiben erhalten. Die VM-Kachel zeigt danach „Kein SSH-Key „status““; das ändert der nächste Schritt.
 
-**10.2 API-Key hinterlegen:** In der **Container-Konsole**:
+**10.2 Key „status“ einrichten.**
 
-```bash
-twinraid-admin set-api-key target
-```
+1. In der **Container-Konsole**:
 
-Den Key aus Schritt 9 einfügen (die Eingabe bleibt unsichtbar) und `Enter` drücken. TwinRaid speichert den Key und macht sofort eine Testabfrage. Erwartet wird zum Beispiel:
+   ```bash
+   twinraid-admin init-ssh-keys
+   ```
 
-```text
-OK: the API key works. VM 'Windows 11 Gaming' is SHUTOFF.
-```
+   Solange keine Aktion freigeschaltet ist, gibt der Befehl **eine** lange Zeile aus, die so beginnt (mit deiner IP von TwinRaid):
 
-Klappt es nicht, nennt der Befehl die Ursache, etwa einen falschen Key, fehlende Rechte oder einen falsch geschriebenen VM-Namen (dann listet er die vorhandenen VMs auf). Hilfe dazu in Abschnitt 13.
+   ```text
+   restrict,from="192.168.10.20",command="/bin/bash /boot/config/twinraid/guard.sh status" ssh-ed25519 AAAA… twinraid-status
+   ```
 
-**10.3 Dashboard prüfen:** Im Browser neu laden. Statt des gelben Banners steht oben **Nur Statusanzeige**, solange keine Aktion freigeschaltet ist (Abschnitt 11). Die Kacheln zeigen innerhalb von etwa 10 Sekunden den echten Zustand. Unraid Klein steht immer auf **Online** mit dem Hinweis „TwinRaid läuft auf diesem Server“ (siehe Schritt 2). Ist Unraid Groß aus, steht bei der VM „Server offline“.
+   Die ganze Zeile markieren und kopieren. Sie enthält nur den öffentlichen Teil des Keys; der private bleibt in TwinRaid. Rufst du den Befehl erneut auf, erscheint dieselbe Zeile.
+2. In der Unraid-Oberfläche von **Groß**: *Users* → **root** → Feld **SSH authorized keys**. Die Zeile in eine **neue Zeile** einfügen (vorhandene Zeilen bleiben stehen) → **Save**.
+3. Im **Unraid-Terminal von Groß** den Fingerabdruck des SSH-Servers anzeigen:
 
-> **Hinweis bei `scheme: http`:** Solange Unraid Groß auf *Use SSL/TLS: No* steht, geht der API-Key unverschlüsselt durch das Server-Netz. TwinRaid zeigt das im Startlog und unter **Einstellungen → Verbindung zu Unraid Groß** an. Abschnitt 12 beschreibt die Umstellung auf HTTPS.
+   ```bash
+   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+   ```
+
+   Ausgabe zum Beispiel `256 SHA256:Xy3…Qk root@Gross (ED25519)`. Den Teil `SHA256:…` brauchst du gleich.
+4. In der **Container-Konsole**:
+
+   ```bash
+   twinraid-admin trust-host-key target
+   ```
+
+   TwinRaid zeigt `ED25519 SHA256:…`. Mit Schritt 3 vergleichen; nur wenn beide gleich sind, `yes` eingeben. Erwartet: `Host key confirmed. From now on TwinRaid only accepts exactly this key.` und `OK: guard.sh answers (twinraid-guard 2 status ok).`
+
+**10.3 Dashboard prüfen:** Im Browser neu laden. Statt des gelben Banners steht oben **Nur Statusanzeige**, solange keine Aktion freigeschaltet ist (Abschnitt 11). Unraid Klein steht immer auf **Online** mit dem Hinweis „TwinRaid läuft auf diesem Server“ (siehe Schritt 2). Ist Unraid Groß aus, steht bei der VM „Server offline“. Ist Groß an, zeigt die VM-Kachel nach wenigen Sekunden ihren Zustand; ändert er sich, folgt die Anzeige nach höchstens etwa 3 Sekunden.
+
+> **Anmeldungen im Syslog von Groß:** TwinRaid meldet sich mit dem Key „status“ einmal an, sobald Groß an ist, und hält die Verbindung offen. Im Syslog von Groß stehen dazu die Anmeldung von `sshd` und eine Zeile `twinraid-guard: vm-watch started`. Weitere Anmeldungen gibt es nur für Aktionen (Key „power“) und nach einem Abbruch der Verbindung.
 
 ---
 
@@ -399,15 +423,15 @@ actions:
 | Aktion | Weg | braucht |
 |---|---|---|
 | Groß wecken | Magic Packet an die Broadcast-Adresse des Server-Netzes | `wake` |
-| VM starten | Unraid-API (`VMS: Update (any)`); ist Groß aus, wird es vorher geweckt | `vm` (bei ausgeschaltetem Groß zusätzlich `wake`) |
+| VM starten | SSH-Key „power“: `guard.sh` startet die VM aus `power.conf` (`virsh start`); ist Groß aus, wird es vorher geweckt | `vm` (bei ausgeschaltetem Groß zusätzlich `wake`) |
 | VM herunterfahren | SSH-Key „power“: `guard.sh` sendet nur das Signal zum Herunterfahren (wie der Netzschalter) | `vm` |
-| VM erzwingen | Unraid-API, frühestens `shutdown_timeout_minutes` nach „Herunterfahren“ | `vm` |
-| Groß herunterfahren | SSH-Key „power“: `guard.sh` ruft `/sbin/poweroff` auf (wie der Button in der Unraid-Oberfläche); läuft die VM, wird sie zuerst heruntergefahren. Laufen außer der Gaming-VM weitere VMs, schaltet TwinRaid Groß nicht aus (ab 0.4.2) | `shutdown` (bei laufender VM zusätzlich `vm`) |
-| Erzwingen und danach Server herunterfahren (ab 0.4.1) | nur bis zu 10 Minuten nach einem Herunterfahren von Groß, das an der VM gescheitert ist: VM über die API erzwingen, dann Groß wie oben herunterfahren | `vm` und `shutdown` |
+| VM erzwingen | SSH-Key „power“ (`virsh destroy`), frühestens `shutdown_timeout_minutes` nach „Herunterfahren“ | `vm` |
+| Groß herunterfahren | SSH-Key „power“: `guard.sh` ruft `/sbin/poweroff` auf (wie der Button in der Unraid-Oberfläche); läuft die VM, wird sie zuerst heruntergefahren. Laufen außer der Gaming-VM weitere VMs, schaltet TwinRaid Groß nicht aus (ab 0.4.2); seit 0.4.3 prüft `guard.sh` das unmittelbar vor dem Ausschalten noch einmal selbst | `shutdown` (bei laufender VM zusätzlich `vm`) |
+| Erzwingen und danach Server herunterfahren (ab 0.4.1) | nur bis zu 10 Minuten nach einem Herunterfahren von Groß, das an der VM gescheitert ist: VM erzwingen, dann Groß wie oben herunterfahren | `vm` und `shutdown` |
 
 Nach jeder Änderung an `twinraid.yaml` den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart**). Jede Aktion steht im Aktionslog des Workers; anzeigen in der **Container-Konsole** mit `twinraid-admin show-action-log`.
 
-> **Warum fährt TwinRaid die VM per SSH herunter und nicht über die API?** Der Befehl `vm.stop` der Unraid-API wartet nur 10 Sekunden und schaltet die VM danach selbst hart aus. Windows könnte so mitten im Herunterfahren abgeschaltet werden, etwa während eines Updates. Über SSH sendet TwinRaid nur das Signal und wartet selbst die eingestellte Zeit ab; erst danach bietet es „Erzwingen“ an.
+> **Warum per SSH und nicht über die Unraid-API?** Bis 0.4.2 nutzte TwinRaid die API mit einem API-Key. Unraid speichert solche Keys im Klartext auf dem USB-Stick, und ein Key mit VM-Rechten darf alle VMs steuern. Der Key „power“ darf nur die VM aus `power.conf` steuern und Groß nur ausschalten, wenn keine VM läuft. Außerdem wartet der Befehl `vm.stop` der API nur 10 Sekunden und schaltet die VM danach selbst hart aus. Über SSH sendet TwinRaid nur das Signal und wartet selbst die eingestellte Zeit ab; erst danach bietet es „Erzwingen“ an.
 
 ### 11.1 Vorbereitung auf Unraid Groß
 
@@ -451,27 +475,20 @@ In `nano` ans Ende diese Zeile anfügen, dann `Strg+O`, `Enter`, `Strg+X`:
 
 **Windows-VM: Netzschalter auf „Herunterfahren“.** In der Gaming-VM unter Windows: *Systemsteuerung → Energieoptionen → Auswählen, was beim Drücken des Netzschalters geschehen soll* → **Beim Drücken des Netzschalters:** **Herunterfahren** (für *Netzbetrieb*) → **Änderungen speichern**. Sonst reagiert die VM nicht auf das Signal von TwinRaid und fährt nicht herunter.
 
-**SSH auf Groß einschalten und `guard.sh` ablegen.**
-
-1. *Settings → Management Access* → **Use SSH:** `Yes`, Port `22` lassen → **Apply**. (Bei einem anderen Port diesen in `twinraid.yaml` als `servers.target.ssh_port` eintragen.)
-2. Im **Unraid-Terminal von Groß** das Wächter-Skript holen (die Version im Pfad passt zur installierten TwinRaid-Version):
-
-   ```bash
-   mkdir -p /boot/config/twinraid
-   wget -O /boot/config/twinraid/guard.sh \
-     https://raw.githubusercontent.com/mantua1/twinraid/v0.4.2/host-scripts/guard.sh
-   head -3 /boot/config/twinraid/guard.sh
-   ```
-
-   Die ersten beiden Zeilen lauten `#!/bin/bash` und `# TwinRaid: SSH-Wächter auf Unraid Groß (Konzept 5.6).` Ausführbar machen ist nicht nötig (und auf dem USB-Stick auch nicht möglich): Unraid ruft das Skript über `/bin/bash` auf.
-
-> **Was darf der SSH-Key „power“?** Nur drei Dinge: einen Verbindungstest (`check`), Groß herunterfahren (`/sbin/poweroff`) und eine VM per Signal herunterfahren (`virsh shutdown` mit der ID der VM). Alles andere lehnt `guard.sh` ab und schreibt es ins Syslog von Groß (*Tools → System Log*, Kennung `twinraid-guard`). Der Key gilt nur von der IP von TwinRaid aus, ohne Terminal und ohne Weiterleitungen.
+**SSH, `guard.sh` und `power.conf`** sind seit Abschnitt 9 eingerichtet. Für die Aktionen kommt in Test 3 (11.6) der Key „power“ dazu.
 
 ### 11.2 Optional: mit einer Test-VM üben
 
-Für die VM-Tests kannst du statt der Gaming-VM vorübergehend eine Test-VM verwenden. Dafür ist keine neue TwinRaid-Version nötig: TwinRaid sucht die VM bei jeder Aktion über ihren Namen, und `guard.sh` arbeitet mit jeder VM.
+Für die VM-Tests kannst du statt der Gaming-VM vorübergehend eine Test-VM verwenden. Dafür ist keine neue TwinRaid-Version nötig.
 
-1. In `twinraid.yaml` bei `gaming_vm` den Namen der Test-VM eintragen, genau wie im Reiter **VMs** von Groß. Für kürzere Wartezeiten zusätzlich die Wartezeit auf 1 Minute setzen:
+1. Im **Unraid-Terminal von Groß** die Test-VM in `power.conf` eintragen (Name wie im Reiter **VMs**):
+
+   ```bash
+   uuid="$(virsh domuuid "Test-VM")" && printf 'vm %s\n' "$uuid" > /boot/config/twinraid/power.conf
+   cat /boot/config/twinraid/power.conf
+   ```
+
+2. In `twinraid.yaml` bei `gaming_vm` den Namen der Test-VM eintragen (sonst zeigt die VM-Kachel den Hinweis, dass der Name nicht passt) und für kürzere Wartezeiten die Wartezeit auf 1 Minute setzen, dann den Container neu starten:
 
    ```yaml
    gaming_vm:
@@ -480,25 +497,77 @@ Für die VM-Tests kannst du statt der Gaming-VM vorübergehend eine Test-VM verw
      shutdown_timeout_minutes: 1
    ```
 
-2. Container neu starten. Die VM-Kachel zeigt jetzt den Zustand der Test-VM.
+3. Die VM-Kachel zeigt jetzt den Zustand der Test-VM.
 
 Für den Test von **Erzwingen** brauchst du eine VM, die auf das Signal zum Herunterfahren **nicht** reagiert. Am einfachsten stellst du in einer Windows-Test-VM den Netzschalter vorübergehend auf **Nichts unternehmen** (siehe 11.1). Alternativ reagiert eine VM ohne Betriebssystem, die in der UEFI-Shell steht, in der Regel ebenfalls nicht.
 
-Am Ende (11.17) trägst du die Gaming-VM wieder ein. Für Test 11 (11.14) brauchst du die Gaming-VM und die Test-VM gleichzeitig.
+Am Ende (11.22) trägst du die Gaming-VM wieder ein. Für Test 11 (11.14) brauchst du die Gaming-VM und die Test-VM gleichzeitig.
 
 ### 11.3 Testprotokoll: Ausgangslage
 
-TwinRaid 0.4.0 läuft im Echtbetrieb, `actions` fehlt in `twinraid.yaml` oder steht überall auf `false`. Die vorhandene Konfiguration bleibt gültig. Steht dort `wol_broadcast`, kannst du die Zeile löschen; TwinRaid leitet die Adresse dann selbst ab.
+TwinRaid 0.4.3 läuft im Echtbetrieb, der Key „status“ ist eingerichtet (Abschnitt 10 bzw. 12), `actions` fehlt in `twinraid.yaml` oder steht überall auf `false`. Steht dort `wol_broadcast`, kannst du die Zeile löschen; TwinRaid leitet die Adresse dann selbst ab.
 
 | Prüfen | Erwartet |
 |---|---|
 | Container-Log | `Read-only real mode: status checks only, all actions are locked.` und `Wake-on-LAN broadcast address: 192.168.10.255 (…)` |
 | Dashboard | Banner **Nur Statusanzeige**; die Buttons sind grau mit dem Hinweis „in twinraid.yaml unter actions nicht freigeschaltet“ |
 | **Einstellungen → Aktionen** | alle drei Gruppen „gesperrt“ |
+| **Einstellungen → Verbindung zu Unraid Groß** | „Status und VM-Aktionen laufen per SSH über guard.sh …“; kein Hinweis auf eine unverschlüsselte Verbindung |
 
-### 11.4 Test 1: Rechtetest mit dem Lese-Key
+**Reihenfolge für 0.4.3:** G1, G2, dann die Tests 3 bis 9, aus Test 10 die Varianten „Andere Aktion“ und „Zustand ändert sich“, Test 11, Test 8 zur Kontrolle, G3 bis G6, G7 nur wenn du willst. Erst mit der Test-VM in `power.conf`, zum Schluss mit der Gaming-VM.
 
-Der API-Key aus Schritt 9 darf nur VMs lesen. Bevor du ihn erweiterst, prüfst du, dass Unraid einen solchen Key beim Starten einer VM wirklich abweist (in älteren Versionen der Unraid-API gab es einen Fehler, durch den ein lesender Key VMs starten konnte).
+### 11.4 Test G1: guard.sh direkt auf Groß prüfen
+
+Diese Prüfungen laufen im **Unraid-Terminal von Groß** und verändern nichts. Sie zeigen, dass `guard.sh` nur feste Anfragen ohne Parameter annimmt und der Modus „status“ nichts auslösen kann. Nach jedem Befehl zeigt `echo $?` den Exit-Code.
+
+```bash
+G=/boot/config/twinraid/guard.sh
+SSH_ORIGINAL_COMMAND=check bash $G status; echo $?
+SSH_ORIGINAL_COMMAND=poweroff bash $G status; echo $?
+SSH_ORIGINAL_COMMAND=vm-start bash $G status; echo $?
+SSH_ORIGINAL_COMMAND="vm-shutdown 0b5c4e1a-2f3d-4c5b-8a9e-112233445566" bash $G power; echo $?
+SSH_ORIGINAL_COMMAND="check; reboot" bash $G power; echo $?
+SSH_ORIGINAL_COMMAND=vm-watch timeout 5 bash $G status; echo $?
+```
+
+| Befehl | Erwartet |
+|---|---|
+| `check` im Modus status | `twinraid-guard 2 status ok`, Exit `0` |
+| `poweroff` und `vm-start` im Modus status | `twinraid-guard: denied`, Exit `2`; Groß bleibt an, die VM aus |
+| `vm-shutdown <UUID>` im Modus power (mit Parameter) | `twinraid-guard: denied`, Exit `2` |
+| `check; reboot` | `twinraid-guard: denied`, Exit `2` |
+| `vm-watch` (5 Sekunden lang) | eine Zeile wie `watch 2 vm=SHUTOFF name=… others=0 names=- connect=absent flash_backup=inactive`, dann Exit `124` (beendet von `timeout`) |
+| *Tools → System Log* | Einträge `twinraid-guard: denied: …` ohne den Text der Anfrage |
+
+**`power.conf` fehlt:** Die Datei kurz umbenennen und die Statusabfrage wiederholen, danach zurückbenennen:
+
+```bash
+mv /boot/config/twinraid/power.conf /boot/config/twinraid/power.conf.bak
+SSH_ORIGINAL_COMMAND=vm-watch timeout 5 bash $G status
+mv /boot/config/twinraid/power.conf.bak /boot/config/twinraid/power.conf
+```
+
+Erwartet: `watch 2 vm=NOT_CONFIGURED name=- others=? names=- …`. Weil `guard.sh` die Datei alle 15 Sekunden neu liest, kann das Dashboard in dieser Zeit kurz „VM auf dem Server nicht eingetragen“ zeigen; danach zeigt es wieder den Zustand der VM.
+
+### 11.5 Test G2: Status ohne API-Key
+
+1. In `power.conf` steht die Test-VM (11.2). Die VM-Kachel zeigt ihren Zustand; starte und stoppe die Test-VM einmal in der Unraid-Oberfläche: Die Kachel folgt nach wenigen Sekunden.
+2. Den alten API-Key von TwinRaid in Unraid löschen: *Settings → Management Access* → Bereich **API Keys** → Key **TwinRaid Status** (bzw. **TwinRaid**) → löschen.
+3. Im **Unraid-Terminal von Groß** prüfen, dass kein Key von TwinRaid mehr auf dem Stick liegt:
+
+   ```bash
+   grep -l -i twinraid /boot/config/plugins/dynamix.my.servers/keys/* 2>/dev/null || echo "kein Key von TwinRaid"
+   ```
+
+| Erwartet | |
+|---|---|
+| Ausgabe | `kein Key von TwinRaid` |
+| Dashboard | unverändert: Der Status der VM kommt weiter, denn er braucht keinen API-Key |
+| Container-Log von TwinRaid (einmal beim ersten Start von 0.4.3) | `Removed the Unraid API key of Unraid Groß …` |
+
+### 11.6 Test 3: SSH-Key „power“ einrichten
+
+Alle Aktionen außer Wecken laufen über den Key „power“. Deshalb kommt er vor den nächsten Tests. Wer von 0.4.2 kommt, hat ihn schon: Key und Zeile auf Groß bleiben, wie sie sind; dann nur Schritt 1 (zum Vergleich) und Schritt 3.
 
 1. In `twinraid.yaml` eintragen und den Container neu starten:
 
@@ -507,71 +576,31 @@ Der API-Key aus Schritt 9 darf nur VMs lesen. Bevor du ihn erweiterst, prüfst d
      vm: true
    ```
 
-2. Im Container-Log steht `Real mode: these actions are enabled in twinraid.yaml: vm`. Das Banner **Nur Statusanzeige** ist weg.
-3. Groß ist an, die (Test-)VM ist aus. In der VM-Kachel **Starten** klicken.
-
-| Erwartet | |
-|---|---|
-| VM-Kachel | kurz **Startet …**, dann rot: „Zuletzt: VM starten – Keine Berechtigung: Der API-Key darf VMs nicht starten oder ausschalten. In Unraid die Berechtigung VMS: Update (any) ergänzen.“ |
-| Unraid Groß, Reiter **VMs** | die VM ist weiterhin **aus** |
-| Kachel **Verlauf** | „VM starten“ mit dem Ergebnis „angefordert“ |
-| `twinraid-admin show-action-log` | `vm_start  dashboard: started` und danach `vm_start  dashboard: api_forbidden` |
-
-> **Startet die VM trotzdem, hier aufhören.** Dann setzt die Unraid-API die Rechte nicht durch. Die VM in Unraid wieder ausschalten, `vm: false` setzen und das Ergebnis melden.
-
-### 11.5 Test 2: API-Key für Starten und Erzwingen erweitern
-
-**Variante A: vorhandenen Key ergänzen** (Unraid-Oberfläche von Groß): *Settings → Management Access* → Bereich **API Keys** → Key **TwinRaid Status** → **Edit** → bei **Permissions** für die Ressource **VMS** zusätzlich **Update (any)** auswählen, **Read (any)** bleibt → speichern. Der Key selbst ändert sich nicht; in TwinRaid ist nichts zu tun.
-
-**Variante B: neuen Key anlegen** (Unraid-Terminal von Groß):
-
-```bash
-unraid-api apikey --create --name "TwinRaid" \
-  --permissions "VMS:READ_ANY,VMS:UPDATE_ANY" --description "TwinRaid: VMs lesen, starten, erzwingen" --json
-```
-
-Den Wert hinter `"key"` mit `twinraid-admin set-api-key target` in TwinRaid hinterlegen (wie in 10.2) und den alten Key in Unraid löschen.
-
-> **Unraid-Eigenheit beim Speichern:** Ein Key nur mit einzelnen Rechten und ohne Rolle lässt sich manchmal erst im zweiten Versuch speichern. Die CLI meldet dann `Failed to save API key: Invalid data structure`, die Oberfläche einmal „At least one role or one permission is required“. **Einfach erneut versuchen** (Seite neu laden, Rechte erneut auswählen). **Nie auf die Rolle *Viewer* oder *Admin* ausweichen:** *Viewer* darf fast alles auf dem Server lesen, *Admin* alles ändern.
-
-**Prüfen:** In der VM-Kachel **Starten** klicken. Erwartet: **Startet …**, dann **Online** und „Zuletzt: VM starten – erfolgreich“. In Unraid läuft die VM.
-
-### 11.6 Test 3: SSH-Key „power“ einrichten
-
-Das Herunterfahren der VM und von Groß läuft über SSH. Deshalb kommt der SSH-Key vor den nächsten Tests.
-
-1. In der **Container-Konsole**:
+   Im Container-Log steht `Real mode: these actions are enabled in twinraid.yaml: vm`. Das Banner **Nur Statusanzeige** ist weg.
+2. In der **Container-Konsole**:
 
    ```bash
-   twinraid-admin init-ssh-keys
+   twinraid-admin init-ssh-keys --key power
    ```
 
-   Die Ausgabe enthält **eine** lange Zeile, die so beginnt (mit deiner IP von TwinRaid):
+   Die Ausgabe enthält eine lange Zeile, die so beginnt (mit deiner IP von TwinRaid):
 
    ```text
    restrict,from="192.168.10.20",command="/bin/bash /boot/config/twinraid/guard.sh power" ssh-ed25519 AAAA… twinraid-power
    ```
 
-   Die ganze Zeile markieren und kopieren. Sie enthält nur den öffentlichen Teil des Keys; der private bleibt in TwinRaid. Rufst du den Befehl erneut auf, erscheint dieselbe Zeile.
-2. In der Unraid-Oberfläche von **Groß**: *Users* → **root** → Feld **SSH authorized keys**. Die Zeile in eine **neue Zeile** einfügen (vorhandene Zeilen bleiben stehen) → **Save**. Unraid speichert sie dauerhaft auf dem USB-Stick (`/boot/config/ssh/root/authorized_keys`).
-3. Im **Unraid-Terminal von Groß** den Fingerabdruck des SSH-Servers anzeigen:
-
-   ```bash
-   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
-   ```
-
-   Ausgabe zum Beispiel `256 SHA256:Xy3…Qk root@Gross (ED25519)`. Den Teil `SHA256:…` brauchst du gleich.
-4. In der **Container-Konsole**:
+   In der Unraid-Oberfläche von **Groß**: *Users* → **root** → Feld **SSH authorized keys** → die Zeile in eine **neue Zeile** einfügen (die Zeile für „status“ bleibt stehen) → **Save**. Unraid speichert sie dauerhaft (`/boot/config/ssh/root/authorized_keys`).
+3. In der **Container-Konsole**:
 
    ```bash
    twinraid-admin trust-host-key target
    ```
 
-   TwinRaid zeigt `ED25519 SHA256:…`. Mit Schritt 3 vergleichen; nur wenn beide gleich sind, `yes` eingeben.
+   Der Hostkey ist schon bestätigt (Abschnitt 10.2); TwinRaid zeigt ihn trotzdem zum Vergleich an. Mit `yes` bestätigen.
 
 | Erwartet | |
 |---|---|
-| Ausgabe | `Host key confirmed. From now on TwinRaid only accepts exactly this key.` und `OK: guard.sh answers (twinraid-guard 1 power ok).` |
+| Ausgabe | `This host key was already confirmed.`, `OK: guard.sh answers (twinraid-guard 2 status ok).` und `OK: guard.sh answers (twinraid-guard 2 power ok).` |
 | Unraid Groß | nichts passiert; der Test verändert nichts |
 
 Meldet der Befehl einen Fehler, steht die Abhilfe dabei, zum Beispiel bei abgelehntem Key (`Users → root`), ausgeschaltetem SSH oder fehlendem `guard.sh`. Siehe auch Abschnitt 13.
@@ -584,7 +613,7 @@ Meldet der Befehl einen Fehler, steht die Abhilfe dabei, zum Beispiel bei abgele
    | Erwartet | |
    |---|---|
    | VM-Kachel | **Fährt herunter …** („Die VM fährt herunter …“), dann **Offline**, „Zuletzt: VM herunterfahren – erfolgreich“ |
-   | Unraid Groß, *Tools → System Log* | `twinraid-guard: ACPI shutdown of VM … requested by TwinRaid` |
+   | Unraid Groß, *Tools → System Log* | `twinraid-guard: vm-start of VM … requested by TwinRaid` und `twinraid-guard: ACPI shutdown of VM … requested by TwinRaid` (mit der UUID aus `power.conf`) |
 
 3. **Erzwingen:** Die VM darf jetzt nicht auf das Signal reagieren (siehe 11.2). VM **Starten**, dann **Herunterfahren** und bestätigen.
 
@@ -592,7 +621,7 @@ Meldet der Befehl einen Fehler, steht die Abhilfe dabei, zum Beispiel bei abgele
    |---|---|
    | sofort | **Fährt herunter …** und ein grauer Button **Erzwingen** mit „Erzwingen: möglich ab hh:mm:ss“ |
    | nach `shutdown_timeout_minutes` | rot: „Zuletzt: VM herunterfahren – Die VM hat sich nicht rechtzeitig heruntergefahren.“ und darunter „„Erzwingen“ ist jetzt möglich.“; **Erzwingen** ist aktiv. „Erzwingen und danach Server herunterfahren“ erscheint hier **nicht** (nur nach einem Herunterfahren von Groß) |
-   | **Erzwingen** → **Jetzt erzwingen** | die VM ist sofort **Offline**, „Zuletzt: VM erzwingen – erfolgreich“ |
+   | **Erzwingen** → **Jetzt erzwingen** | die VM ist sofort **Offline**, „Zuletzt: VM erzwingen – erfolgreich“; im Syslog von Groß `twinraid-guard: forced stop of VM … requested by TwinRaid` |
 
 4. In der Test-VM den Netzschalter wieder auf **Herunterfahren** stellen.
 
@@ -614,7 +643,7 @@ Meldet der Befehl einen Fehler, steht die Abhilfe dabei, zum Beispiel bei abgele
 
 | Erwartet | |
 |---|---|
-| Kachel Groß | **Startet …** („Magic Packet gesendet, der Server startet …“), dann „Wartet, bis Unraid bereit ist …“, schließlich **Online** und „Zuletzt: Server wecken – erfolgreich“ |
+| Kachel Groß | **Startet …** („Magic Packet gesendet, der Server startet …“), dann „Wartet auf den VM-Dienst …“, schließlich **Online** und „Zuletzt: Server wecken – erfolgreich“ |
 | Kachel VM | während des Starts „Wartet, bis der Server bereit ist“, danach **Offline** |
 
 Steht nach `boot_timeout_minutes` „Der Server war nicht rechtzeitig bereit“: Ist Groß gar nicht angegangen, die Wake-on-LAN-Vorbereitung aus 11.1 prüfen. Ist Groß an, aber das Array nicht gestartet, den Auto-Start prüfen; dauert der Start einfach länger, `boot_timeout_minutes` erhöhen.
@@ -681,11 +710,11 @@ Klickt jemand den Button genau in dem Moment, in dem das Angebot verfällt, lehn
 
 ### 11.14 Test 11: Eine weitere VM läuft
 
-Ab Version 0.4.2. In `twinraid.yaml` ist wieder die **Gaming-VM** eingetragen (`unraid_vm_name`), die Test-VM gibt es zusätzlich auf Groß. `actions.vm` und `actions.shutdown` sind freigeschaltet, Groß ist an.
+Ab Version 0.4.2. In `power.conf` (und in `twinraid.yaml` bei `unraid_vm_name`) ist wieder die **Gaming-VM** eingetragen, die Test-VM gibt es zusätzlich auf Groß. `actions.vm` und `actions.shutdown` sind freigeschaltet, Groß ist an.
 
 1. Die Gaming-VM ist aus. Die **Test-VM** in der Unraid-Oberfläche von Groß starten (Reiter **VMs** → Symbol der Test-VM → **Start**).
 
-   | Erwartet (nach etwa 10 Sekunden) | |
+   | Erwartet (nach wenigen Sekunden) | |
    |---|---|
    | Kachel Groß | **Herunterfahren** ist grau; darunter „Herunterfahren: Auf Unraid Groß laufen noch weitere VMs: Test-VM. Bitte fahre sie zuerst über die Unraid-Oberfläche herunter. Zur Sicherheit schaltet TwinRaid den Server nicht aus, solange andere VMs laufen, damit keine Daten verloren gehen.“ |
    | Sprache auf **EN** | derselbe Hinweis auf Englisch |
@@ -704,64 +733,89 @@ Ab Version 0.4.2. In `twinraid.yaml` ist wieder die **Gaming-VM** eingetragen (`
    | `twinraid-admin show-action-log` | `vm_stop  automatic (part of shutdown_target): success` und `shutdown_target  dashboard: other_vms_running` |
 
    Warst du zu langsam und Groß fährt schon herunter, Groß wecken und den Schritt wiederholen. Unraid fährt die gerade gestartete Test-VM beim Herunterfahren selbst herunter.
-4. Die Test-VM in Unraid ausschalten (**Force Stop**). Nach etwa 10 Sekunden ist **Herunterfahren** wieder aktiv, die Meldung aus Schritt 3 ist nur noch grau.
+4. Die Test-VM in Unraid ausschalten (**Force Stop**). Nach wenigen Sekunden ist **Herunterfahren** wieder aktiv, die Meldung aus Schritt 3 ist nur noch grau.
 
 ### 11.15 Test 8 zur Kontrolle wiederholen
 
 Mit der Gaming-VM (Netzschalter auf **Herunterfahren**, siehe 11.1) Test 8 aus 11.11 wiederholen. Erwartet wie dort: erst die VM **Offline**, dann Groß **Offline**, „Zuletzt: Server herunterfahren – erfolgreich“. Die Option „Erzwingen und danach Server herunterfahren“ erscheint dabei **nicht**.
 
-### 11.16 Simulation (optional)
+### 11.16 Test G3: Neustart von Groß und Anmeldungen
 
-Im Simulationsmodus lässt sich das Verhalten ohne Server ausprobieren: `twinraid-admin mock-fault other-vm on` lässt auf dem simulierten Groß eine weitere VM namens „Test-VM“ laufen, `off` schaltet sie wieder aus.
+1. Groß in der Unraid-Oberfläche von Groß neu starten (*Main* → **Reboot**).
+2. Die VM-Kachel beobachten.
+3. Nach dem Neustart das Dashboard 30 Minuten offen lassen, ohne eine Aktion auszulösen. Dann im Syslog von Groß (*Tools → System Log*) nachsehen.
 
-### 11.17 Abschluss
+| Erwartet | |
+|---|---|
+| während Groß herunterfährt | nach höchstens etwa 12 Sekunden „Server offline“; davor höchstens kurz „Statusverbindung unterbrochen“, keine Meldung zu Keys oder Hostkey |
+| nach dem Start | kurz „Statusverbindung wird aufgebaut …“ und „VM-Dienst nicht bereit“, dann der Zustand der VM, ohne dass du etwas tust |
+| Syslog nach 30 Minuten | genau eine Anmeldung mit dem Key „status“ (Zeile von `sshd` mit `Accepted publickey`) und genau eine Zeile `twinraid-guard: vm-watch started` |
 
-1. In `twinraid.yaml` wieder die Gaming-VM eintragen (`unraid_vm_name`) und `shutdown_timeout_minutes` auf den gewünschten Wert setzen (Standard 3), Container neu starten.
+### 11.17 Test G4: VM pausiert, VM-Dienst aus
+
+1. Die Test-VM starten und in Unraid **pausieren** (**Pause**). Erwartet: VM-Kachel **Online** mit „Pausiert“. Wieder fortsetzen (**Resume**).
+2. Alle VMs ausschalten. Dann den VM-Dienst stoppen: *Settings → VM Manager* → **Enable VMs:** `No` → **Apply**.
+
+   | Erwartet | |
+   |---|---|
+   | VM-Kachel | **Unbekannt** mit „VM-Dienst nicht bereit“ |
+   | Buttons | **Starten**, **Herunterfahren** (VM und Groß) sind gesperrt |
+
+3. Den VM-Dienst wieder einschalten (**Enable VMs:** `Yes`). Nach wenigen Sekunden zeigt die Kachel wieder den Zustand der VM.
+
+### 11.18 Test G5: Hinweis zu Unraid Connect
+
+Unraid-Oberfläche von Groß: *Plugins* ansehen. Ist dort **Unraid Connect** installiert, zeigt die Kachel **Unraid Groß** einen gelben Hinweis („Auf Unraid Groß ist das Plugin Unraid Connect installiert …“), ebenso **Einstellungen → Verbindung zu Unraid Groß**; ist Flash Backup aktiv, steht ein zweiter Satz dabei. Ist Connect nicht installiert, gibt es keinen Hinweis. Die Anzeige muss zur Plugins-Seite passen. (Den Fall „installiert“ prüfen die CI und die Simulation mit `twinraid-admin mock-fault connect-plugin on`; eine Attrappe auf dem Stick anzulegen wäre riskant, weil Unraid sie beim nächsten Start zu installieren versucht.)
+
+### 11.19 Test G6: Nur Statusanzeige
+
+1. In `twinraid.yaml` alle `actions` auf `false` setzen, Container neu starten. Das Banner **Nur Statusanzeige** erscheint.
+2. Groß einmal neu starten (wie G3) und danach 10 Minuten warten.
+
+| Erwartet | |
+|---|---|
+| Dashboard | Der Status läuft wie gewohnt |
+| Syslog von Groß | Anmeldungen nur mit dem Fingerabdruck des Keys „status“, keine mit „power“. Die Fingerabdrücke der Keys zeigt `ssh-keygen -lf /data/secrets/ssh-status.pub` bzw. `…/ssh-power.pub` in der Container-Konsole |
+
+Danach die Aktionen wieder freischalten, die du nutzen willst.
+
+### 11.20 Test G7 (optional): Prüfung vor poweroff direkt auf Groß
+
+Nur mit laufender **Test-VM** und nur, wenn dir die Prüfung in der CI nicht reicht. **Versagt der Schutz, fährt Groß sauber herunter.** Im **Unraid-Terminal von Groß**:
+
+```bash
+SSH_ORIGINAL_COMMAND=poweroff bash /boot/config/twinraid/guard.sh power; echo $?
+```
+
+Erwartet: `twinraid-guard: refused vm-running` (steht die Test-VM in `power.conf`) bzw. `twinraid-guard: refused other-vms-running` (steht dort die Gaming-VM), Exit `3`. Groß bleibt an; im Syslog steht `twinraid-guard: refused: …`.
+
+### 11.21 Simulation (optional)
+
+Im Simulationsmodus lässt sich das Verhalten ohne Server ausprobieren: `twinraid-admin mock-fault other-vm on` lässt auf dem simulierten Groß eine weitere VM namens „Test-VM“ laufen. Seit 0.4.3 gibt es zusätzlich `vm-not-configured` (`power.conf` fehlt), `libvirt-down` (VM-Dienst nicht bereit), `guard-outdated` (guard.sh zu alt) und `connect-plugin` (Unraid Connect mit Flash Backup). `off` schaltet jeweils wieder aus.
+
+### 11.22 Abschluss
+
+1. In `power.conf` wieder die Gaming-VM eintragen (9.3), in `twinraid.yaml` ihren Namen bei `unraid_vm_name` und `shutdown_timeout_minutes` auf den gewünschten Wert setzen (Standard 3), Container neu starten.
 2. Mit der Gaming-VM einmal **Starten** und **Herunterfahren**.
 3. `twinraid-admin show-action-log` ansehen: Jede Aktion steht dort mit Beginn und Ergebnis.
-4. Die Ergebnisse bitte im Pull Request festhalten (für 0.4.0 besonders Test 1, für 0.4.1 die Tests 9 und 10, für 0.4.2 Test 11).
+4. Die Ergebnisse bitte im Pull Request festhalten (für 0.4.0 besonders Test 1, für 0.4.1 die Tests 9 und 10, für 0.4.2 Test 11, für 0.4.3 die Tests G1 bis G7). Dort nur „Klein“ und „Groß“ schreiben, keine IP-Adressen, Hostnamen, Fingerabdrücke oder UUIDs.
 
 ---
 
-## 12. Später: Unraid Groß auf HTTPS umstellen
+## 12. Von 0.4.2 auf 0.4.3 umstellen
 
-Dafür ist keine neue TwinRaid-Version nötig, nur Einstellungen.
+Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API-Key mehr. Die Umstellung dauert etwa zehn Minuten. Groß sollte dabei an sein.
 
-**12.1 In Unraid Groß:** *Settings → Management Access* → **Use SSL/TLS** auf **Yes** → **Apply**. Die Unraid-Oberfläche lädt neu und ist danach per `https://` erreichbar; der Browser warnt, weil Unraid ein selbstsigniertes Zertifikat nutzt. (**Strict** wird von TwinRaid nicht unterstützt.)
+1. **TwinRaid aktualisieren:** Reiter **Docker** → bei *TwinRaid* **update ready** → **Update**. Das Template bleibt unverändert.
+2. **Container-Log ansehen:** Einmal steht dort `Removed the Unraid API key of Unraid Groß …`; TwinRaid hat den alten Key und den Fingerabdruck aus seinem Datenordner gelöscht. Die VM-Kachel zeigt jetzt „Kein SSH-Key „status““.
+3. **`guard.sh` Version 2** auf Groß holen (9.2). Bis dahin meldet die Kachel nach Schritt 5 „guard.sh lehnt ab“.
+4. **`power.conf`** auf Groß anlegen (9.3). Für die Tests in Abschnitt 11 erst mit der Test-VM (11.2), sonst gleich mit der Gaming-VM.
+5. **Key „status“:** in der Container-Konsole `twinraid-admin init-ssh-keys --key status`, die Zeile auf Groß unter *Users → root → SSH authorized keys* in eine **neue Zeile** einfügen. Die vorhandene Zeile für „power“ bleibt unverändert.
+6. In der Container-Konsole `twinraid-admin trust-host-key target`. Der Hostkey ist schon bestätigt; mit `yes` bestätigen. Erwartet: `OK: guard.sh answers (twinraid-guard 2 status ok).` und, falls der Key „power“ eingerichtet ist, `OK: guard.sh answers (twinraid-guard 2 power ok).`
+7. **Dashboard:** Die VM-Kachel zeigt nach wenigen Sekunden den Zustand der VM aus `power.conf`.
+8. **Den alten API-Key in Unraid löschen.** Das ist Teil von Test G2 (11.5); wer die Tests nicht macht, löscht ihn jetzt (*Settings → Management Access → API Keys*).
 
-**12.2 Fingerabdruck von Unraid Groß ermitteln** (zum Vergleich in 11.4). Am sichersten direkt auf dem Server, im **Unraid-Terminal von Groß**:
-
-```bash
-ls /boot/config/ssl/certs/
-```
-
-Es erscheint eine Datei, deren Name auf `_unraid_bundle.pem` endet, zum Beispiel `Tower_unraid_bundle.pem` (der erste Teil ist der Servername). Diesen Namen im nächsten Befehl einsetzen:
-
-```bash
-openssl x509 -in /boot/config/ssl/certs/Tower_unraid_bundle.pem -noout -fingerprint -sha256
-```
-
-Alternativ im Browser: `https://<IP von Groß>` öffnen, auf die Warnung bzw. das Schloss klicken, Zertifikat anzeigen, **SHA-256-Fingerabdruck** ablesen.
-
-**12.3 In TwinRaid:** In `twinraid.yaml` (Unraid-Terminal von Klein, `nano /mnt/user/appdata/twinraid/config/twinraid.yaml`) bei `servers.target.webgui` eintragen:
-
-```yaml
-    webgui:
-      scheme: https
-      port: 443
-```
-
-Speichern und den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart**). Bis zum nächsten Schritt zeigt die VM-Kachel „Zertifikat von Unraid noch nicht bestätigt“.
-
-**12.4 Zertifikat bestätigen:** In der **Container-Konsole**:
-
-```bash
-twinraid-admin trust-api-cert target
-```
-
-Der Befehl zeigt den Fingerabdruck, den Unraid Groß gerade ausliefert. Vergleiche ihn mit 12.2. Nur wenn er gleich ist, `yes` eingeben. Danach folgt wieder die Testabfrage. Unter **Einstellungen → Verbindung zu Unraid Groß** steht jetzt „Verschlüsselt“.
-
-**Wenn Unraid sein Zertifikat später erneuert** (zum Beispiel nach einer Neuinstallation oder einer Änderung des Servernamens), zeigt die VM-Kachel **„Zertifikat geändert“**. TwinRaid sendet den API-Key dann nicht mehr. Prüfe den neuen Fingerabdruck wie in 12.2 und bestätige ihn wie in 12.4 mit `twinraid-admin trust-api-cert target`. Hast du das Zertifikat nicht selbst geändert, bestätige nichts und finde zuerst heraus, warum es anders ist.
+**HTTPS:** Hast du Groß früher nur für TwinRaid auf *Use SSL/TLS: Yes* umgestellt, kannst du es so lassen oder zurückstellen. Für TwinRaid zählt nur, dass `servers.target.webgui` zum offenen Port passt (`scheme: https` steht für 443). Der früher bestätigte Fingerabdruck wird nicht mehr gebraucht.
 
 ---
 
@@ -774,15 +828,19 @@ Der Befehl zeigt den Fingerabdruck, den Unraid Groß gerade ausliefert. Vergleic
 | Log: `… has host bits set` | Ein Eintrag in `allowed_networks` wie `192.168.10.50/24` | Einzelnes Gerät als `192.168.10.50/32`, ganzes Netz als `192.168.10.0/24` schreiben; die Meldung nennt beide Varianten |
 | TwinRaid aus dem Unraid-Terminal von Klein nicht erreichbar (`ping`, `curl`) | Normal ohne „Host access to custom networks“ | Nichts zu tun; von anderen Geräten aus testen |
 | MAC nach Update oder Neustart anders, UniFi zeigt ein neues Gerät | Feld **Fixed MAC address** im Template leer oder Unraid älter als 7.3 | MAC aus Schritt 1 im Template eintragen (Schritt 4.2), danach Schritt 5.4 |
-| Groß: **Nicht erreichbar**, VM: **Server offline** | Unraid Groß ist aus oder nicht erreichbar | Normal, wenn Groß aus ist. Sonst IP und `webgui` in `twinraid.yaml` prüfen |
-| VM: **API nicht erreichbar** | Groß antwortet, die API aber nicht | `webgui.scheme` und `port` prüfen; Groß gerade erst gestartet? Kurz warten |
-| VM: **Unraid leitet auf HTTPS um** | Groß steht auf *Use SSL/TLS: Yes*, TwinRaid nutzt `http` | Abschnitt 12.3 und 12.4 |
-| VM: **Kein API-Key gesetzt** | Schritt 10.2 fehlt | `twinraid-admin set-api-key target` |
-| VM: **API-Key ungültig** | Key falsch kopiert oder in Unraid gelöscht | Neuen Key anlegen (Schritt 9) und neu setzen |
-| VM: **API-Key hat keine Leserechte für VMs** | Key ohne `VMS: Read (any)` | Rechte in Unraid ergänzen oder neuen Key anlegen |
-| VM: **Zertifikat von Unraid noch nicht bestätigt** | `https` eingestellt, Fingerabdruck fehlt | Abschnitt 12.4 |
-| VM: **Zertifikat geändert** | Unraid liefert ein anderes Zertifikat als bestätigt | Abschnitt 12, letzter Absatz |
-| VM: **VM nicht gefunden** | `gaming_vm.unraid_vm_name` passt nicht | Namen genau wie im Reiter **VMs** eintragen, Container neu starten |
+| Groß: **Nicht erreichbar**, VM: **Server offline** | Unraid Groß ist aus oder nicht erreichbar | Normal, wenn Groß aus ist. Sonst IP und `webgui` (Port der Unraid-Oberfläche) in `twinraid.yaml` prüfen |
+| VM: **Statusverbindung wird aufgebaut …** | Groß ist gerade angegangen, SSH antwortet noch nicht | Normal nach dem Start von Groß; verschwindet nach wenigen Sekunden |
+| VM: **Statusverbindung unterbrochen – neuer Versuch folgt** | Die SSH-Verbindung für den Status ist abgebrochen | TwinRaid versucht es nach 5 s, 15 s, 60 s und dann alle 5 Minuten erneut. Bleibt die Meldung, SSH auf Groß und das Netz prüfen |
+| VM: **Kein SSH-Key „status“** | Schritt 10.2 bzw. 12.5 fehlt | `twinraid-admin init-ssh-keys --key status` und die Zeile auf Groß eintragen |
+| VM: **SSH-Hostkey des Servers nicht bestätigt** | Hostkey von Groß noch nicht bestätigt | `twinraid-admin trust-host-key target` (10.2) |
+| VM: **Der Server lehnt den SSH-Key „status“ ab** | Zeile für „status“ fehlt oder ist abgeschnitten, oder TwinRaid hat eine andere IP als in `from=` | `twinraid-admin init-ssh-keys --key status` (gibt die Zeile erneut aus) und auf Groß eintragen oder ersetzen |
+| VM: **guard.sh lehnt ab** | Auf Groß liegt noch `guard.sh` Version 1 (kennt den Key „status“ nicht), oder die Zeile ruft `guard.sh` in einem anderen Modus auf | `guard.sh` wie in 9.2 neu holen; die Zeile für „status“ muss auf `guard.sh status` enden |
+| VM: **guard.sh auf dem Server ist zu alt** | `guard.sh` ist älter als die installierte TwinRaid-Version verlangt | `guard.sh` wie in 9.2 neu holen |
+| VM: **VM auf dem Server nicht eingetragen** | `power.conf` fehlt oder ist ungültig | Schritt 9.3; die Datei enthält genau eine Zeile `vm <UUID>` |
+| VM: **VM nicht gefunden** | Die UUID in `power.conf` gehört zu keiner VM (VM neu angelegt?) | UUID wie in 9.3 neu eintragen |
+| VM: **VM-Dienst nicht bereit** | Auf Groß läuft der VM-Dienst nicht oder startet gerade (`virsh` antwortet nicht) | Kurz nach dem Start von Groß normal. Sonst *Settings → VM Manager* → **Enable VMs** prüfen |
+| Hinweis: **Die VM aus power.conf heißt anders als gaming_vm.unraid_vm_name** | `power.conf` zeigt auf eine andere VM als gedacht, oder der Name in `twinraid.yaml` ist veraltet | UUID in `power.conf` prüfen (9.3); stimmt sie, den Namen in `twinraid.yaml` anpassen |
+| Hinweis: **Auf Unraid Groß ist das Plugin Unraid Connect installiert** | Groß ist mit der Cloud von Unraid verbunden; mit Flash Backup läge eine Kopie des Sticks dort | Bewusst so gewollt? Sonst Connect in *Plugins* entfernen. Flash Backup auf keinen Fall einschalten |
 | **Der Status ist gerade nicht verfügbar** | Interner Teil von TwinRaid antwortet nicht | Container-Log prüfen, Container neu starten |
 | **Live-Verbindung ist unterbrochen** | Verbindung zum Browser kurz weg (z. B. Neustart) | Verbindet sich von selbst neu |
 | **Automatische Erneuerung … fehlgeschlagen** | Neues Serverzertifikat konnte nicht erzeugt werden | Container-Log prüfen; `twinraid-admin renew-cert` |
@@ -793,20 +851,21 @@ Der Befehl zeigt den Fingerabdruck, den Unraid Groß gerade ausliefert. Vergleic
 | Log: **PROBABLY THE WRONG NETWORK TYPE**, Adresse beginnt mit `172.` | Im Template ist `Bridge` statt `Custom: br0` gewählt; die Adresse ist nur innerhalb von Docker gültig | Im Template **Network Type** `Custom: br0` und **Fixed IP address** wählen. (Wer bewusst Bridge nutzt, trägt die IP von Unraid Klein in `web.tls.ip_addresses` ein.) |
 | Container startet nicht | Fehler in Konfiguration oder Rechten | Ende des Container-Logs lesen; dort steht der Grund und meist der Befehl zur Reparatur. Bei `owned by uid 99` oder `writable by group or others`: unten „Rechte des Datenordners zurückgesetzt“ |
 | Buttons grau mit „in twinraid.yaml unter actions nicht freigeschaltet“ | Aktion im Echtbetrieb noch nicht freigeschaltet | In `twinraid.yaml` unter `actions` freischalten (Abschnitt 11) und den Container neu starten |
-| „Keine Berechtigung: Der API-Key darf VMs nicht starten oder ausschalten …“ | Der Key hat nur `VMS: Read (any)` | Abschnitt 11.5: `VMS: Update (any)` ergänzen |
-| „Kein SSH-Key „power““ | Schritt 11.6 fehlt | `twinraid-admin init-ssh-keys` und Zeile auf Groß eintragen |
-| „Der SSH-Hostkey des Servers ist nicht bestätigt“ | Hostkey von Groß noch nicht bestätigt | `twinraid-admin trust-host-key target` (11.6) |
+| „Ein SSH-Key fehlt“ | Der Key „power“ fehlt (Test 3, 11.6) | `twinraid-admin init-ssh-keys --key power` und die Zeile auf Groß eintragen |
+| „Der SSH-Hostkey des Servers ist nicht bestätigt“ | Hostkey von Groß noch nicht bestätigt | `twinraid-admin trust-host-key target` (10.2) |
 | „Der SSH-Hostkey des Servers hat sich geändert“ | Groß zeigt einen anderen SSH-Hostkey als bestätigt; TwinRaid sendet nichts mehr | Hast du Groß neu eingerichtet oder den USB-Stick ersetzt, den Fingerabdruck wie in 11.6 Schritt 3 prüfen und neu bestätigen. Sonst nichts bestätigen und herausfinden, warum er anders ist |
-| „Der Server lehnt den SSH-Key ab“ | Zeile fehlt unter *Users → root → SSH authorized keys*, ist abgeschnitten, oder TwinRaid hat eine andere IP als in `from=` | `twinraid-admin init-ssh-keys` erneut ausführen (gibt die Zeile wieder aus) und die Zeile auf Groß ersetzen |
+| „Der Server lehnt den SSH-Key ab“ (bei einer Aktion) | Zeile für „power“ fehlt unter *Users → root → SSH authorized keys*, ist abgeschnitten, oder TwinRaid hat eine andere IP als in `from=` | `twinraid-admin init-ssh-keys --key power` erneut ausführen (gibt die Zeile wieder aus) und die Zeile auf Groß ersetzen |
 | „SSH auf dem Server ist nicht erreichbar“ | SSH auf Groß aus oder anderer Port | *Settings → Management Access → Use SSH* einschalten; abweichenden Port als `servers.target.ssh_port` eintragen |
-| „guard.sh auf dem Server hat den Befehl abgelehnt“ | `guard.sh` auf Groß ist veraltet | `guard.sh` wie in 11.1 neu holen (Version im Pfad = installierte Version) |
-| „Der Befehl ist auf dem Server fehlgeschlagen“ | `guard.sh` fehlt unter `/boot/config/twinraid/guard.sh`, oder `virsh` meldet einen Fehler | Ablage von `guard.sh` prüfen (11.1); Syslog von Groß ansehen (*Tools → System Log*, `twinraid-guard`) |
+| „guard.sh auf dem Server hat den Befehl abgelehnt“ | `guard.sh` auf Groß ist veraltet, oder die Zeile für „power“ ruft einen anderen Modus auf | `guard.sh` wie in 9.2 neu holen (Version im Pfad = installierte Version) |
+| „Der Befehl ist auf dem Server fehlgeschlagen“ | `guard.sh` fehlt unter `/boot/config/twinraid/guard.sh`, oder `virsh` meldet einen Fehler | Ablage von `guard.sh` prüfen (9.2); Syslog von Groß ansehen (*Tools → System Log*, `twinraid-guard`) |
+| „Die VM ist auf dem Server nicht eingetragen“ (bei einer Aktion) | `power.conf` fehlt oder ist ungültig | Schritt 9.3 |
+| „Der Server wurde nicht ausgeschaltet, weil die VM noch lief“ | `guard.sh` hat unmittelbar vor dem Ausschalten eine laufende VM gesehen | VM herunterfahren (lassen) und Groß erneut herunterfahren |
 | „Der Server war nicht rechtzeitig bereit“ | Groß ist nach dem Wecken nicht (rechtzeitig) gestartet, oder das Array startet nicht automatisch | Wake-on-LAN im BIOS und mit `ethtool` prüfen, Auto-Start des Arrays einschalten (11.1); bei langem Start `boot_timeout_minutes` erhöhen |
 | „Die VM hat sich nicht rechtzeitig heruntergefahren“ | Die VM reagiert nicht auf das Signal (Netzschalter-Einstellung in Windows, laufende Updates) | Netzschalter auf „Herunterfahren“ stellen (11.1), `shutdown_timeout_minutes` erhöhen oder **Erzwingen**; nach einem gescheiterten Herunterfahren von Groß 10 Minuten lang auch **Erzwingen und danach Server herunterfahren** (11.12) |
 | Meldung grau, ohne Hinweis darunter | Das Ergebnis ist nur noch Verlauf: Der Hinweis (z. B. auf „Erzwingen“) trifft nicht mehr zu, etwa weil die VM inzwischen aus ist | Nichts zu tun |
 | Herunterfahren gesperrt: „Auf … laufen noch weitere VMs: …“ | Außer der Gaming-VM laufen auf Groß weitere VMs (auch pausierte oder abgestürzte zählen) | Die genannten VMs in der Unraid-Oberfläche von Groß herunterfahren; nach etwa 10 Sekunden ist der Button wieder aktiv |
 | „Der Server wurde nicht ausgeschaltet, weil noch weitere VMs liefen“ | Eine weitere VM lief beim Herunterfahren (geprüft unmittelbar vor dem Ausschalten); Groß ist an geblieben | Die VM herunterfahren und Groß erneut herunterfahren |
-| Herunterfahren gesperrt: „der Zustand der VM ist unbekannt“ | TwinRaid kann die VM über die API gerade nicht lesen | Ursache in der VM-Kachel beheben (z. B. API-Key) oder Groß ausnahmsweise über die Unraid-Oberfläche herunterfahren |
+| Herunterfahren gesperrt: „der Zustand der VM ist unbekannt“ | TwinRaid kann die VM über `guard.sh` gerade nicht lesen | Ursache in der VM-Kachel beheben (z. B. Key „status“, `power.conf`, VM-Dienst) oder Groß ausnahmsweise über die Unraid-Oberfläche herunterfahren |
 | „Der Server ist nach 15 Minuten noch erreichbar“ | Groß hängt beim Herunterfahren | Unraid-Oberfläche von Groß ansehen; *Disk Settings → Shutdown time-out* prüfen |
 | Log: `cannot derive the Wake-on-LAN broadcast address`, Container startet nicht | Wecken ist freigeschaltet, aber Groß liegt nicht im Netz von TwinRaid | `servers.target.wol_broadcast` eintragen (Broadcast-Adresse des Netzes von Groß) |
 | Unraid kann das Image nicht laden (`denied` oder `unauthorized`) | Das Paket auf ghcr.io ist noch privat | Nur direkt nach der ersten Veröffentlichung möglich: Paket öffentlich stellen (README, Abschnitt „Release veröffentlichen“) |
@@ -833,7 +892,7 @@ ls -ld "$D"
 
 Danach den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart**). Die übrigen Rechte stellt TwinRaid beim Start selbst richtig ein (`secrets` und `tls` nur für root, `web` für die Gruppe des Web-Prozesses, Dateien `0600`). Das Log nennt jede Korrektur mit `Data directory: …`.
 
-> **Waren die Dateien für alle lesbar?** Die Werkzeuge geben allen Benutzern Lesezugriff. Ist `appdata` als Netzwerkfreigabe für andere Personen erreichbar, sicherheitshalber neu erzeugen: eine neue CA mit `twinraid-admin renew-cert --new-ca` (danach auf den Geräten neu installieren), einen neuen API-Key auf Unraid Groß (Schritt 9) und ein neues Passwort mit `twinraid-admin set-password`.
+> **Waren die Dateien für alle lesbar?** Die Werkzeuge geben allen Benutzern Lesezugriff. Ist `appdata` als Netzwerkfreigabe für andere Personen erreichbar, sicherheitshalber neu erzeugen: eine neue CA mit `twinraid-admin renew-cert --new-ca` (danach auf den Geräten neu installieren), neue SSH-Keys mit `twinraid-admin init-ssh-keys --key status --new` und `--key power --new` (die Zeilen auf Groß ersetzen) und ein neues Passwort mit `twinraid-admin set-password`.
 
 **Abgemeldet nach 10 Minuten:** Ohne Klick endet die Sitzung nach `session_idle_minutes` (Standard 10). Ein offenes Dashboard zählt nicht als Aktivität; nur während ein Kopierjob läuft, bleibt die Sitzung mit offenem Dashboard bestehen (ab Phase 5). Den Wert kannst du in `twinraid.yaml` erhöhen (höchstens 720).
 
@@ -848,7 +907,7 @@ Danach den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart
 - Jedes Image wird ausschließlich von GitHub Actions aus diesem Repository gebaut und hat einen signierten Herkunftsnachweis. Prüfen kannst du ihn auf einem PC mit der GitHub-CLI (`gh`):
 
 ```bash
-gh attestation verify oci://ghcr.io/mantua1/twinraid:0.4.2 --owner mantua1
+gh attestation verify oci://ghcr.io/mantua1/twinraid:0.4.3 --owner mantua1
 ```
 
 Steht am Ende `Verification succeeded!`, stammt das Image nachweislich aus diesem Repository.
@@ -866,11 +925,11 @@ Alle Befehle laufen in der **Container-Konsole**.
 | `twinraid-admin show-cert-fingerprint` | Fingerabdrücke von CA und Serverzertifikat anzeigen |
 | `twinraid-admin renew-cert` | Serverzertifikat sofort erneuern (Geräte merken nichts) |
 | `twinraid-admin renew-cert --new-ca` | Neue CA erzeugen; danach muss sie auf **allen Geräten** neu installiert werden |
-| `twinraid-admin set-api-key target` | API-Key von Unraid Groß speichern und testen |
-| `twinraid-admin trust-api-cert target` | HTTPS-Zertifikat von Unraid Groß bestätigen |
-| `twinraid-admin init-ssh-keys` | SSH-Key „power“ erzeugen (falls noch keiner da ist) und die Zeile für *Users → root → SSH authorized keys* auf Groß ausgeben; `--new` ersetzt den Key |
-| `twinraid-admin trust-host-key target` | SSH-Hostkey von Unraid Groß bestätigen und die Verbindung zu `guard.sh` testen (ändert nichts auf Groß) |
+| `twinraid-admin init-ssh-keys` | SSH-Keys erzeugen (falls noch keine da sind) und die Zeilen für *Users → root → SSH authorized keys* auf Groß ausgeben: „status“ immer, „power“, sobald `actions.vm` oder `actions.shutdown` freigeschaltet ist. `--key status` bzw. `--key power` nur für diesen Key; `--key … --new` ersetzt ihn |
+| `twinraid-admin trust-host-key target` | SSH-Hostkey von Unraid Groß bestätigen und die Verbindung zu `guard.sh` mit jedem vorhandenen Key testen (ändert nichts auf Groß) |
 | `twinraid-admin show-action-log` | Aktionslog des Workers anzeigen (`--lines 100` für mehr Einträge) |
 | `twinraid-admin mock-job on` / `off` | Nur im Simulationsmodus: einen laufenden Kopierjob vortäuschen |
 | `twinraid-admin mock-tour on` / `off` | Nur im Simulationsmodus: alle Zustände und Ursachen nacheinander zeigen (Aktionen sind dann gesperrt) |
-| `twinraid-admin mock-fault <Name> on` / `off` | Nur im Simulationsmodus: Fehler vortäuschen, `<Name>` ist `vm-hang`, `api-forbidden`, `ssh-denied`, `no-boot` oder `other-vm` (eine weitere VM läuft) |
+| `twinraid-admin mock-fault <Name> on` / `off` | Nur im Simulationsmodus: Fehler vortäuschen, `<Name>` ist `vm-hang`, `ssh-denied`, `no-boot`, `other-vm` (eine weitere VM läuft), `vm-not-configured`, `libvirt-down`, `guard-outdated` oder `connect-plugin` |
+
+`set-api-key` und `trust-api-cert` gibt es seit 0.4.3 nicht mehr.

@@ -317,20 +317,24 @@ def test_session_idle_minutes_defaults_to_ten(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("webgui", "port", "encrypted"),
+    ("webgui", "port"),
     [
-        ({"scheme": "http"}, 80, False),
-        ({"scheme": "https"}, 443, True),
-        ({"scheme": "https", "port": 8443}, 8443, True),
-        ({"scheme": "http", "port": 8080}, 8080, False),
+        ({"scheme": "http"}, 80),
+        ({"scheme": "https"}, 443),
+        ({"scheme": "https", "port": 8443}, 8443),
+        ({"scheme": "http", "port": 8080}, 8080),
     ],
 )
-def test_webgui_default_ports(
-    tmp_path: Path, webgui: dict[str, object], port: int, encrypted: bool
-) -> None:
+def test_webgui_default_ports(tmp_path: Path, webgui: dict[str, object], port: int) -> None:
+    """webgui bestimmt nur noch den Port der Online-Prüfung von Groß (ab v0.4.3)."""
     target = _load(tmp_path, _with("servers.target.webgui", webgui)).servers.target
     assert target.webgui.effective_port == port
-    assert target.webgui.encrypted is encrypted
+
+
+def test_unraid_vm_name_is_optional(tmp_path: Path) -> None:
+    """Ab v0.4.3 steht die VM in power.conf auf Groß; der Name dient nur dem Abgleich."""
+    config = _load(tmp_path, _with("gaming_vm.unraid_vm_name", _DELETE))
+    assert config.gaming_vm.unraid_vm_name is None
 
 
 def test_tls_from_example() -> None:

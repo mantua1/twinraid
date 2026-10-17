@@ -1,16 +1,18 @@
 import { useTranslation } from "react-i18next";
 
-import type { ResourceInfo } from "@/api/types";
+import type { ResourceInfo, StatusNotice } from "@/api/types";
 import { ActionPanel, type PanelAction } from "@/components/ActionPanel";
 import { ActivityLine } from "@/components/ActivityLine";
 import { CaChangeNotice } from "@/components/CaChangeNotice";
 import { ErrorNotice } from "@/components/ErrorNotice";
 import { HistoryTile } from "@/components/HistoryTile";
+import { NoticeList } from "@/components/NoticeList";
 import { PlaceholderTile } from "@/components/PlaceholderTile";
 import { StatusTile } from "@/components/StatusTile";
 import type { DashboardData } from "@/hooks/useDashboardData";
 
 const UNKNOWN: ResourceInfo = { state: "unknown", reason: null };
+const VM_NOTICES = new Set<StatusNotice>(["vm_name_mismatch"]);
 
 export function Dashboard({ data }: { data: DashboardData }) {
   const { t, i18n } = useTranslation();
@@ -22,6 +24,9 @@ export function Dashboard({ data }: { data: DashboardData }) {
     vm: info?.names.vm ?? t("tiles.vm.fallbackTitle"),
   };
   const vmRunning = status?.vm.state === "online" || status?.vm.state === "stopping";
+  const notices = status?.notices ?? [];
+  const targetNotices = notices.filter((notice) => !VM_NOTICES.has(notice));
+  const vmNotices = notices.filter((notice) => VM_NOTICES.has(notice));
   // Für die Begründung „Auf <Server> laufen noch weitere VMs: <Namen> …“ (Konzept 4.2).
   const blockerValues = {
     target: names.target,
@@ -139,6 +144,7 @@ export function Dashboard({ data }: { data: DashboardData }) {
           description={t("tiles.target.description")}
           info={status?.target ?? UNKNOWN}
         >
+          <NoticeList notices={targetNotices} target={names.target} />
           <ActivityLine
             activity={actions?.target}
             status={status}
@@ -158,6 +164,7 @@ export function Dashboard({ data }: { data: DashboardData }) {
           description={t("tiles.vm.description")}
           info={status?.vm ?? UNKNOWN}
         >
+          <NoticeList notices={vmNotices} target={names.target} />
           <ActivityLine activity={actions?.vm} status={status} tile="vm" vmName={names.vm} />
           <ActionPanel
             actions={vmActions}

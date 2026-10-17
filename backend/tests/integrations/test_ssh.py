@@ -1,4 +1,4 @@
-"""SSH mit dem Key „power“: Argumente, Fehlerursachen, Hostkey und Schlüssel (Konzept 5.6)."""
+"""SSH mit den Keys „status“ und „power“: Argumente, Ursachen, Hostkey, Keys (Konzept 5.6)."""
 
 import shutil
 import stat
@@ -18,12 +18,15 @@ from tests.conftest import EXAMPLE_CONFIG
 from tests.support.fake_ssh import FakeSsh
 from twinraid.config import load_config
 from twinraid.integrations.ssh import (
+    GuardClient,
+    GuardKey,
     SshError,
     SshPower,
     SshTarget,
     authorized_keys_line,
     classify,
-    generate_power_key,
+    generate_key,
+    key_files,
     key_fingerprint,
     parse_host_key,
     read_public_key,
@@ -33,8 +36,6 @@ from twinraid.integrations.ssh import (
 )
 from twinraid.shared.actions import ActionOutcome
 from twinraid.shared.datadirs import DataPaths
-
-UUID = "0b5c4e1a-2f3d-4c5b-8a9e-112233445566"
 
 
 @pytest.fixture
@@ -52,12 +53,24 @@ def fake(tmp_path: Path) -> FakeSsh:
 
 def test_target_from_config(tmp_path: Path) -> None:
     paths = DataPaths(tmp_path)
-    target = SshTarget.of(load_config(EXAMPLE_CONFIG), paths)
-    assert target == SshTarget("192.168.10.11", 22, paths.ssh_power_key, paths.target_known_hosts)
+    config = load_config(EXAMPLE_CONFIG)
+    power = SshTarget.of(config, paths, GuardKey.POWER)
+    assert power == SshTarget("192.168.10.11", 22, paths.ssh_power_key, paths.target_known_hosts)
+    status = SshTarget.of(config, paths, GuardKey.STATUS)
+    assert status == SshTarget("192.168.10.11", 22, paths.ssh_status_key, paths.target_known_hosts)
+
+
+def test_keys_and_their_guard_modes(tmp_path: Path) -> None:
+    paths = DataPaths(tmp_path)
+    assert key_files(paths, GuardKey.STATUS) == (paths.ssh_status_key, paths.ssh_status_public_key)
+    assert key_files(paths, GuardKey.POWER) == (paths.ssh_power_key, paths.ssh_power_public_key)
+    assert paths.ssh_status_key.name == "ssh-status"
+    assert GuardKey.STATUS.comment == "twinraid-status"
+    assert GuardKey.POWER.guard_command == "/bin/bash /boot/config/twinraid/guard.sh power"
 
 
 def test_fixed_argument_list(target: SshTarget) -> None:
-    arguments = ssh_arguments(target, ["vm-shutdown", UUID], Path("/usr/bin/ssh"))
+    arguments = ssh_arguments(target, ["vm-watch"], Path("/usr/bin/ssh"))
     assert arguments[:8] == [
         "/usr/bin/ssh", "-F", "/dev/null", "-T", "-i", str(target.key), "-p", "22",
     ]  # fmt: skip
@@ -69,13 +82,23 @@ def test_fixed_argument_list(target: SshTarget) -> None:
     assert "IdentitiesOnly=yes" in options
     assert "PasswordAuthentication=no" in options
     assert "HostKeyAlgorithms=ssh-ed25519" in options
-    assert arguments[-4:] == ["--", "root@192.0.2.11", "vm-shutdown", UUID]
+    assert "ServerAliveInterval=5" in options
+    assert "ServerAliveCountMax=2" in options
+    assert arguments[-3:] == ["--", "root@192.0.2.11", "vm-watch"]
 
 
 @pytest.mark.parametrize(
     ("code", "stderr", "outcome"),
     [
         (2, "twinraid-guard: denied", ActionOutcome.SSH_DENIED),
+        (3, "twinraid-guard: refused vm-not-configured", ActionOutcome.VM_NOT_CONFIGURED),
+        (3, "twinraid-guard: refused vm-running", ActionOutcome.VM_RUNNING),
+        (3, "twinraid-guard: refused other-vms-running", ActionOutcome.OTHER_VMS_RUNNING),
+        (3, "twinraid-guard: refused vm-state-unknown", ActionOutcome.VM_SERVICE_UNAVAILABLE),
+        (3, "twinraid-guard: refused watch-busy", ActionOutcome.WATCH_INTERRUPTED),
+        (3, "twinraid-guard: refused something-new", ActionOutcome.REMOTE_FAILED),
+        (3, "", ActionOutcome.REMOTE_FAILED),
+        (124, "", ActionOutcome.REMOTE_FAILED),
         (1, "error: failed to get domain", ActionOutcome.REMOTE_FAILED),
         (127, "bash: check: command not found", ActionOutcome.REMOTE_FAILED),
         (255, "Host key verification failed.", ActionOutcome.SSH_HOST_KEY_MISMATCH),
@@ -109,17 +132,34 @@ def test_classify_success_and_closed_connection() -> None:
 
 @pytest.mark.anyio
 async def test_requests_reach_the_guard(target: SshTarget, fake: FakeSsh) -> None:
+    """Jede Anfrage ist ein fester Text ohne Parameter; die VM kennt nur Groß."""
     power = SshPower(target, fake.binary)
-    fake.behave(stdout="twinraid-guard 1 power ok\n")
-    assert await power.check() == "twinraid-guard 1 power ok"
+    fake.behave(stdout="twinraid-guard 2 power ok\n")
+    assert await power.check() == "twinraid-guard 2 power ok"
     fake.behave()
+    await power.vm_start()
+    await power.vm_shutdown()
+    await power.vm_force_stop()
     await power.poweroff()
-    await power.vm_shutdown(UUID)
     assert [call[-3:] for call in fake.calls()] == [
-        ["--", "root@192.0.2.11", "check"],
-        ["--", "root@192.0.2.11", "poweroff"],
-        ["root@192.0.2.11", "vm-shutdown", UUID],
+        ["--", "root@192.0.2.11", request]
+        for request in ("check", "vm-start", "vm-shutdown", "vm-force-stop", "poweroff")
     ]
+
+
+@pytest.mark.anyio
+async def test_status_client_only_checks(target: SshTarget, fake: FakeSsh) -> None:
+    fake.behave(stdout="twinraid-guard 2 status ok\nextra\n")
+    assert await GuardClient(target, fake.binary).check() == "twinraid-guard 2 status ok"
+    assert not hasattr(GuardClient, "poweroff")
+
+
+@pytest.mark.anyio
+async def test_guard_refusal(target: SshTarget, fake: FakeSsh) -> None:
+    fake.behave(exit_code=3, stderr="twinraid-guard: refused other-vms-running\n")
+    with pytest.raises(SshError) as excinfo:
+        await SshPower(target, fake.binary).poweroff()
+    assert excinfo.value.outcome is ActionOutcome.OTHER_VMS_RUNNING
 
 
 @pytest.mark.anyio
@@ -142,14 +182,6 @@ async def test_missing_files_send_nothing(
     with pytest.raises(SshError) as excinfo:
         await SshPower(target, fake.binary).poweroff()
     assert excinfo.value.outcome is outcome
-    assert fake.calls() == []
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("uuid", ["", "x", UUID.upper(), UUID + " ; poweroff", "-" + UUID])
-async def test_invalid_uuid_is_never_sent(target: SshTarget, fake: FakeSsh, uuid: str) -> None:
-    with pytest.raises(SshError):
-        await SshPower(target, fake.binary).vm_shutdown(uuid)
     assert fake.calls() == []
 
 
@@ -210,24 +242,32 @@ async def test_scan_host_key(fake: FakeSsh, tmp_path: Path) -> None:
     assert (tmp_path / "known_hosts").read_text() == host_key.known_hosts_line + "\n"
 
 
-def test_generate_power_key(tmp_path: Path) -> None:
-    private, public = tmp_path / "ssh-power", tmp_path / "ssh-power.pub"
-    line = generate_power_key(private, public)
+@pytest.mark.parametrize("key", list(GuardKey))
+def test_generate_key(tmp_path: Path, key: GuardKey) -> None:
+    private, public = tmp_path / f"ssh-{key}", tmp_path / f"ssh-{key}.pub"
+    line = generate_key(private, public, key)
     assert line.startswith("ssh-ed25519 ")
-    assert line.endswith(" twinraid-power")
+    assert line.endswith(f" twinraid-{key}")
     assert stat.S_IMODE(private.stat().st_mode) == 0o600
     assert stat.S_IMODE(public.stat().st_mode) == 0o600
     loaded = load_ssh_private_key(private.read_bytes(), password=None)
     assert loaded.public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH).decode() in line
-    assert read_public_key(public) == line
-    assert read_public_key(tmp_path / "missing") is None
+    assert read_public_key(public, key) == line
+    assert read_public_key(tmp_path / "missing", key) is None
 
 
-def test_authorized_keys_line() -> None:
+def test_two_keys_are_different(tmp_path: Path) -> None:
+    status = generate_key(tmp_path / "a", tmp_path / "a.pub", GuardKey.STATUS)
+    power = generate_key(tmp_path / "b", tmp_path / "b.pub", GuardKey.POWER)
+    assert status.split()[1] != power.split()[1]
+
+
+@pytest.mark.parametrize("key", list(GuardKey))
+def test_authorized_keys_line(key: GuardKey) -> None:
     line = authorized_keys_line(
-        "ssh-ed25519 AAAAC3Nza twinraid-power", [ip_address("192.168.10.20")]
+        f"ssh-ed25519 AAAAC3Nza twinraid-{key}", [ip_address("192.168.10.20")], key
     )
     assert line == (
-        'restrict,from="192.168.10.20",command="/bin/bash /boot/config/twinraid/guard.sh power" '
-        "ssh-ed25519 AAAAC3Nza twinraid-power"
+        f'restrict,from="192.168.10.20",command="/bin/bash /boot/config/twinraid/guard.sh {key}" '
+        f"ssh-ed25519 AAAAC3Nza twinraid-{key}"
     )

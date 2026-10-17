@@ -8,7 +8,6 @@ import io
 import os
 import sqlite3
 import subprocess
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -17,14 +16,17 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from tests.conftest import EXAMPLE_CONFIG
 from tests.support.fake_ssh import FakeSsh
-from tests.support.fake_unraid import FakeUnraid, Reply, graphql_reply
 from twinraid import admin_cli
-from twinraid.config import TwinRaidConfig
 from twinraid.init import main as init_main
-from twinraid.integrations.ssh import HostKey, SshPower, SshTarget, key_fingerprint, parse_host_key
-from twinraid.integrations.unraid_api import ApiEndpoint
+from twinraid.integrations.ssh import (
+    GuardClient,
+    GuardKey,
+    HostKey,
+    SshTarget,
+    key_fingerprint,
+    parse_host_key,
+)
 from twinraid.shared.actions import ActionName, Trigger
-from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.passwords import PasswordStore, VerifyOutcome
 from twinraid.shared.tls import certificate_info, read_runtime
 from twinraid.worker.action_log import ActionLog
@@ -196,193 +198,14 @@ def test_requires_prepared_data_dir(
     assert "start the container once" in capsys.readouterr().err
 
 
-# --- API-Key und Zertifikat von Unraid Groß (Konzept 3.5 und 5.5) ---------------------
-
-API_KEY = "Test-Key_0123456789abcdef"
+# --- API-Key von Groß bis v0.4.2 (Konzept 3.5 und 5.5) -------------------------------
 
 
-@pytest.fixture
-def fake_target(
-    env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
-) -> Iterator[FakeUnraid]:
-    """Leitet alle Verbindungen zu Groß auf einen lokalen Ersatz um."""
-    encrypted = bool(getattr(request, "param", False))
-    server = FakeUnraid(tmp_path, tls=encrypted)
-    server.reply = graphql_reply([{"name": "Windows 11 Gaming", "state": "SHUTOFF"}])
-
-    def local(cls: type[ApiEndpoint], _server: object) -> ApiEndpoint:
-        return cls("127.0.0.1", server.port, encrypted)
-
-    monkeypatch.setattr(ApiEndpoint, "of", classmethod(local))
-    try:
-        yield server
-    finally:
-        server.close()
-
-
-def _https_config(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = env / "https.yaml"
-    text = EXAMPLE_CONFIG.read_text(encoding="utf-8")
-    marker = "    host: 192.168.10.11\n    webgui:\n      scheme: http\n      port: 80\n"
-    assert marker in text
-    config.write_text(
-        text.replace(marker, "    host: 192.168.10.11\n    webgui:\n      scheme: https\n"),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("TWINRAID_CONFIG", str(config))
-
-
-def _set_key(monkeypatch: pytest.MonkeyPatch, key: str = API_KEY) -> int:
-    monkeypatch.setattr("sys.stdin", io.StringIO(key + "\n"))
-    return admin_cli.main(["set-api-key", "target", "--stdin"])
-
-
-def test_set_api_key_in_mock_mode_is_not_tested(
-    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    assert _set_key(monkeypatch) == 0
-    key_file = env / "data" / "secrets" / "target-api-key"
-    assert key_file.read_text() == API_KEY + "\n"
-    assert key_file.stat().st_mode & 0o777 == 0o600
-    out = capsys.readouterr()
-    assert "not tested" in out.out
-    assert "unencrypted" in out.err
-    assert API_KEY not in out.out + out.err
-    with _db(env) as db:
-        assert db.execute("SELECT action FROM audit_log").fetchall() == [("cli_set_api_key",)]
-
-
-def test_set_api_key_interactive_is_hidden(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(getpass, "getpass", lambda _prompt: API_KEY)
-    assert admin_cli.main(["set-api-key", "target"]) == 0
-
-
-@pytest.mark.parametrize("key", ["", "mit leerzeichen", "a;rm -rf /"])
-def test_set_api_key_rejects_invalid_keys(
-    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], key: str
-) -> None:
-    assert _set_key(monkeypatch, key) == 1
-    assert "Nothing was saved" in capsys.readouterr().err
-    assert not (env / "data" / "secrets" / "target-api-key").exists()
-
-
-def test_set_api_key_in_real_mode_tests_the_key(
-    env: Path,
-    fake_target: FakeUnraid,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setenv("TWINRAID_MODE", "real")
-    assert _set_key(monkeypatch) == 0
-    assert "OK: the API key works. VM 'Windows 11 Gaming' is SHUTOFF." in capsys.readouterr().out
-    assert fake_target.received[0].headers["x-api-key"] == API_KEY
-
-
-@pytest.mark.parametrize(
-    ("reply", "message"),
-    [
-        (Reply(status=401), "Unraid rejected the API key"),
-        (Reply(status=403), "VMS: Read (any)"),
-        (Reply(status=302, headers={"Location": "https://x/"}), "Unraid redirects to HTTPS"),
-        (graphql_reply([{"name": "Andere", "state": "RUNNING"}]), "VMs found: Andere"),
-    ],
-)
-def test_set_api_key_explains_problems(
-    env: Path,
-    fake_target: FakeUnraid,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    reply: Reply,
-    message: str,
-) -> None:
-    monkeypatch.setenv("TWINRAID_MODE", "real")
-    fake_target.reply = reply
-    assert _set_key(monkeypatch) == 1
-    assert message in capsys.readouterr().err
-    # Der Key bleibt gespeichert; die Diagnose sagt nur, was nicht passt.
-    assert (env / "data" / "secrets" / "target-api-key").exists()
-
-
-@pytest.mark.parametrize("fake_target", [True], indirect=True)
-def test_trust_api_cert_with_expected_fingerprint(
-    env: Path,
-    fake_target: FakeUnraid,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setenv("TWINRAID_MODE", "real")
-    _https_config(env, monkeypatch)
-    assert fake_target.certificate_fingerprint is not None
-    assert _set_key(monkeypatch) == 0
-    assert "trust-api-cert target" in capsys.readouterr().err
-    assert fake_target.received == []
-    args = ["trust-api-cert", "target", "--fingerprint", fake_target.certificate_fingerprint]
-    assert admin_cli.main(args) == 0
-    out = capsys.readouterr().out
-    assert "Certificate confirmed" in out
-    assert "OK: the API key works" in out
-    pin = (env / "data" / "secrets" / "target-api-cert.sha256").read_text().strip()
-    assert pin == fake_target.certificate_fingerprint
-    with _db(env) as db:
-        actions = [r[0] for r in db.execute("SELECT action FROM audit_log ORDER BY id")]
-    assert actions == ["cli_set_api_key", "cli_trust_api_cert"]
-
-
-@pytest.mark.parametrize("fake_target", [True], indirect=True)
-def test_trust_api_cert_interactive(
-    env: Path, fake_target: FakeUnraid, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("TWINRAID_MODE", "real")
-    _https_config(env, monkeypatch)
-    monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
-    assert admin_cli.main(["trust-api-cert", "target"]) == 0
-    assert (env / "data" / "secrets" / "target-api-cert.sha256").exists()
-
-
-@pytest.mark.parametrize("fake_target", [True], indirect=True)
-@pytest.mark.parametrize("answer", ["", "no", "ja"])
-def test_trust_api_cert_needs_explicit_yes(
-    env: Path, fake_target: FakeUnraid, monkeypatch: pytest.MonkeyPatch, answer: str
-) -> None:
-    monkeypatch.setenv("TWINRAID_MODE", "real")
-    _https_config(env, monkeypatch)
-    monkeypatch.setattr("builtins.input", lambda _prompt: answer)
-    assert admin_cli.main(["trust-api-cert", "target"]) == 1
-    assert not (env / "data" / "secrets" / "target-api-cert.sha256").exists()
-
-
-@pytest.mark.parametrize("fake_target", [True], indirect=True)
-def test_trust_api_cert_rejects_wrong_expected_fingerprint(
-    env: Path,
-    fake_target: FakeUnraid,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setenv("TWINRAID_MODE", "real")
-    _https_config(env, monkeypatch)
-    assert admin_cli.main(["trust-api-cert", "target", "--fingerprint", "AB" * 32]) == 1
-    assert "does not match" in capsys.readouterr().err
-    assert not (env / "data" / "secrets" / "target-api-cert.sha256").exists()
-
-
-def test_trust_api_cert_needs_https(
-    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("TWINRAID_MODE", "real")
-    assert admin_cli.main(["trust-api-cert", "target"]) == 1
-    assert "webgui.scheme of the target is http" in capsys.readouterr().err
-
-
-def test_trust_api_cert_needs_real_mode(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    assert admin_cli.main(["trust-api-cert", "target"]) == 1
-    assert "needs TWINRAID_MODE=real" in capsys.readouterr().err
-
-
-def test_only_the_target_key_exists_in_this_phase(
-    env: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+@pytest.mark.parametrize("command", ["set-api-key", "trust-api-cert"])
+def test_api_commands_are_gone(env: Path, command: str) -> None:
+    """Seit v0.4.3 (E22) braucht TwinRaid für Groß keinen API-Key mehr."""
     with pytest.raises(SystemExit):
-        admin_cli.main(["set-api-key", "source"])
+        admin_cli.main([command, "target"])
 
 
 # --- Simulierter Kopierjob ----------------------------------------------------------------
@@ -406,40 +229,109 @@ def test_mock_job_only_in_simulation(
     assert "only works in simulation mode" in capsys.readouterr().err
 
 
-# --- SSH-Key „power“ und Hostkey von Groß (Konzept 5.5 und 5.6) ------------------------
+# --- SSH-Keys „status“ und „power“, Hostkey von Groß (Konzept 5.5 und 5.6) -------------
+
+SECRETS = Path("data") / "secrets"
 
 
-def test_init_ssh_keys_prints_the_restricted_line(
+def _line(env: Path, key: str) -> str:
+    public = (env / SECRETS / f"ssh-{key}.pub").read_text().strip()
+    command = f"/bin/bash /boot/config/twinraid/guard.sh {key}"
+    return f'restrict,from="192.168.10.20",command="{command}" {public}'
+
+
+def _real_config(env: Path, monkeypatch: pytest.MonkeyPatch, **actions: bool) -> None:
+    """Modus real mit der Beispielkonfiguration und den gewünschten Freischaltungen."""
+    text = EXAMPLE_CONFIG.read_text(encoding="utf-8")
+    for name, on in actions.items():
+        old = f"  {name}: false"
+        assert old in text
+        text = text.replace(old, f"  {name}: {'true' if on else 'false'}")
+    config = env / "real.yaml"
+    config.write_text(text, encoding="utf-8")
+    monkeypatch.setenv("TWINRAID_CONFIG", str(config))
+    monkeypatch.setenv("TWINRAID_MODE", "real")
+
+
+def test_init_ssh_keys_in_simulation_creates_both_keys(
     env: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert admin_cli.main(["init-ssh-keys"]) == 0
-    secrets = env / "data" / "secrets"
-    for name in ("ssh-power", "ssh-power.pub"):
-        assert (secrets / name).stat().st_mode & 0o777 == 0o600
+    for name in ("ssh-status", "ssh-status.pub", "ssh-power", "ssh-power.pub"):
+        assert (env / SECRETS / name).stat().st_mode & 0o777 == 0o600
     out = capsys.readouterr().out
-    public = (secrets / "ssh-power.pub").read_text().strip()
-    line = (
-        'restrict,from="192.168.10.20",command="/bin/bash /boot/config/twinraid/guard.sh power" '
-        + public
-    )
-    assert line in out.splitlines()
+    lines = out.splitlines()
+    assert _line(env, "status") in lines
+    assert _line(env, "power") in lines
+    assert (env / SECRETS / "ssh-status.pub").read_text().strip().endswith(" twinraid-status")
+    assert (env / SECRETS / "ssh-power.pub").read_text().strip().endswith(" twinraid-power")
     assert "PRIVATE KEY" not in out
-    # Ein zweiter Aufruf gibt dieselbe Zeile aus und erzeugt keinen neuen Key.
+    assert "power.conf" in out
+    # Ein zweiter Aufruf gibt dieselben Zeilen aus und erzeugt keine neuen Keys.
     assert admin_cli.main(["init-ssh-keys"]) == 0
     again = capsys.readouterr().out
-    assert "already exists" in again
-    assert line in again.splitlines()
+    assert again.count("already exists") == 2
+    assert _line(env, "status") in again.splitlines()
     with _db(env) as db:
         actions = [r[0] for r in db.execute("SELECT action FROM audit_log")]
-    assert actions.count("cli_init_ssh_keys") == 1
+    assert actions.count("cli_init_ssh_keys") == 2
 
 
-def test_init_ssh_keys_new_replaces_the_key(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_init_ssh_keys_read_only_needs_only_status(
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _real_config(env, monkeypatch, wake=True)
     assert admin_cli.main(["init-ssh-keys"]) == 0
-    before = (env / "data" / "secrets" / "ssh-power.pub").read_text()
-    assert admin_cli.main(["init-ssh-keys", "--new"]) == 0
-    assert (env / "data" / "secrets" / "ssh-power.pub").read_text() != before
-    assert "The old key no longer works" in capsys.readouterr().err
+    assert (env / SECRETS / "ssh-status").exists()
+    assert not (env / SECRETS / "ssh-power").exists()
+    out = capsys.readouterr().out
+    assert _line(env, "status") in out.splitlines()
+    assert "guard.sh power" not in out
+    assert "The key 'power' is only needed" in out
+
+
+@pytest.mark.parametrize("action", ["vm", "shutdown"])
+def test_init_ssh_keys_with_actions_needs_power(
+    env: Path, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    _real_config(env, monkeypatch, **{action: True})
+    assert admin_cli.main(["init-ssh-keys"]) == 0
+    assert (env / SECRETS / "ssh-status").exists()
+    assert (env / SECRETS / "ssh-power").exists()
+
+
+def test_init_ssh_keys_for_one_key(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert admin_cli.main(["init-ssh-keys", "--key", "power"]) == 0
+    assert (env / SECRETS / "ssh-power").exists()
+    assert not (env / SECRETS / "ssh-status").exists()
+    lines = capsys.readouterr().out.splitlines()
+    assert _line(env, "power") in lines
+    assert not any("guard.sh status" in line for line in lines)
+
+
+def test_init_ssh_keys_new_replaces_only_the_named_key(
+    env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert admin_cli.main(["init-ssh-keys"]) == 0
+    status = (env / SECRETS / "ssh-status.pub").read_text()
+    power = (env / SECRETS / "ssh-power.pub").read_text()
+    assert admin_cli.main(["init-ssh-keys", "--key", "status", "--new"]) == 0
+    assert (env / SECRETS / "ssh-status.pub").read_text() != status
+    assert (env / SECRETS / "ssh-power.pub").read_text() == power
+    assert "The old key 'status' no longer works" in capsys.readouterr().err
+
+
+def test_init_ssh_keys_new_needs_a_key_name(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert admin_cli.main(["init-ssh-keys"]) == 0
+    before = (env / SECRETS / "ssh-power.pub").read_text()
+    assert admin_cli.main(["init-ssh-keys", "--new"]) == 1
+    assert "name it with --key" in capsys.readouterr().err
+    assert (env / SECRETS / "ssh-power.pub").read_text() == before
+
+
+def test_init_ssh_keys_rejects_unknown_keys(env: Path) -> None:
+    with pytest.raises(SystemExit):
+        admin_cli.main(["init-ssh-keys", "--key", "sync"])
 
 
 class FakeGuard:
@@ -447,7 +339,7 @@ class FakeGuard:
 
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.ssh = FakeSsh.install(tmp_path / "fake-ssh")
-        self.ssh.behave(stdout="twinraid-guard 1 power ok\n")
+        self.answer()
         public = Ed25519PrivateKey.generate().public_key()
         self.key = public.public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH).decode().split()[1]
         self.fingerprint = key_fingerprint(self.key)
@@ -457,11 +349,23 @@ class FakeGuard:
             self.scanned.append((host, port))
             return parse_host_key(f"{host} ssh-ed25519 {self.key}\n", host, port)
 
-        def ssh_power(config: TwinRaidConfig, paths: DataPaths) -> SshPower:
-            return SshPower(SshTarget.of(config, paths), self.ssh.binary)
+        def client(context: admin_cli.Context, key: GuardKey) -> GuardClient:
+            return GuardClient(SshTarget.of(context.config, context.paths, key), self.ssh.binary)
 
         monkeypatch.setattr(admin_cli, "scan_host_key", scan)
-        monkeypatch.setattr(admin_cli, "target_ssh", ssh_power)
+        monkeypatch.setattr(admin_cli, "guard_client", client)
+
+    def answer(self, status: str = "2 status", power: str = "2 power") -> None:
+        """Antwort von guard.sh auf "check" je Key."""
+        self.ssh.behave(
+            by_key={
+                "ssh-status": {"stdout": f"twinraid-guard {status} ok\n"},
+                "ssh-power": {"stdout": f"twinraid-guard {power} ok\n"},
+            }
+        )
+
+    def keys_used(self) -> list[str]:
+        return [Path(call[call.index("-i") + 1]).name for call in self.ssh.calls()]
 
 
 @pytest.fixture
@@ -480,15 +384,28 @@ def test_trust_host_key_and_test_the_guard(
 ) -> None:
     assert admin_cli.main(["init-ssh-keys"]) == 0
     assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 0
-    known = env / "data" / "secrets" / "target-ssh-known-hosts"
+    known = env / SECRETS / "target-ssh-known-hosts"
     assert known.read_text() == f"192.168.10.11 ssh-ed25519 {guard.key}\n"
     assert known.stat().st_mode & 0o777 == 0o600
     assert guard.scanned == [("192.168.10.11", 22)]
     out = capsys.readouterr().out
     assert guard.fingerprint in out
-    assert "OK: guard.sh answers (twinraid-guard 1 power ok)" in out
-    # Der Test schickt nur "check" und verändert nichts auf Groß.
+    assert "OK: guard.sh answers (twinraid-guard 2 status ok)" in out
+    # Nur der Key „status“ existiert (Nur Statusanzeige); der Test schickt nur "check".
+    assert guard.keys_used() == ["ssh-status"]
     assert [call[-1] for call in guard.ssh.calls()] == ["check"]
+
+
+def test_trust_host_key_tests_both_keys(
+    env: Path, guard: FakeGuard, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert admin_cli.main(["init-ssh-keys", "--key", "status"]) == 0
+    assert admin_cli.main(["init-ssh-keys", "--key", "power"]) == 0
+    assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 0
+    out = capsys.readouterr().out
+    assert "OK: guard.sh answers (twinraid-guard 2 status ok)" in out
+    assert "OK: guard.sh answers (twinraid-guard 2 power ok)" in out
+    assert sorted(guard.keys_used()) == ["ssh-power", "ssh-status"]
 
 
 def test_trust_host_key_interactive(
@@ -496,7 +413,7 @@ def test_trust_host_key_interactive(
 ) -> None:
     monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
     assert admin_cli.main(["trust-host-key", "target"]) == 0
-    assert (env / "data" / "secrets" / "target-ssh-known-hosts").exists()
+    assert (env / SECRETS / "target-ssh-known-hosts").exists()
 
 
 @pytest.mark.parametrize("answer", ["no", "", "ja"])
@@ -505,12 +422,12 @@ def test_trust_host_key_needs_yes(
 ) -> None:
     monkeypatch.setattr("builtins.input", lambda _prompt: answer)
     assert admin_cli.main(["trust-host-key", "target"]) == 1
-    assert not (env / "data" / "secrets" / "target-ssh-known-hosts").exists()
+    assert not (env / SECRETS / "target-ssh-known-hosts").exists()
 
 
 def test_trust_host_key_rejects_a_wrong_fingerprint(env: Path, guard: FakeGuard) -> None:
     assert admin_cli.main(["trust-host-key", "target", "--fingerprint", "SHA256:falsch"]) == 1
-    assert not (env / "data" / "secrets" / "target-ssh-known-hosts").exists()
+    assert not (env / SECRETS / "target-ssh-known-hosts").exists()
 
 
 @pytest.mark.parametrize(
@@ -521,10 +438,11 @@ def test_trust_host_key_rejects_a_wrong_fingerprint(env: Path, guard: FakeGuard)
             127,
             "",
             "/bin/bash: /boot/config/twinraid/guard.sh: No such file",
-            "guard.sh did not answer",
+            'command="/bin/bash /boot/config/twinraid/guard.sh status"',
         ),
-        (255, "", "root@x: Permission denied (publickey).", "Users → root → SSH authorized keys"),
+        (255, "", "root@x: Permission denied (publickey).", "init-ssh-keys --key status"),
         (255, "", "ssh: connect to host x port 22: Connection refused", "Use SSH"),
+        (2, "", "twinraid-guard: denied\n", "version 1 does not know the mode 'status'"),
     ],
 )
 def test_guard_test_explains_problems(
@@ -542,7 +460,29 @@ def test_guard_test_explains_problems(
     assert message in capsys.readouterr().err
 
 
-def test_trust_host_key_without_power_key(
+def test_guard_test_finds_an_outdated_guard(
+    env: Path, guard: FakeGuard, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert admin_cli.main(["init-ssh-keys", "--key", "power"]) == 0
+    guard.answer(power="1 power")
+    assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 1
+    assert "guard.sh on Unraid Groß is version 1; TwinRaid needs version 2" in (
+        capsys.readouterr().err
+    )
+
+
+def test_guard_test_finds_swapped_lines(
+    env: Path, guard: FakeGuard, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert admin_cli.main(["init-ssh-keys"]) == 0
+    guard.answer(status="2 power")
+    assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 1
+    assert "The line for the key 'status' runs guard.sh in mode 'power'" in (
+        capsys.readouterr().err
+    )
+
+
+def test_trust_host_key_without_keys(
     env: Path, guard: FakeGuard, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 0
@@ -561,12 +501,15 @@ def test_show_action_log(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
     log.record(
         "0a1b2c3d", ActionName.WAKE_TARGET, Trigger.AUTOMATIC, "success", ActionName.VM_START
     )
+    # Ergebnisse aus v0.4.2 und früher bleiben lesbar.
     log.record("0a1b2c3d", ActionName.VM_START, Trigger.DASHBOARD, "api_forbidden")
-    assert admin_cli.main(["show-action-log", "--lines", "2"]) == 0
+    log.record("1a1b2c3d", ActionName.VM_START, Trigger.DASHBOARD, "vm_not_configured")
+    assert admin_cli.main(["show-action-log", "--lines", "3"]) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == 2
+    assert len(lines) == 3
     assert lines[0].endswith("0a1b2c3d  wake_target  automatic (part of vm_start): success")
     assert lines[1].endswith("0a1b2c3d  vm_start  dashboard: api_forbidden")
+    assert lines[2].endswith("1a1b2c3d  vm_start  dashboard: vm_not_configured")
 
 
 def test_mock_tour_and_faults(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -581,8 +524,12 @@ def test_mock_tour_and_faults(env: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert (socket_dir / "mock-fault-vm-hang").stat().st_mode & 0o777 == 0o600
     assert admin_cli.main(["mock-fault", "vm-hang", "off"]) == 0
     assert not (socket_dir / "mock-fault-vm-hang").exists()
-    with pytest.raises(SystemExit):
-        admin_cli.main(["mock-fault", "../etc", "on"])
+    for fault in ("vm-not-configured", "libvirt-down", "guard-outdated", "connect-plugin"):
+        assert admin_cli.main(["mock-fault", fault, "on"]) == 0
+        assert (socket_dir / f"mock-fault-{fault}").exists()
+    for removed in ("../etc", "api-forbidden"):
+        with pytest.raises(SystemExit):
+            admin_cli.main(["mock-fault", removed, "on"])
 
 
 @pytest.mark.parametrize("command", [["mock-tour", "on"], ["mock-fault", "no-boot", "on"]])

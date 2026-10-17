@@ -8,9 +8,14 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import EXAMPLE_CONFIG
+from tests.support.watch import StubWatch, report
 from twinraid.config import TwinRaidConfig, load_config
+from twinraid.integrations.control import ActionError, RealControl
+from twinraid.integrations.jobs import NoJobs
 from twinraid.integrations.mocks.jobs import MockJobSwitch
 from twinraid.integrations.mocks.lab import MockLab, fault_flag, set_flag, tour_flag
+from twinraid.integrations.ssh import SshPower, SshTarget
+from twinraid.integrations.status import RealStatusProvider
 from twinraid.shared.actions import ActionBlocker, ActionName, ActionOutcome, ActionStep
 from twinraid.shared.mode import RunMode
 from twinraid.shared.status import ResourceInfo, ResourceState, StatusReason
@@ -61,9 +66,7 @@ class Setup:
     ) -> None:
         self.dir = tmp_path
         self.time = time
-        self.lab = lab or MockLab(
-            config.gaming_vm.unraid_vm_name, tmp_path, monotonic=time.monotonic, clock=time.clock
-        )
+        self.lab = lab or MockLab(tmp_path, monotonic=time.monotonic, clock=time.clock)
         self.monitor = StatusMonitor(self.lab, clock=time.clock)
         self.jobs = MockJobSwitch(tmp_path / "mock-job-running")
         self.log_path = tmp_path / "actions.jsonl"
@@ -111,7 +114,7 @@ class Setup:
         return [(e["action"], e["trigger"], e["result"], e.get("part_of")) for e in entries]
 
     async def boot(self) -> None:
-        """Groß einschalten und warten, bis die API bereit ist."""
+        """Groß einschalten und warten, bis der VM-Dienst bereit ist."""
         await self.run(ActionName.WAKE_TARGET)
         await self.refresh()
 
@@ -190,16 +193,27 @@ async def test_shutdown_is_locked_while_a_sync_runs(setup: Setup) -> None:
 
 async def test_shutdown_is_locked_while_the_vm_state_is_unknown(setup: Setup) -> None:
     await setup.run(ActionName.WAKE_TARGET)
-    # Groß ist erreichbar, die API antwortet noch nicht.
+    # Groß ist erreichbar, der VM-Dienst antwortet noch nicht.
     setup.time.now = 0
-    setup.lab._since = 0  # direkt in den Zustand „API startet“
+    setup.lab._since = 0  # direkt in den Zustand „VM-Dienst startet“
     await setup.refresh()
     status = setup.monitor.current()
-    assert status.vm.reason is StatusReason.API_UNREACHABLE
+    assert status.vm.reason is StatusReason.VM_SERVICE_UNAVAILABLE
     availability = setup.availability()
     assert availability[ActionName.SHUTDOWN_TARGET] is ActionBlocker.VM_UNKNOWN
-    # Der VM-Start wartet dagegen auf die API.
+    # Der VM-Start wartet dagegen auf den VM-Dienst.
     assert availability[ActionName.VM_START] is None
+
+
+@pytest.mark.parametrize("fault", ["vm-not-configured", "guard-outdated"])
+async def test_vm_actions_are_locked_without_a_vm_state(setup: Setup, fault: str) -> None:
+    """Eine Ursache, die kein Warten behebt, sperrt auch den VM-Start."""
+    await setup.boot()
+    set_flag(fault_flag(setup.dir, fault), True)
+    await setup.refresh()
+    availability = setup.availability()
+    for name in (ActionName.VM_START, ActionName.VM_STOP, ActionName.SHUTDOWN_TARGET):
+        assert availability[name] is ActionBlocker.VM_UNKNOWN
 
 
 async def test_tour_blocks_everything(setup: Setup) -> None:
@@ -233,7 +247,7 @@ async def test_wake_shows_intermediate_states(tmp_path: Path) -> None:
     assert actions.target.running.step is ActionStep.WAKING
     assert actions.availability[ActionName.WAKE_TARGET] is ActionBlocker.BUSY
     assert await setup.actions.request(ActionName.VM_START) is ActionBlocker.BUSY
-    # Groß bootet (20 s), danach braucht die API noch 10 s.
+    # Groß bootet (20 s), danach braucht der VM-Dienst noch 10 s.
     for _ in range(12):
         time.advance(3)
         await spin()
@@ -263,15 +277,36 @@ async def test_vm_start_wakes_the_target_first(setup: Setup) -> None:
     ]
 
 
-async def test_vm_start_without_permission(setup: Setup) -> None:
-    """Rechtetest: Ein Key ohne VMS:UPDATE_ANY wird verständlich gemeldet (Konzept 5.6)."""
+async def test_vm_start_denied_by_guard(setup: Setup) -> None:
+    """guard.sh lehnt ab (z. B. falsche Zeile in authorized_keys): verständlich gemeldet."""
     await setup.boot()
-    set_flag(fault_flag(setup.dir, "api-forbidden"), True)
+    set_flag(fault_flag(setup.dir, "ssh-denied"), True)
     await setup.run(ActionName.VM_START)
-    assert setup.last("vm") is ActionOutcome.API_FORBIDDEN
+    assert setup.last("vm") is ActionOutcome.SSH_DENIED
     await setup.refresh()
     assert setup.monitor.current().vm.state is ResourceState.OFFLINE
-    assert setup.log()[-1] == ("vm_start", "dashboard", "api_forbidden", None)
+    assert setup.log()[-1] == ("vm_start", "dashboard", "ssh_denied", None)
+
+
+async def test_vm_start_waits_for_the_vm_service(tmp_path: Path) -> None:
+    """Nach dem Wecken meldet der Schritt waiting_for_vm_service, bis vm-watch antwortet."""
+    time = FakeTime()
+    setup = Setup(tmp_path, time)
+    await setup.run(ActionName.WAKE_TARGET)
+    set_flag(fault_flag(setup.dir, "libvirt-down"), True)
+    await setup.refresh()
+    assert setup.monitor.current().vm.reason is StatusReason.VM_SERVICE_UNAVAILABLE
+    time.auto = False
+    assert await setup.request(ActionName.VM_START) is None
+    await spin()
+    _, actions = setup.actions.snapshot(setup.monitor.current())
+    assert actions.vm.running is not None
+    assert actions.vm.running.step is ActionStep.WAITING_FOR_VM_SERVICE
+    time.auto = True
+    time.advance(3)
+    await setup.settle()
+    # Der VM-Dienst kam nicht: Zeitlimit boot_timeout_minutes.
+    assert setup.last("vm") is ActionOutcome.BOOT_TIMEOUT
 
 
 async def test_vm_stop(setup: Setup) -> None:
@@ -539,10 +574,10 @@ async def test_offer_is_locked_while_a_sync_runs(setup: Setup) -> None:
 
 async def test_failed_force_keeps_the_target_on(setup: Setup) -> None:
     await _aborted_shutdown(setup)
-    set_flag(fault_flag(setup.dir, "api-forbidden"), True)
+    set_flag(fault_flag(setup.dir, "ssh-denied"), True)
     await setup.run(ActionName.SHUTDOWN_TARGET_FORCE_VM)
     await setup.refresh()
-    assert setup.last("target") is ActionOutcome.API_FORBIDDEN
+    assert setup.last("target") is ActionOutcome.SSH_DENIED
     assert setup.monitor.current().target.state is ResourceState.ONLINE
     assert (
         "shutdown_target",
@@ -646,3 +681,120 @@ async def test_force_and_shutdown_is_blocked_by_another_vm(setup: Setup) -> None
     assert setup.availability()[ActionName.SHUTDOWN_TARGET_FORCE_VM] is (
         ActionBlocker.OTHER_VMS_RUNNING
     )
+
+
+# --- Prüfung in guard.sh vor poweroff (Konzept 3.5, ab v0.4.3) ---
+
+
+class RefusingLab(MockLab):
+    """guard.sh lehnt poweroff ab, obwohl der Worker keine laufende VM sieht."""
+
+    def __init__(self, directory: Path, time: FakeTime, refusal: ActionOutcome) -> None:
+        super().__init__(directory, monotonic=time.monotonic, clock=time.clock)
+        self.refusal = refusal
+
+    async def power_off(self) -> None:
+        raise ActionError(self.refusal)
+
+
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        ActionOutcome.VM_RUNNING,
+        ActionOutcome.OTHER_VMS_RUNNING,
+        ActionOutcome.VM_SERVICE_UNAVAILABLE,
+    ],
+)
+async def test_guard_refusal_keeps_the_target_on(tmp_path: Path, refusal: ActionOutcome) -> None:
+    time = FakeTime()
+    setup = Setup(tmp_path, time, lab=RefusingLab(tmp_path, time, refusal))
+    await setup.boot()
+    await setup.run(ActionName.SHUTDOWN_TARGET)
+    await setup.refresh()
+    assert setup.last("target") is refusal
+    assert setup.monitor.current().target.state is ResourceState.ONLINE
+    assert setup.log()[-1] == ("shutdown_target", "dashboard", refusal.value, None)
+
+
+# --- Keine Anmeldung während der Abläufe außer dem Befehl selbst (Konzept 3.5) ---
+
+
+class RecordingPower(SshPower):
+    """Ersetzt die Anmeldung mit dem Key „power“ und wirkt auf die nachgebaute Sitzung."""
+
+    def __init__(self, tmp_path: Path, watch: StubWatch, host: dict[str, bool]) -> None:
+        super().__init__(SshTarget("192.0.2.11", 22, tmp_path / "key", tmp_path / "known"))
+        self.watch = watch
+        self.host = host
+        self.requests: list[str] = []
+
+    async def _request(self, request: str, time_limit: float) -> str:
+        self.requests.append(request)
+        effects = {"vm-start": "RUNNING", "vm-shutdown": "SHUTOFF", "vm-force-stop": "SHUTOFF"}
+        if request in effects:
+            self.watch.show(report(effects[request]))
+        if request == "poweroff":
+            self.host["up"] = False
+        return ""
+
+
+class RealSetup:
+    """Echte Steuerung mit nachgebauter Sitzung vm-watch und ohne ssh-Prozess."""
+
+    def __init__(self, tmp_path: Path, vm: str) -> None:
+        self.time = FakeTime()
+        self.host = {"up": True}
+        self.watch = StubWatch()
+        self.watch.show(report(vm))
+        self.power = RecordingPower(tmp_path, self.watch, self.host)
+
+        async def tcp(_host: str, _port: int) -> bool:
+            return self.host["up"]
+
+        config = CONFIG.model_copy(
+            update={"actions": CONFIG.actions.model_copy(update={"vm": True, "shutdown": True})}
+        )
+        control = RealControl(config, self.watch, self.power, None, tcp_check=tcp)
+        self.monitor = StatusMonitor(
+            RealStatusProvider(config, self.watch, tcp_check=tcp, clock=self.time.clock),
+            clock=self.time.clock,
+        )
+        self.actions = ActionCoordinator(
+            control,
+            self.monitor,
+            NoJobs(),
+            config,
+            RunMode.REAL,
+            ActionLog(tmp_path / "actions.jsonl", clock=self.time.clock),
+            clock=self.time.clock,
+            monotonic=self.time.monotonic,
+            sleep=self.time.sleep,
+        )
+
+    async def run(self, name: ActionName) -> ActionOutcome | None:
+        await self.monitor.check_once()
+        assert await self.actions.request(name) is None
+        for _ in range(10_000):
+            if not self.actions.busy:
+                break
+            await asyncio.sleep(0)
+        _, snapshot = self.actions.snapshot(self.monitor.current())
+        last = snapshot.target.last or snapshot.vm.last
+        return last.outcome if last is not None else None
+
+
+@pytest.mark.parametrize(
+    ("vm", "action", "requests"),
+    [
+        ("SHUTOFF", ActionName.VM_START, ["vm-start"]),
+        ("RUNNING", ActionName.VM_STOP, ["vm-shutdown"]),
+        ("RUNNING", ActionName.SHUTDOWN_TARGET, ["vm-shutdown", "poweroff"]),
+        ("SHUTOFF", ActionName.SHUTDOWN_TARGET, ["poweroff"]),
+    ],
+)
+async def test_sequences_log_in_only_for_the_command(
+    tmp_path: Path, vm: str, action: ActionName, requests: list[str]
+) -> None:
+    setup = RealSetup(tmp_path, vm)
+    assert await setup.run(action) is ActionOutcome.SUCCESS
+    assert setup.power.requests == requests

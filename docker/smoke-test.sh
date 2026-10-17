@@ -675,7 +675,7 @@ docker rm -f "${two}" >/dev/null
 
 # --- 16. Modus real nur lesend (Konzept 6.4) ----------------------------------------------------
 # Server-Adressen aus TEST-NET-1 (RFC 5737): Sie werden nie geroutet, es wird also
-# kein echter Server angesprochen. Groß per http, damit der Hinweis erscheint.
+# kein echter Server angesprochen. Groß per http: Seit v0.4.3 gibt es dazu keinen Hinweis mehr.
 real_config="${WORKDIR}/real.yaml"
 python3 - "${CANARY_CONFIG}" "${real_config}" <<'PY'
 import sys
@@ -693,13 +693,31 @@ if wait_for_https "${real}" "$((PORT + 2))"; then
   pass "container starts with TWINRAID_MODE=real"
   real_logs="$(docker logs "${real}" 2>&1)"
   expect_contains "real mode is announced as read-only" "${real_logs}" "Read-only real mode"
-  expect_contains "start log warns about the unencrypted API connection" "${real_logs}" "is unencrypted"
+  expect_not_contains "no warning about an unencrypted connection (no API key since v0.4.3)" \
+    "${real_logs}" "unencrypted"
   expect_not_contains "real mode shows no simulation banner" "${real_logs}" "SIMULATION MODE"
   docker exec -i "${real}" twinraid-admin set-password --stdin <<<"${PASSWORD}" >/dev/null
-  real_key="SmokeTestKey_0123456789"
-  key_out="$(docker exec -i "${real}" twinraid-admin set-api-key target --stdin <<<"${real_key}" 2>&1 || true)"
-  expect_contains "set-api-key stores the key" "${key_out}" "saved"
-  expect_contains "set-api-key explains an unreachable target" "${key_out}" "is not reachable"
+  expect_contains "set-api-key no longer exists" \
+    "$(docker exec "${real}" twinraid-admin set-api-key target 2>&1 || true)" "invalid choice"
+  keys_out="$(docker exec "${real}" twinraid-admin init-ssh-keys 2>&1 || true)"
+  expect_contains "read-only real mode creates the key status" "${keys_out}" "guard.sh status"
+  expect_not_contains "and no key that can switch anything" "${keys_out}" "guard.sh power"
+  expect_equal "the key status is private" \
+    "$(docker exec "${real}" stat -c '%a %u' /data/secrets/ssh-status)" "600 0"
+  # Ein API-Key aus v0.4.2 wird beim nächsten Start gelöscht (Konzept 3.5).
+  docker exec "${real}" "${PY}" -c 'import os
+os.umask(0o077)
+for name in ("target-api-key", "target-api-cert.sha256"):
+    open("/data/secrets/" + name, "w").write("x\n")'
+  docker restart "${real}" >/dev/null
+  if wait_for_https "${real}" "$((PORT + 2))"; then
+    expect_contains "twinraid-init removes the old API key" "$(docker logs "${real}" 2>&1)" \
+      "Removed the Unraid API key"
+    expect_equal "the old API key and fingerprint are gone" \
+      "$(docker exec "${real}" ls /data/secrets | grep -c '^target-api' || true)" "0"
+  else
+    fail "container did not restart in real mode"
+  fi
   real_jar="${WORKDIR}/real-cookies.txt"
   real_cert="${WORKDIR}/real-ca.pem"
   docker exec "${real}" cat /run/twinraid-tls/ca.pem >"${real_cert}"
@@ -721,7 +739,6 @@ if wait_for_https "${real}" "$((PORT + 2))"; then
       "$(docker exec -u 10001:10001 "${real}" "${PY}" -c "${action}" "${command}" 2>&1)" '"error":"not_available"'
   done
   expect_contains "mock-job is refused in real mode" "$(docker exec "${real}" twinraid-admin mock-job on 2>&1 || true)" "only works in simulation mode"
-  expect_not_contains "the API key never appears in the log" "$(docker logs "${real}" 2>&1)" "${real_key}"
   expect_contains "trust-host-key explains an unreachable SSH" \
     "$(docker exec "${real}" twinraid-admin trust-host-key target --fingerprint SHA256:x 2>&1 || true)" \
     "Cannot read the SSH host key"

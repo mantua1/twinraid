@@ -50,18 +50,27 @@ class DataPaths:
         return self.secrets / "password.argon2"
 
     @property
-    def target_api_key(self) -> Path:
-        """API-Key von Unraid Groß (Konzept 3.5 und 5.5)."""
+    def legacy_target_api_key(self) -> Path:
+        """API-Key von Unraid Groß bis v0.4.2; twinraid-init löscht ihn (Konzept 3.5)."""
         return self.secrets / "target-api-key"
 
     @property
-    def target_api_cert(self) -> Path:
-        """Bestätigter SHA-256-Fingerabdruck des Zertifikats von Unraid Groß."""
+    def legacy_target_api_cert(self) -> Path:
+        """Bestätigter Fingerabdruck der API von Groß bis v0.4.2; wird ebenso gelöscht."""
         return self.secrets / "target-api-cert.sha256"
 
     @property
+    def ssh_status_key(self) -> Path:
+        """Privater SSH-Key „status“ für die Sitzung vm-watch (Konzept 5.6, ab v0.4.3)."""
+        return self.secrets / "ssh-status"
+
+    @property
+    def ssh_status_public_key(self) -> Path:
+        return self.secrets / "ssh-status.pub"
+
+    @property
     def ssh_power_key(self) -> Path:
-        """Privater SSH-Key „power“ für Herunterfahren und VM-Shutdown (Konzept 5.6)."""
+        """Privater SSH-Key „power“ für VM-Aktionen und Herunterfahren (Konzept 5.6)."""
         return self.secrets / "ssh-power"
 
     @property

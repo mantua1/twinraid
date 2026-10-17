@@ -8,7 +8,7 @@ import signal
 from pathlib import Path
 
 from twinraid.config import ConfigError, TwinRaidConfig, load_config
-from twinraid.integrations.factory import build_integrations, build_job_state
+from twinraid.integrations.factory import BackgroundTask, build_integrations, build_job_state
 from twinraid.integrations.wol import BroadcastError, WolTarget, resolve_wol_target
 from twinraid.shared import runtime
 from twinraid.shared.datadirs import DataPaths
@@ -57,7 +57,7 @@ def main() -> int:
     paths = DataPaths(runtime.data_dir(env))
     password_check = PasswordCheck(PasswordStore(paths.password_file))
     integrations = build_integrations(mode, config, paths, runtime.mock_flag_dir(env), wol)
-    monitor = StatusMonitor(integrations.status)
+    monitor = StatusMonitor(integrations.status, changes=integrations.status_changed)
     jobs = build_job_state(mode, runtime.mock_job_flag(env))
     actions = ActionCoordinator(
         integrations.control,
@@ -72,7 +72,7 @@ def main() -> int:
     server = WorkerServer(runtime.socket_path(env), allowed_uid, handler)
     log_enabled_actions(actions, mode)
     try:
-        asyncio.run(_serve(server, password_check, monitor, actions))
+        asyncio.run(_serve(server, password_check, monitor, actions, integrations.background))
     except SocketPathError as exc:
         logger.error("%s", exc)
         return EXIT_STARTUP_ERROR
@@ -126,6 +126,7 @@ async def _serve(
     password_check: PasswordCheck,
     monitor: StatusMonitor,
     actions: ActionCoordinator,
+    background: tuple[BackgroundTask, ...] = (),
 ) -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -142,6 +143,7 @@ async def _serve(
     tasks = [
         asyncio.create_task(heartbeat(server.path.parent / HEARTBEAT_FILE)),
         asyncio.create_task(monitor.run()),
+        *(asyncio.create_task(task()) for task in background),
     ]
     logger.info("worker listening on %s", server.path)
     try:

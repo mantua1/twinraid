@@ -1,29 +1,36 @@
 """Wählt je nach Betriebsmodus echte Integrationen oder Simulationen."""
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from twinraid.config import TwinRaidConfig
 from twinraid.integrations.control import ActionControl, RealControl
 from twinraid.integrations.jobs import JobState, NoJobs
 from twinraid.integrations.mocks.jobs import MockJobSwitch
 from twinraid.integrations.mocks.lab import MockLab
-from twinraid.integrations.ssh import SshPower, SshTarget
+from twinraid.integrations.ssh import GuardKey, SshPower, SshTarget
 from twinraid.integrations.status import RealStatusProvider, StatusProvider
-from twinraid.integrations.unraid_api import ApiEndpoint, Credentials, UnraidApi
+from twinraid.integrations.vm_watch import VmWatch
 from twinraid.integrations.wol import WolTarget
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.mode import RunMode
 
-
-def target_api(config: TwinRaidConfig, paths: DataPaths) -> UnraidApi:
-    credentials = Credentials(paths.target_api_key, paths.target_api_cert)
-    return UnraidApi(ApiEndpoint.of(config.servers.target), credentials)
+# Any: Rückgabetypen von Coroutinen, die der Worker nur als Aufgabe startet.
+BackgroundTask = Callable[[], Coroutine[Any, Any, None]]
 
 
 def target_ssh(config: TwinRaidConfig, paths: DataPaths) -> SshPower:
-    return SshPower(SshTarget.of(config, paths))
+    """Aktionen mit dem Key „power“."""
+    return SshPower(SshTarget.of(config, paths, GuardKey.POWER))
+
+
+def target_watch(config: TwinRaidConfig, paths: DataPaths) -> VmWatch:
+    """Sitzung vm-watch mit dem Key „status“; beim Wecken darf sshd bis boot_timeout fehlen."""
+    target = config.servers.target
+    return VmWatch(SshTarget.of(config, paths, GuardKey.STATUS), target.boot_timeout_minutes * 60.0)
 
 
 def _never() -> bool:
@@ -38,6 +45,10 @@ class Integrations:
     control: ActionControl
     # Simulationsmodus: Der feste Rundlauf ist eingeschaltet (twinraid-admin mock-tour).
     tour_active: Callable[[], bool]
+    # Aufgaben, die der Worker dauerhaft laufen lässt (Modus real: die Sitzung vm-watch).
+    background: tuple[BackgroundTask, ...] = ()
+    # Gesetzt, wenn sich der Status ohne neue Prüfung geändert hat; der Monitor prüft dann sofort.
+    status_changed: asyncio.Event | None = None
 
 
 def build_integrations(
@@ -48,11 +59,17 @@ def build_integrations(
     wol: WolTarget | None,
 ) -> Integrations:
     if mode is RunMode.MOCK:
-        lab = MockLab(config.gaming_vm.unraid_vm_name, mock_flag_dir)
+        lab = MockLab(mock_flag_dir)
         return Integrations(lab, lab, lab.tour_active)
-    api = target_api(config, paths)
-    control = RealControl(config, api, target_ssh(config, paths), wol)
-    return Integrations(RealStatusProvider(config, api), control, _never)
+    watch = target_watch(config, paths)
+    control = RealControl(config, watch, target_ssh(config, paths), wol)
+    return Integrations(
+        RealStatusProvider(config, watch),
+        control,
+        _never,
+        background=(watch.run,),
+        status_changed=watch.changed,
+    )
 
 
 def build_job_state(mode: RunMode, mock_flag: Path) -> JobState:

@@ -9,20 +9,32 @@ export const STATUS_REASONS = [
   "runs_here",
   "target_offline",
   "target_starting",
-  "api_unreachable",
-  "api_redirected",
-  "api_key_missing",
-  "api_key_invalid",
-  "api_forbidden",
-  "api_cert_untrusted",
-  "api_cert_changed",
-  "api_error",
+  "watch_connecting",
+  "watch_interrupted",
+  "ssh_key_missing",
+  "ssh_host_untrusted",
+  "ssh_host_key_mismatch",
+  "ssh_auth_failed",
+  "ssh_unreachable",
+  "ssh_denied",
+  "ssh_failed",
+  "guard_outdated",
+  "vm_not_configured",
   "vm_not_found",
+  "vm_service_unavailable",
   "vm_paused",
   "vm_suspended",
   "vm_crashed",
 ] as const;
 export type StatusReason = (typeof STATUS_REASONS)[number];
+
+// Feste Hinweise zu den Kacheln, ab v0.4.3 (Konzept 3.5 und 4.1).
+export const STATUS_NOTICES = [
+  "target_connect_plugin",
+  "target_flash_backup",
+  "vm_name_mismatch",
+] as const;
+export type StatusNotice = (typeof STATUS_NOTICES)[number];
 
 export type RunMode = "mock" | "real";
 
@@ -61,7 +73,7 @@ export type ActionBlocker = (typeof ACTION_BLOCKERS)[number];
 
 export const ACTION_STEPS = [
   "waking",
-  "waiting_for_api",
+  "waiting_for_vm_service",
   "starting_vm",
   "stopping_vm",
   "forcing_vm",
@@ -73,15 +85,9 @@ export const ACTION_OUTCOMES = [
   "success",
   "wol_failed",
   "boot_timeout",
-  "api_unreachable",
-  "api_redirected",
-  "api_key_missing",
-  "api_key_invalid",
-  "api_forbidden",
-  "api_cert_untrusted",
-  "api_cert_changed",
-  "api_error",
   "vm_not_found",
+  "vm_not_configured",
+  "vm_service_unavailable",
   "vm_start_timeout",
   "vm_stop_timeout",
   "ssh_key_missing",
@@ -91,8 +97,11 @@ export const ACTION_OUTCOMES = [
   "ssh_unreachable",
   "ssh_denied",
   "ssh_failed",
+  "guard_outdated",
+  "watch_interrupted",
   "remote_failed",
   "shutdown_timeout",
+  "vm_running",
   "other_vms_running",
   "interrupted",
   "internal_error",
@@ -137,6 +146,8 @@ export interface StatusSnapshot {
   actions: ActionsSnapshot;
   // Weitere laufende VMs auf Groß (bereinigte Namen); null: unbekannt (Konzept 4.2).
   other_vms_running: string[] | null;
+  // Hinweise zu den Kacheln (ab v0.4.3).
+  notices: StatusNotice[];
 }
 
 export interface AppInfo {
@@ -152,7 +163,6 @@ export interface AppInfo {
   // Freigeschaltete Aktionen; im Simulationsmodus alle.
   actions: { wake: boolean; vm: boolean; shutdown: boolean };
   vm_shutdown_timeout_minutes: number;
-  target_connection_encrypted: boolean;
 }
 
 export interface AuthState {
@@ -176,6 +186,7 @@ export const AUDIT_ACTIONS = [
   "cli_set_password",
   "cli_renew_cert",
   "cli_unlock",
+  // Nur bis v0.4.2 (API-Key von Groß); alte Einträge bleiben lesbar.
   "cli_set_api_key",
   "cli_trust_api_cert",
   "ca_change_notice",

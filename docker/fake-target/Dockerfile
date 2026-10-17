@@ -13,8 +13,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY sshd-test.conf /etc/ssh/sshd_config.d/twinraid-test.conf
-COPY fake_unraid.py start.sh /opt/fake/
-# Platzhalter: schreiben nur mit, was guard.sh aufruft.
+# guard.sh setzt PATH=/usr/sbin:/usr/bin:/sbin:/bin; die Platzhalter brauchen dort python3.
+RUN ln -s /usr/local/bin/python3 /usr/bin/python3
+
+COPY fake_target.py start.sh /opt/fake/
+# Platzhalter: virsh bildet VMs mit allen Zuständen nach, poweroff schreibt nur mit.
 COPY --chmod=0755 poweroff /sbin/poweroff
 COPY --chmod=0755 virsh /usr/bin/virsh
 

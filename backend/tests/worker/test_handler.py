@@ -32,7 +32,7 @@ CONFIG = load_config(EXAMPLE_CONFIG)
 async def _handler(
     tmp_path: Path, mode: RunMode = RunMode.MOCK, config: TwinRaidConfig = CONFIG
 ) -> tuple[CommandHandler, ActionCoordinator]:
-    lab = MockLab(config.gaming_vm.unraid_vm_name, tmp_path)
+    lab = MockLab(tmp_path)
     monitor = StatusMonitor(lab)
     await monitor.check_once()
     jobs = MockJobSwitch(tmp_path / "job")

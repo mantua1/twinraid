@@ -1,7 +1,8 @@
 """Aktionen mit Außenwirkung auf Unraid Groß (Konzept 3.4 und 4.2).
 
 ActionControl ist die Schnittstelle, die der Worker für seine Abläufe nutzt.
-RealControl setzt sie mit TCP-Check, Wake-on-LAN, Unraid-API und SSH um; die
+RealControl setzt sie mit TCP-Check, Wake-on-LAN und SSH über guard.sh um; den
+Zustand der VM liest es nur aus der Sitzung vm-watch (Konzept 3.5). Die
 Simulation steht in integrations/mocks/lab.py.
 """
 
@@ -12,11 +13,9 @@ from typing import Protocol
 from twinraid.config import TwinRaidConfig
 from twinraid.integrations.network import tcp_reachable
 from twinraid.integrations.ssh import SshError, SshPower
-from twinraid.integrations.unraid_api import UnraidApi, UnraidApiError, VmDomain
-from twinraid.integrations.vm_list import other_running_vms
+from twinraid.integrations.vm_watch import WatchReport, WatchState, watch_outcome
 from twinraid.integrations.wol import WolTarget, send_magic_packet
 from twinraid.shared.actions import ActionOutcome
-from twinraid.shared.status import StatusReason
 
 
 class ActionError(Exception):
@@ -30,19 +29,19 @@ class ActionError(Exception):
 class ActionControl(Protocol):
     async def target_reachable(self) -> bool: ...
 
-    async def find_vm(self) -> VmDomain:
-        """Die Gaming-VM laut API. Wirft ActionError (z. B. vm_not_found)."""
+    async def vm_state(self) -> str:
+        """Zustand der Gaming-VM (libvirt, z. B. RUNNING). Wirft ActionError."""
         ...
 
     async def wake(self) -> None: ...
 
-    async def start_vm(self, vm: VmDomain) -> None: ...
+    async def start_vm(self) -> None: ...
 
-    async def shutdown_vm(self, vm: VmDomain) -> None:
+    async def shutdown_vm(self) -> None:
         """Nur das ACPI-Signal, nie erzwingen (Entscheidung E8)."""
         ...
 
-    async def force_stop_vm(self, vm: VmDomain) -> None: ...
+    async def force_stop_vm(self) -> None: ...
 
     async def other_running_vms(self) -> tuple[str, ...]:
         """Laufende VMs außer der Gaming-VM (Konzept 4.2). Wirft ActionError."""
@@ -51,13 +50,13 @@ class ActionControl(Protocol):
     async def power_off(self) -> None: ...
 
 
-def api_outcome(reason: StatusReason) -> ActionOutcome:
-    """Die Ursachen der API heißen in Status und Aktionslog gleich."""
-    try:
-        return ActionOutcome(reason.value)
-    except ValueError:
-        return ActionOutcome.API_ERROR
-
+# Meldungen von guard.sh, die einen Ablauf aufhalten (Konzept 3.5).
+_STATE_OUTCOMES: dict[str, ActionOutcome] = {
+    "NOT_CONFIGURED": ActionOutcome.VM_NOT_CONFIGURED,
+    "NOT_FOUND": ActionOutcome.VM_NOT_FOUND,
+    "LIBVIRT_DOWN": ActionOutcome.VM_SERVICE_UNAVAILABLE,
+    "UNKNOWN": ActionOutcome.VM_SERVICE_UNAVAILABLE,
+}
 
 TcpCheck = Callable[[str, int], Awaitable[bool]]
 
@@ -66,31 +65,38 @@ class RealControl:
     def __init__(
         self,
         config: TwinRaidConfig,
-        api: UnraidApi,
-        ssh: SshPower,
+        watch: WatchState,
+        power: SshPower,
         wol: WolTarget | None,
         tcp_check: TcpCheck = tcp_reachable,
         send_wol: Callable[[WolTarget], None] = send_magic_packet,
     ) -> None:
         self._config = config
-        self._api = api
-        self._ssh = ssh
+        self._watch = watch
+        self._power = power
         self._wol = wol
         self._tcp_check = tcp_check
         self._send_wol = send_wol
 
     async def target_reachable(self) -> bool:
         target = self._config.servers.target
-        return await self._tcp_check(str(target.host), target.webgui.effective_port)
+        reachable = await self._tcp_check(str(target.host), target.webgui.effective_port)
+        # Die Sitzung vm-watch folgt jeder Prüfung, auch während eines Ablaufs.
+        self._watch.set_target_online(reachable)
+        return reachable
 
-    async def find_vm(self) -> VmDomain:
-        try:
-            vm = await self._api.find_vm(self._config.gaming_vm.unraid_vm_name)
-        except UnraidApiError as exc:
-            raise ActionError(api_outcome(exc.reason)) from None
-        if vm is None:
-            raise ActionError(ActionOutcome.VM_NOT_FOUND)
-        return vm
+    def _report(self) -> WatchReport:
+        view = self._watch.view()
+        if view.report is None:
+            raise ActionError(watch_outcome(view.reason))
+        return view.report
+
+    async def vm_state(self) -> str:
+        state = self._report().vm
+        problem = _STATE_OUTCOMES.get(state)
+        if problem is not None:
+            raise ActionError(problem)
+        return state
 
     async def wake(self) -> None:
         if self._wol is None:
@@ -101,35 +107,32 @@ class RealControl:
         except OSError:
             raise ActionError(ActionOutcome.WOL_FAILED) from None
 
-    async def start_vm(self, vm: VmDomain) -> None:
-        try:
-            await self._api.start_vm(vm)
-        except UnraidApiError as exc:
-            raise ActionError(api_outcome(exc.reason)) from None
+    async def start_vm(self) -> None:
+        await self._guard(self._power.vm_start())
 
-    async def shutdown_vm(self, vm: VmDomain) -> None:
-        try:
-            await self._ssh.vm_shutdown(vm.uuid)
-        except SshError as exc:
-            raise ActionError(exc.outcome) from None
+    async def shutdown_vm(self) -> None:
+        await self._guard(self._power.vm_shutdown())
 
-    async def force_stop_vm(self, vm: VmDomain) -> None:
-        try:
-            await self._api.force_stop_vm(vm)
-        except UnraidApiError as exc:
-            raise ActionError(api_outcome(exc.reason)) from None
+    async def force_stop_vm(self) -> None:
+        await self._guard(self._power.vm_force_stop())
 
     async def other_running_vms(self) -> tuple[str, ...]:
-        try:
-            states = await self._api.domain_states()
-        except UnraidApiError as exc:
-            raise ActionError(api_outcome(exc.reason)) from None
-        return other_running_vms(states, self._config.gaming_vm.unraid_vm_name)
+        report = self._report()
+        if report.others is None:
+            raise ActionError(_STATE_OUTCOMES.get(report.vm, ActionOutcome.VM_SERVICE_UNAVAILABLE))
+        return report.others
 
     async def power_off(self) -> None:
         try:
-            await self._ssh.poweroff()
+            await self._power.poweroff()
         except SshError as exc:
             # Groß beendet die Verbindung, während es herunterfährt: Das zählt als gesendet.
             if not exc.connection_closed:
                 raise ActionError(exc.outcome) from None
+
+    @staticmethod
+    async def _guard(request: Awaitable[None]) -> None:
+        try:
+            await request
+        except SshError as exc:
+            raise ActionError(exc.outcome) from None

@@ -49,6 +49,7 @@ function AuthenticatedApp({
           <SettingsPage
             info={data.info}
             tls={data.tls}
+            notices={data.stream.status?.notices ?? []}
             onBack={() => {
               setView("dashboard");
             }}

@@ -1,12 +1,107 @@
-#!/bin/sh
-# Platzhalter für virsh: schreibt den Aufruf mit; „shutdown“ schaltet die VM aus,
-# außer /state/vm-hang existiert (VM reagiert nicht auf ACPI). Existiert
-# /state/other-vm-on-shutdown, startet dabei eine zweite VM (/state/other-vm).
-echo "$*" >>/state/virsh.log
-if [ -e /state/other-vm-on-shutdown ]; then
-  touch /state/other-vm
-fi
-if [ "${1:-}" = "shutdown" ] && [ ! -e /state/vm-hang ]; then
-  echo SHUTOFF >/state/vm-state
-fi
-echo "Domain '${3:-}' is being shutdown"
+#!/usr/bin/env python3
+"""Nachgebautes virsh für die Tests von guard.sh (pytest und docker/ssh-test.sh).
+
+Nur die Aufrufe, die guard.sh macht. Zustand im Ordner FAKE_VIRSH_STATE
+(Standard /state):
+
+  vms.json              [{"uuid": …, "name": …, "state": "running"}, …]
+                        state wie bei virsh: running, idle, paused, in shutdown,
+                        shut off, crashed, pmsuspended, no state
+  libvirt-down          vorhanden: der VM-Dienst läuft nicht (Exit 1)
+  virsh-hang            vorhanden: virsh antwortet nicht (schläft 60 s)
+  vm-hang               vorhanden: "shutdown" wird ignoriert (VM reagiert nicht auf ACPI)
+  other-vm-on-shutdown  vorhanden: bei "shutdown" startet eine weitere VM
+                        (die erste in vms.json, die nicht gemeint ist)
+  virsh.log             jeder Aufruf als Zeile mit den Argumenten
+"""
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+STATE = Path(os.environ.get("FAKE_VIRSH_STATE", "/state"))
+VMS = STATE / "vms.json"
+
+
+def fail(message: str) -> None:
+    sys.stderr.write(f"error: {message}\n")
+    sys.exit(1)
+
+
+def load() -> list[dict[str, str]]:
+    try:
+        return list(json.loads(VMS.read_text()))
+    except FileNotFoundError:
+        return []
+
+
+def save(vms: list[dict[str, str]]) -> None:
+    VMS.write_text(json.dumps(vms))
+
+
+def find(vms: list[dict[str, str]], uuid: str) -> dict[str, str]:
+    for vm in vms:
+        if vm["uuid"] == uuid:
+            return vm
+    fail(f"failed to get domain '{uuid}'")
+    raise AssertionError  # fail() beendet das Programm
+
+
+def say(text: str) -> None:
+    sys.stdout.write(text + "\n")
+
+
+def domain(arguments: list[str]) -> str:
+    if len(arguments) != 2 or arguments[0] != "--domain":
+        fail("unexpected arguments")
+    return arguments[1]
+
+
+def main(arguments: list[str]) -> None:
+    with (STATE / "virsh.log").open("a") as handle:
+        handle.write(" ".join(arguments) + "\n")
+    if (STATE / "virsh-hang").exists():
+        time.sleep(60)
+    if (STATE / "libvirt-down").exists():
+        fail("failed to connect to the hypervisor")
+    vms = load()
+    command, rest = arguments[0], arguments[1:]
+    if command == "list" and rest == ["--all", "--uuid"]:
+        say("\n".join(vm["uuid"] for vm in vms) + "\n")
+    elif command == "list" and rest == ["--inactive", "--uuid"]:
+        say("\n".join(vm["uuid"] for vm in vms if vm["state"] == "shut off") + "\n")
+    elif command == "domstate":
+        say(find(vms, domain(rest))["state"] + "\n")
+    elif command == "domname":
+        say(find(vms, domain(rest))["name"] + "\n")
+    elif command == "start":
+        vm = find(vms, domain(rest))
+        if vm["state"] != "shut off":
+            fail("Requested operation is not valid: domain is already running")
+        vm["state"] = "running"
+        save(vms)
+        say(f"Domain '{vm['name']}' started")
+    elif command == "shutdown":
+        vm = find(vms, domain(rest))
+        if (STATE / "other-vm-on-shutdown").exists():
+            for other in vms:
+                if other is not vm:
+                    other["state"] = "running"
+                    break
+        if not (STATE / "vm-hang").exists():
+            vm["state"] = "shut off"
+        save(vms)
+        say(f"Domain '{vm['name']}' is being shutdown")
+    elif command == "destroy":
+        vm = find(vms, domain(rest))
+        vm["state"] = "shut off"
+        save(vms)
+        say(f"Domain '{vm['name']}' destroyed")
+    else:
+        fail("unknown command")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

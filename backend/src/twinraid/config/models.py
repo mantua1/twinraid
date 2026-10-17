@@ -86,9 +86,10 @@ class WebConfig(StrictModel):
 
 
 class WebGuiConfig(StrictModel):
-    """WebGUI eines Unraid-Servers: Ziel des TCP-Checks und Adresse der API (Konzept 3.5).
+    """WebGUI eines Unraid-Servers: nur Ziel der Online-Prüfung von Groß (Konzept 3.5).
 
     scheme entspricht der Unraid-Einstellung „SSL/TLS verwenden“: Nein → http, Ja → https.
+    Es bestimmt nur den Standard-Port; TwinRaid überträgt über die WebGUI keine Daten.
     """
 
     scheme: Literal["http", "https"]
@@ -99,10 +100,6 @@ class WebGuiConfig(StrictModel):
         if self.port is not None:
             return self.port
         return 443 if self.scheme == "https" else 80
-
-    @property
-    def encrypted(self) -> bool:
-        return self.scheme == "https"
 
 
 class SourceServerConfig(StrictModel):
@@ -120,7 +117,7 @@ class TargetServerConfig(StrictModel):
     # Netz ab, sofern Groß darin liegt (Konzept 4.2).
     wol_broadcast: IPv4Address | None = None
     boot_timeout_minutes: Minutes
-    # SSH für Herunterfahren und VM-Shutdown mit dem Key „power“ (Konzept 5.6).
+    # SSH für Status, VM und Herunterfahren mit den Keys „status“ und „power“ (Konzept 5.6).
     ssh_port: Port = DEFAULT_SSH_PORT
 
 
@@ -137,7 +134,8 @@ class ServersConfig(StrictModel):
 
 class GamingVmConfig(StrictModel):
     display_name: DisplayText
-    unraid_vm_name: VmName
+    # Optional (ab v0.4.3): Abgleich mit dem Namen der VM aus power.conf auf Groß (Konzept 3.5).
+    unraid_vm_name: VmName | None = None
     shutdown_timeout_minutes: Minutes
 
 

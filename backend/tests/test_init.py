@@ -60,6 +60,42 @@ def test_init_reports_the_transition_from_self_signed(
     assert not paths.legacy_tls_cert.exists()
 
 
+def test_init_removes_the_api_key_of_earlier_versions(
+    env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Seit v0.4.3 (E22) braucht TwinRaid für Groß keinen API-Key mehr (Konzept 3.5)."""
+    paths = DataPaths(env / "data")
+    assert main([]) == 0
+    assert "Removed the Unraid API key" not in capsys.readouterr().err
+    key, pin = paths.legacy_target_api_key, paths.legacy_target_api_cert
+    key.write_text("Geheimer_Key_0123\n")
+    pin.write_text("AB:CD\n")
+    for path in (key, pin):
+        path.chmod(0o600)
+    keep = paths.ssh_power_key
+    keep.write_text("key")
+    keep.chmod(0o600)
+    assert main([]) == 0
+    err = capsys.readouterr().err
+    assert "Removed the Unraid API key of Unraid Groß" in err
+    assert "Settings → Management Access → API Keys" in err
+    assert "Geheimer_Key" not in err
+    assert not key.exists()
+    assert not pin.exists()
+    assert keep.exists()
+    # Nur einmal: Beim nächsten Start gibt es nichts mehr zu löschen.
+    assert main([]) == 0
+    assert "Removed the Unraid API key" not in capsys.readouterr().err
+
+
+def test_init_no_longer_warns_about_http(
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("TWINRAID_MODE", "real")
+    assert main([]) == 0
+    assert "unencrypted" not in capsys.readouterr().err
+
+
 def test_init_refuses_unsafe_data_dir(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
     (env / "data").chmod(0o777)
     assert main([]) == 1

@@ -82,8 +82,6 @@ jobs:
           docker/rootfs/etc/s6-overlay/s6-rc.d/*/run
           docker/rootfs/etc/s6-overlay/s6-rc.d/*/finish
           docker/fake-target/start.sh
-          docker/fake-target/poweroff
-          docker/fake-target/virsh
 
   container:
     name: Container (build and start test)

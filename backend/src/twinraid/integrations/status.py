@@ -1,4 +1,4 @@
-"""Statusabfragen (Konzept 3.4, 3.5 und 4.1): TCP-Check von Groß, VM über die Unraid-API.
+"""Statusabfragen (Konzept 3.4, 3.5 und 4.1): TCP-Check von Groß, VM über die Sitzung vm-watch.
 
 Klein wird nicht geprüft: TwinRaid läuft dort, und ohne „Host access to custom
 networks“ erreicht der Container seinen eigenen Host nicht (Konzept 5.1).
@@ -10,12 +10,12 @@ from typing import Protocol
 
 from twinraid.config import TwinRaidConfig
 from twinraid.integrations.network import tcp_reachable
-from twinraid.integrations.unraid_api import UnraidApiError
-from twinraid.integrations.vm_list import other_running_vms
+from twinraid.integrations.vm_watch import WatchState, WatchView
 from twinraid.shared.status import (
     ResourceInfo,
     ResourceState,
     ResourceStatus,
+    StatusNotice,
     StatusReason,
 )
 
@@ -24,15 +24,9 @@ class StatusProvider(Protocol):
     async def get_status(self) -> ResourceStatus: ...
 
 
-class VmListSource(Protocol):
-    async def domain_states(self) -> dict[str, str]:
-        """Name und libvirt-Zustand aller VMs auf Groß."""
-        ...
-
-
 TcpCheck = Callable[[str, int], Awaitable[bool]]
 
-# libvirt-Zustände aus der Unraid-API (VmState) und ihre Anzeige.
+# libvirt-Zustände (wie bei der Unraid-API) und ihre Anzeige.
 _VM_STATES: dict[str, ResourceInfo] = {
     "RUNNING": ResourceInfo(state=ResourceState.ONLINE),
     "IDLE": ResourceInfo(state=ResourceState.ONLINE),
@@ -41,22 +35,51 @@ _VM_STATES: dict[str, ResourceInfo] = {
     "SHUTDOWN": ResourceInfo(state=ResourceState.STOPPING),
     "SHUTOFF": ResourceInfo(state=ResourceState.OFFLINE),
     "CRASHED": ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.VM_CRASHED),
+    # Meldungen von guard.sh (Konzept 3.5)
+    "NOT_CONFIGURED": ResourceInfo(
+        state=ResourceState.UNKNOWN, reason=StatusReason.VM_NOT_CONFIGURED
+    ),
+    "NOT_FOUND": ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.VM_NOT_FOUND),
+    "LIBVIRT_DOWN": ResourceInfo(
+        state=ResourceState.UNKNOWN, reason=StatusReason.VM_SERVICE_UNAVAILABLE
+    ),
+    "UNKNOWN": ResourceInfo(
+        state=ResourceState.UNKNOWN, reason=StatusReason.VM_SERVICE_UNAVAILABLE
+    ),
 }
 
 
 # Klein ist online, solange der Worker antwortet.
 SOURCE_STATUS = ResourceInfo(state=ResourceState.ONLINE, reason=StatusReason.RUNS_HERE)
+VM_TARGET_OFFLINE = ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.TARGET_OFFLINE)
 
 
 def map_vm_state(state: str) -> ResourceInfo:
-    """Übersetzt den libvirt-Zustand; NOSTATE und Unbekanntes werden zu „Unbekannt“."""
+    """Übersetzt den Zustand; NOSTATE und Unbekanntes werden zu „Unbekannt“."""
     return _VM_STATES.get(state, ResourceInfo(state=ResourceState.UNKNOWN))
 
 
-def _server(reachable: bool) -> ResourceInfo:
+def server_status(reachable: bool) -> ResourceInfo:
     if reachable:
         return ResourceInfo(state=ResourceState.ONLINE)
     return ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.UNREACHABLE)
+
+
+def vm_status(
+    view: WatchView, expected_name: str | None
+) -> tuple[ResourceInfo, tuple[str, ...] | None, tuple[StatusNotice, ...]]:
+    """VM, weitere laufende VMs und Hinweise aus dem Stand der Sitzung (Groß ist online)."""
+    report = view.report
+    if report is None:
+        return ResourceInfo(state=ResourceState.UNKNOWN, reason=view.reason), None, ()
+    notices: list[StatusNotice] = []
+    if report.connect_plugin:
+        notices.append(StatusNotice.TARGET_CONNECT_PLUGIN)
+    if report.flash_backup == "active":
+        notices.append(StatusNotice.TARGET_FLASH_BACKUP)
+    if expected_name is not None and report.name is not None and report.name != expected_name:
+        notices.append(StatusNotice.VM_NAME_MISMATCH)
+    return map_vm_state(report.vm), report.others, tuple(notices)
 
 
 def _utc_now() -> datetime:
@@ -64,45 +87,35 @@ def _utc_now() -> datetime:
 
 
 class RealStatusProvider:
-    """Echte Abfragen. Nur lesend: TCP-Verbindungsaufbau zu Groß und eine GraphQL-Abfrage."""
+    """Echte Abfragen. Nur lesend: TCP-Verbindungsaufbau zu Groß und der Stand von vm-watch."""
 
     def __init__(
         self,
         config: TwinRaidConfig,
-        api: VmListSource,
+        watch: WatchState,
         tcp_check: TcpCheck = tcp_reachable,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._config = config
-        self._api = api
+        self._watch = watch
         self._tcp_check = tcp_check
         self._clock = clock
 
     async def get_status(self) -> ResourceStatus:
         target = self._config.servers.target
         target_up = await self._tcp_check(str(target.host), target.webgui.effective_port)
-        vm, others = await self._vms(target_up)
+        self._watch.set_target_online(target_up)
+        if target_up:
+            vm, others, notices = vm_status(
+                self._watch.view(), self._config.gaming_vm.unraid_vm_name
+            )
+        else:
+            vm, others, notices = VM_TARGET_OFFLINE, None, ()
         return ResourceStatus(
             source=SOURCE_STATUS,
-            target=_server(target_up),
+            target=server_status(target_up),
             vm=vm,
             checked_at=self._clock(),
             other_vms_running=others,
+            notices=notices,
         )
-
-    async def _vms(self, target_up: bool) -> tuple[ResourceInfo, tuple[str, ...] | None]:
-        """Zustand der Gaming-VM und die weiteren laufenden VMs aus einer Abfrage."""
-        if not target_up:
-            off = ResourceInfo(state=ResourceState.OFFLINE, reason=StatusReason.TARGET_OFFLINE)
-            return off, None
-        try:
-            states = await self._api.domain_states()
-        except UnraidApiError as exc:
-            return ResourceInfo(state=ResourceState.UNKNOWN, reason=exc.reason), None
-        own = self._config.gaming_vm.unraid_vm_name
-        others = other_running_vms(states, own)
-        state = states.get(own)
-        if state is None:
-            not_found = ResourceInfo(state=ResourceState.UNKNOWN, reason=StatusReason.VM_NOT_FOUND)
-            return not_found, others
-        return map_vm_state(state), others
