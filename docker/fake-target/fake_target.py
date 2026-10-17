@@ -73,7 +73,8 @@ def syslog_loop() -> None:
     Path("/dev/log").unlink(missing_ok=True)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     sock.bind("/dev/log")
-    os.chmod("/dev/log", 0o666)
+    # Wie auf einem echten System darf jeder Prozess ins Syslog schreiben.
+    Path("/dev/log").chmod(0o666)
     while True:
         data = sock.recv(8192)
         append("syslog.log", data.decode(errors="replace"))

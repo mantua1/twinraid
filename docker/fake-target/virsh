@@ -49,6 +49,10 @@ def find(vms: list[dict[str, str]], uuid: str) -> dict[str, str]:
     raise AssertionError  # fail() beendet das Programm
 
 
+def say(text: str) -> None:
+    sys.stdout.write(text + "\n")
+
+
 def domain(arguments: list[str]) -> str:
     if len(arguments) != 2 or arguments[0] != "--domain":
         fail("unexpected arguments")
@@ -65,20 +69,20 @@ def main(arguments: list[str]) -> None:
     vms = load()
     command, rest = arguments[0], arguments[1:]
     if command == "list" and rest == ["--all", "--uuid"]:
-        print("\n".join(vm["uuid"] for vm in vms) + "\n")
+        say("\n".join(vm["uuid"] for vm in vms) + "\n")
     elif command == "list" and rest == ["--inactive", "--uuid"]:
-        print("\n".join(vm["uuid"] for vm in vms if vm["state"] == "shut off") + "\n")
+        say("\n".join(vm["uuid"] for vm in vms if vm["state"] == "shut off") + "\n")
     elif command == "domstate":
-        print(find(vms, domain(rest))["state"] + "\n")
+        say(find(vms, domain(rest))["state"] + "\n")
     elif command == "domname":
-        print(find(vms, domain(rest))["name"] + "\n")
+        say(find(vms, domain(rest))["name"] + "\n")
     elif command == "start":
         vm = find(vms, domain(rest))
         if vm["state"] != "shut off":
             fail("Requested operation is not valid: domain is already running")
         vm["state"] = "running"
         save(vms)
-        print(f"Domain '{vm['name']}' started")
+        say(f"Domain '{vm['name']}' started")
     elif command == "shutdown":
         vm = find(vms, domain(rest))
         if (STATE / "other-vm-on-shutdown").exists():
@@ -89,12 +93,12 @@ def main(arguments: list[str]) -> None:
         if not (STATE / "vm-hang").exists():
             vm["state"] = "shut off"
         save(vms)
-        print(f"Domain '{vm['name']}' is being shutdown")
+        say(f"Domain '{vm['name']}' is being shutdown")
     elif command == "destroy":
         vm = find(vms, domain(rest))
         vm["state"] = "shut off"
         save(vms)
-        print(f"Domain '{vm['name']}' destroyed")
+        say(f"Domain '{vm['name']}' destroyed")
     else:
         fail("unknown command")
 
