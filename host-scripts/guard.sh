@@ -1,8 +1,9 @@
 #!/bin/bash
 # TwinRaid: SSH-Wächter auf Unraid Groß, Version 2 (Konzept 3.5 und 5.6).
 #
-# Ablage auf Groß: /boot/config/twinraid/guard.sh. /boot ist FAT32 und nicht
-# ausführbar; authorized_keys ruft das Skript deshalb über /bin/bash auf:
+# Ablage auf Groß: /boot/config/twinraid/guard.sh. Auf einem USB-Stick ist /boot
+# FAT32 und nicht ausführbar; authorized_keys ruft das Skript deshalb über
+# /bin/bash auf (das funktioniert ebenso bei internem Boot von einem ZFS-Pool):
 #
 #   restrict,from="<IP von TwinRaid>",command="/bin/bash /boot/config/twinraid/guard.sh status" ssh-ed25519 … twinraid-status
 #   restrict,from="<IP von TwinRaid>",command="/bin/bash /boot/config/twinraid/guard.sh power" ssh-ed25519 … twinraid-power
