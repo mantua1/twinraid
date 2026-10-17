@@ -5,6 +5,7 @@ import contextlib
 import itertools
 import time
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ from twinraid.integrations.vm_watch import (
     watch_outcome,
 )
 from twinraid.shared.actions import ActionOutcome
-from twinraid.shared.status import StatusReason
+from twinraid.shared.status import StatusReason, WatchRetry
 
 GAMING = "Windows 11 Gaming"
 
@@ -231,6 +232,25 @@ def test_changed_key_files_end_the_pause() -> None:
     assert not plan.paused
 
 
+def test_retry_now_ends_every_wait() -> None:
+    """trust-host-key mit Erfolg (SIGUSR2): Pause und Wartezeit enden sofort (ab v0.4.4)."""
+    plan = RetryPlan(PLAN_TIMINGS, boot_window_seconds=300)
+    plan.permanent(0, FILES)
+    assert plan.remaining(10) == 1790
+    plan.retry_now()
+    assert not plan.paused
+    assert plan.remaining(10) == 0
+    assert plan.may_connect(10, FILES)
+    for _ in range(3):
+        plan.transient(20, session_seconds=1, booting=False)
+    assert plan.remaining(20) == 60
+    plan.retry_now()
+    assert plan.may_connect(20, FILES)
+    # Die Folge der Wartezeiten beginnt danach von vorn.
+    plan.transient(20, session_seconds=1, booting=False)
+    assert plan.remaining(20) == 5
+
+
 def test_offline_and_online_end_the_pause() -> None:
     plan = RetryPlan(PLAN_TIMINGS, boot_window_seconds=300)
     plan.permanent(0, FILES)
@@ -254,6 +274,10 @@ TIMINGS = WatchTimings(
 pytestmark = pytest.mark.anyio
 
 
+# Feste Uhrzeit für den nächsten Versuch im Status (ganze Sekunden).
+CLOCK = datetime(2026, 10, 17, 14, 0, tzinfo=UTC)
+
+
 class Setup:
     def __init__(self, tmp_path: Path, timings: WatchTimings = TIMINGS) -> None:
         self.fake = FakeWatchSsh.install(tmp_path / "bin")
@@ -263,7 +287,11 @@ class Setup:
         self.known.write_text("x ssh-ed25519 AAAA\n")
         target = SshTarget("192.0.2.11", 22, self.key, self.known)
         self.watch = VmWatch(
-            target, boot_window_seconds=5.0, timings=timings, binary=self.fake.binary
+            target,
+            boot_window_seconds=5.0,
+            timings=timings,
+            binary=self.fake.binary,
+            clock=lambda: CLOCK,
         )
 
     def view(self) -> WatchView:
@@ -381,6 +409,81 @@ async def test_permanent_failures_wait_for_a_change(
         assert len(setup.fake.calls()) == 2
 
 
+async def test_the_status_names_the_next_attempt(tmp_path: Path) -> None:
+    """Nach einem dauerhaften Fehler: Pause mit Zeitpunkt, aufgerundet (ab v0.4.4)."""
+    setup = Setup(tmp_path)
+    setup.fake.runs({"exit": 255, "stderr": "root@x: Permission denied (publickey).\n"})
+    async with running(setup):
+        setup.watch.set_target_online(True)
+        await until(lambda: setup.view().reason is StatusReason.SSH_AUTH_FAILED)
+        # permanent_pause_seconds ist im Test 60 s.
+        assert setup.view() == WatchView(
+            None,
+            StatusReason.SSH_AUTH_FAILED,
+            WatchRetry(at=CLOCK + timedelta(seconds=60), paused=True),
+        )
+
+
+async def test_transient_failures_name_the_next_attempt(tmp_path: Path) -> None:
+    setup = Setup(tmp_path)
+    refused = {"exit": 255, "stderr": "ssh: connect to host x port 22: Connection refused\n"}
+    setup.fake.runs(refused, {"lines": [[0, line("RUNNING")]], "hold": 60})
+    async with running(setup):
+        setup.watch.set_target_online(True)
+        await until(lambda: setup.view().reason is StatusReason.SSH_UNREACHABLE)
+        # Erste Wartezeit 0,3 s, auf die volle Sekunde aufgerundet; keine Pause.
+        assert setup.view().retry == WatchRetry(at=CLOCK + timedelta(seconds=1), paused=False)
+        await until(lambda: setup.report() is not None)
+        # Mit einem Stand gibt es keinen geplanten Versuch.
+        assert setup.view().retry is None
+
+
+async def test_retry_now_ends_the_pause_without_a_changed_file(tmp_path: Path) -> None:
+    """Der gemeldete Fall: Zeile auf Groß nachgetragen, trust-host-key bestanden (ab v0.4.4).
+
+    Keine Datei in TwinRaid ändert sich; ohne SIGUSR2 wartete die Sitzung bis zu 30 Minuten.
+    """
+    setup = Setup(tmp_path)
+    setup.fake.runs(
+        {"exit": 255, "stderr": "root@x: Permission denied (publickey).\n"},
+        {"lines": [[0, line("RUNNING")]], "hold": 60},
+    )
+    async with running(setup):
+        setup.watch.set_target_online(True)
+        await until(lambda: setup.view().reason is StatusReason.SSH_AUTH_FAILED)
+        await asyncio.sleep(0.5)
+        assert len(setup.fake.calls()) == 1
+        started = time.monotonic()
+        setup.watch.retry_now()
+        await until(lambda: setup.report() is not None)
+        assert time.monotonic() - started < 2
+        assert len(setup.fake.calls()) == 2
+        assert setup.view().retry is None
+
+
+async def test_retry_now_leaves_a_running_session_alone(tmp_path: Path) -> None:
+    setup = Setup(tmp_path)
+    setup.fake.runs({"lines": [[0, line("RUNNING")]], "hold": 60})
+    async with running(setup):
+        setup.watch.set_target_online(True)
+        await until(lambda: setup.report() is not None)
+        setup.watch.retry_now()
+        await asyncio.sleep(0.5)
+        assert len(setup.fake.calls()) == 1
+        assert setup.report() is not None
+
+
+async def test_retry_now_does_not_connect_while_offline(tmp_path: Path) -> None:
+    setup = Setup(tmp_path)
+    setup.fake.runs({"lines": [[0, line("RUNNING")]], "hold": 60})
+    async with running(setup):
+        setup.watch.retry_now()
+        await asyncio.sleep(0.3)
+        assert setup.fake.calls() == []
+        setup.watch.set_target_online(True)
+        await until(lambda: setup.report() is not None)
+
+
 async def test_a_restart_of_the_target_ends_the_pause(tmp_path: Path) -> None:
     setup = Setup(tmp_path)
     setup.fake.runs(
@@ -476,8 +579,10 @@ async def test_after_a_boot_sshd_is_retried_quickly(tmp_path: Path) -> None:
         setup.watch.set_target_online(False)
         setup.watch.set_target_online(True)
         await until(lambda: len(setup.fake.calls()) >= 1)
-        # Kein Fehler in der Anzeige, solange Groß gerade startet.
+        # Kein Fehler in der Anzeige, solange Groß gerade startet, und kein geplanter
+        # Versuch: Die Sitzung versucht es alle 3 s (ab v0.4.4).
         assert setup.view().reason in (StatusReason.WATCH_CONNECTING, None)
+        assert setup.view().retry is None
         started = time.monotonic()
         await until(lambda: setup.report() is not None)
         assert time.monotonic() - started < 2

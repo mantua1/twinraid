@@ -56,6 +56,10 @@
       "vm_not_configured": "VM not set up on the server (/boot/config/twinraid/power.conf)",
       "vm_service_unavailable": "VM service not ready"
     },
+    "retry": {
+      "next": "Next attempt at {{time}}.",
+      "paused": "Next attempt at {{time}}. Once the cause is fixed, TwinRaid connects right away after a successful “twinraid-admin trust-host-key target” in the container console."
+    },
     "notices": {
       "target_connect_plugin": "The Unraid Connect plugin is installed on {{target}}. It connects the server to the Unraid cloud; with Flash Backup an unencrypted copy of the USB stick would be stored there, including the SSH host keys of the server.",
       "target_flash_backup": "Flash Backup of Unraid Connect is active on {{target}}.",
@@ -74,7 +78,8 @@
     },
     "target": {
       "fallbackTitle": "Target server",
-      "description": "Runs on demand and is the sync target."
+      "description": "Runs on demand and is the sync target.",
+      "otherVms": "Other running VMs: {{vms}}"
     },
     "vm": {
       "fallbackTitle": "Gaming VM",

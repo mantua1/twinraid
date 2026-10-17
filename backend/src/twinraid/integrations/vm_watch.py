@@ -7,6 +7,9 @@ gibt es eine Anmeldung je Start von Groß statt einer je Abfrage.
 
 Die Zeile enthält nur feste Werte und hex-kodierte VM-Namen. Die Namen werden
 bereinigt und nie geloggt; ins Container-Log kommen nur feste Codes.
+
+Nach einem Fehler wartet der Worker; der Status nennt den nächsten Versuch. Ein
+erfolgreiches twinraid-admin trust-host-key beendet jede Wartezeit (ab v0.4.4).
 """
 
 import asyncio
@@ -16,6 +19,7 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -29,7 +33,7 @@ from twinraid.integrations.ssh import (
 )
 from twinraid.integrations.vm_list import display_names
 from twinraid.shared.actions import ActionOutcome
-from twinraid.shared.status import StatusReason
+from twinraid.shared.status import StatusReason, WatchRetry
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +55,7 @@ _LINE = re.compile(
 _VERSION = re.compile(r"watch ([0-9]{1,4}) ", re.ASCII)
 MAX_NAMES = 20
 # Diese Fehler behebt kein erneuter Versuch; der Worker wartet (Konzept 3.5, Neuversuche).
-_PERMANENT = frozenset(
+PERMANENT_REASONS = frozenset(
     {
         StatusReason.SSH_KEY_MISSING,
         StatusReason.SSH_HOST_UNTRUSTED,
@@ -135,6 +139,8 @@ class WatchView:
 
     report: WatchReport | None
     reason: StatusReason | None = None
+    # Der Worker wartet nach einem Fehler; wann der nächste Versuch kommt (ab v0.4.4).
+    retry: WatchRetry | None = None
 
 
 class WatchState(Protocol):
@@ -205,6 +211,10 @@ class RetryPlan:
         self._not_before = 0.0
         self._paused_at_files = None
 
+    def retry_now(self) -> None:
+        """Jede Wartezeit endet sofort (trust-host-key mit Erfolg, ab v0.4.4)."""
+        self._reset()
+
     def came_online(self, now: float) -> None:
         """Groß war offline und ist jetzt erreichbar: neuer Anfang mit Startfenster."""
         self._reset()
@@ -242,11 +252,25 @@ class RetryPlan:
             self._reset()
         return now >= self._not_before
 
+    def remaining(self, now: float) -> float:
+        """Sekunden bis zum nächsten erlaubten Versuch (ohne Prüfung der Dateien)."""
+        return max(0.0, self._not_before - now)
+
     def wait_seconds(self, now: float) -> float:
-        remaining = max(0.0, self._not_before - now)
+        remaining = self.remaining(now)
         if self._paused_at_files is not None:
             return min(remaining, self._timings.file_poll_seconds)
         return remaining
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _rounded_up(moment: datetime) -> datetime:
+    """Auf volle Sekunden aufgerundet: Die Anzeige nennt nie eine zu frühe Zeit."""
+    whole = moment.replace(microsecond=0)
+    return whole if whole == moment else whole + timedelta(seconds=1)
 
 
 def _signature(path: Path) -> tuple[int, int, int] | None:
@@ -278,11 +302,13 @@ class VmWatch:
         timings: WatchTimings | None = None,
         binary: Path = SSH_BINARY,
         monotonic: Callable[[], float] = time.monotonic,
+        clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         self._target = target
         self._timings = timings or WatchTimings()
         self._binary = binary
         self._monotonic = monotonic
+        self._clock = clock
         self._plan = RetryPlan(self._timings, boot_window_seconds)
         self._online: bool | None = None
         # Zählt jeden Wechsel nach offline; eine ältere Sitzung meldet dann nichts mehr.
@@ -310,6 +336,19 @@ class VmWatch:
             self._plan.went_offline()
             self._set(WatchView(None, StatusReason.WATCH_CONNECTING))
             self._kill()
+        self._wakeup.set()
+
+    def retry_now(self) -> None:
+        """Beendet jede Wartezeit und versucht es sofort (Konzept 3.5, ab v0.4.4).
+
+        Auslöser ist twinraid-admin trust-host-key über das Signal SIGUSR2, nachdem der
+        Verbindungstest mit dem Key „status“ bestanden ist. Eine laufende Sitzung bleibt
+        unberührt; solange Groß offline ist, gilt weiter die TCP-Prüfung.
+        """
+        if self._process is not None:
+            return
+        self._plan.retry_now()
+        self._log("vm-watch: waiting ended, connecting now")
         self._wakeup.set()
 
     async def run(self) -> None:
@@ -417,13 +456,16 @@ class VmWatch:
 
     def _failed(self, reason: StatusReason, session_seconds: float, booting: bool) -> None:
         now = self._monotonic()
-        if reason in _PERMANENT:
+        if reason in PERMANENT_REASONS:
             self._plan.permanent(now, self._files())
         else:
             self._plan.transient(now, session_seconds, booting)
-        shown = reason
+        shown, retry = reason, None
         if booting and self._plan.in_boot_window(now):
             # Groß startet gerade: Das ist kein Fehler, sshd kommt gleich.
             shown = StatusReason.WATCH_CONNECTING
-        self._set(WatchView(None, shown))
+        else:
+            at = self._clock() + timedelta(seconds=self._plan.remaining(now))
+            retry = WatchRetry(at=_rounded_up(at), paused=self._plan.paused)
+        self._set(WatchView(None, shown, retry))
         self._log("vm-watch: session ended (%s)", reason.value)

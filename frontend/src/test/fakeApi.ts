@@ -58,6 +58,7 @@ export const STATUS: StatusSnapshot = {
   actions: actionsSnapshot(),
   other_vms_running: null,
   notices: [],
+  watch_retry: null,
 };
 
 /** Groß und VM laufen: Herunterfahren ist möglich, Erzwingen noch nicht. */

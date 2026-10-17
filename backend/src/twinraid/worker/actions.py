@@ -258,8 +258,18 @@ class ActionCoordinator:
             case ActionName.VM_STOP | ActionName.VM_FORCE_STOP:
                 force = name is ActionName.VM_FORCE_STOP
                 available_at = self.force_available_at()
+                # Läuft das Herunterfahren noch, nennt die Oberfläche so die Uhrzeit, ab der
+                # Erzwingen möglich ist, statt nur „belegt“ (Konzept 4.2, ab v0.4.4).
+                waiting = (
+                    force
+                    and available_at is not None
+                    and self._clock() < available_at
+                    and target is on
+                    and vm.state in _VM_STILL_RUNNING
+                )
                 checks = [
                     (not self.enabled(ActionGroup.VM), ActionBlocker.NOT_ENABLED),
+                    (waiting, ActionBlocker.FORCE_NOT_YET),
                     (busy, ActionBlocker.BUSY),
                     (target is off, ActionBlocker.TARGET_OFFLINE),
                     (target is not on, ActionBlocker.TARGET_UNKNOWN),

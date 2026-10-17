@@ -11,7 +11,7 @@ der Web-Prozess kann sie nicht umlegen.
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from twinraid.integrations.control import ActionError
@@ -22,6 +22,7 @@ from twinraid.integrations.status import (
     map_vm_state,
     server_status,
 )
+from twinraid.integrations.vm_watch import PERMANENT_REASONS, WatchTimings
 from twinraid.shared.actions import ActionOutcome
 from twinraid.shared.status import (
     ResourceInfo,
@@ -29,6 +30,7 @@ from twinraid.shared.status import (
     ResourceStatus,
     StatusNotice,
     StatusReason,
+    WatchRetry,
 )
 
 # Simulierte Fehler (twinraid-admin mock-fault <Name> on|off).
@@ -41,10 +43,13 @@ FAULTS = (
     "libvirt-down",
     "guard-outdated",
     "connect-plugin",
+    "status-key-rejected",
 )
 # Name der weiteren VM bei mock-fault other-vm.
 MOCK_OTHER_VM = "Test-VM"
 _OFF_STATES = frozenset({"SHUTOFF", "CRASHED"})
+# Pause nach einem dauerhaften Fehler der Statusverbindung, wie im Modus real (Konzept 3.5).
+PERMANENT_PAUSE = timedelta(seconds=WatchTimings().permanent_pause_seconds)
 
 
 def fault_flag(directory: Path, name: str) -> Path:
@@ -99,6 +104,8 @@ class MockLab:
         self._vm_state = "SHUTOFF"
         # Geplanter Wechsel der VM (Ziel, Zeitpunkt).
         self._vm_change: tuple[str, float] | None = None
+        # Ende der Pause nach einem dauerhaften Fehler der Statusverbindung.
+        self._pause_until: datetime | None = None
 
     def fault(self, name: str) -> bool:
         return fault_flag(self._flag_dir, name).exists()
@@ -130,6 +137,9 @@ class MockLab:
 
     def _problem(self) -> StatusReason | None:
         """Warum vm-watch gerade keinen Zustand der VM liefert (Groß ist an)."""
+        # Groß lehnt den Key „status“ ab: Die Anmeldung scheitert vor guard.sh.
+        if self.fault("status-key-rejected"):
+            return StatusReason.SSH_AUTH_FAILED
         if self.fault("guard-outdated"):
             return StatusReason.GUARD_OUTDATED
         if self.fault("vm-not-configured"):
@@ -145,6 +155,7 @@ class MockLab:
             return await self._tour.get_status()
         others: tuple[str, ...] | None = None
         notices: tuple[StatusNotice, ...] = ()
+        problem: StatusReason | None = None
         up = self._target_up()
         if not up:
             vm = VM_TARGET_OFFLINE
@@ -162,7 +173,21 @@ class MockLab:
             checked_at=self._clock(),
             other_vms_running=others,
             notices=notices,
+            watch_retry=self._retry(problem),
         )
+
+    def _retry(self, problem: StatusReason | None) -> WatchRetry | None:
+        """Pause wie die Sitzung vm-watch: 30 Minuten, dann ein neuer Versuch (Konzept 3.5).
+
+        Den Fehler auszuschalten wirkt wie ein erfolgreiches trust-host-key: Die Pause endet.
+        """
+        if problem not in PERMANENT_REASONS:
+            self._pause_until = None
+            return None
+        now = self._clock()
+        if self._pause_until is None or now >= self._pause_until:
+            self._pause_until = now.replace(microsecond=0) + PERMANENT_PAUSE
+        return WatchRetry(at=self._pause_until, paused=True)
 
     def _others(self) -> tuple[str, ...]:
         return (MOCK_OTHER_VM,) if self.fault("other-vm") else ()

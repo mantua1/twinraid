@@ -105,10 +105,12 @@ class RealStatusProvider:
         target = self._config.servers.target
         target_up = await self._tcp_check(str(target.host), target.webgui.effective_port)
         self._watch.set_target_online(target_up)
+        retry = None
         if target_up:
-            vm, others, notices = vm_status(
-                self._watch.view(), self._config.gaming_vm.unraid_vm_name
-            )
+            view = self._watch.view()
+            vm, others, notices = vm_status(view, self._config.gaming_vm.unraid_vm_name)
+            # Wann die Sitzung den nächsten Versuch macht (Konzept 3.5, ab v0.4.4).
+            retry = view.retry
         else:
             vm, others, notices = VM_TARGET_OFFLINE, None, ()
         return ResourceStatus(
@@ -118,4 +120,5 @@ class RealStatusProvider:
             checked_at=self._clock(),
             other_vms_running=others,
             notices=notices,
+            watch_retry=retry,
         )

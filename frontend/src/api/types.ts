@@ -43,6 +43,13 @@ export interface ResourceInfo {
   reason: StatusReason | null;
 }
 
+// Nächster Versuch der Statusverbindung, ab v0.4.4 (Konzept 3.5).
+export interface WatchRetry {
+  at: string;
+  // Pause nach einem dauerhaften Fehler; trust-host-key beendet sie sofort.
+  paused: boolean;
+}
+
 // Aktionen (Konzept 4.2); Spiegel von backend/src/twinraid/shared/actions.py.
 export const ACTION_NAMES = [
   "wake_target",
@@ -148,6 +155,8 @@ export interface StatusSnapshot {
   other_vms_running: string[] | null;
   // Hinweise zu den Kacheln (ab v0.4.3).
   notices: StatusNotice[];
+  // Der Worker wartet nach einem Fehler der Statusverbindung (ab v0.4.4); sonst null.
+  watch_retry: WatchRetry | null;
 }
 
 export interface AppInfo {

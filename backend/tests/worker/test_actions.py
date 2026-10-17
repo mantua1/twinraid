@@ -333,7 +333,11 @@ async def test_force_only_after_the_timeout(tmp_path: Path) -> None:
     status, actions = setup.actions.snapshot(setup.monitor.current())
     assert status.vm.state is ResourceState.STOPPING
     assert actions.force_available_at == time.clock() + timedelta(minutes=3)
-    assert actions.availability[ActionName.VM_FORCE_STOP] is ActionBlocker.BUSY
+    # Während das Herunterfahren läuft, nennt der Grund die Wartezeit, nicht nur „belegt“:
+    # Die Oberfläche zeigt dann „Erzwingen: möglich ab …“ (ab v0.4.4).
+    assert actions.availability[ActionName.VM_FORCE_STOP] is ActionBlocker.FORCE_NOT_YET
+    assert actions.availability[ActionName.VM_STOP] is ActionBlocker.BUSY
+    assert await setup.actions.request(ActionName.VM_FORCE_STOP) is ActionBlocker.FORCE_NOT_YET
     # shutdown_timeout_minutes: 3 Minuten
     while setup.actions.busy:
         time.advance(3)
@@ -394,6 +398,53 @@ async def test_shutdown_aborts_when_the_vm_keeps_running(setup: Setup) -> None:
     assert setup.monitor.current().target.state is ResourceState.ONLINE
     assert setup.monitor.current().vm.state is ResourceState.ONLINE
     assert setup.availability()[ActionName.VM_FORCE_STOP] is None
+
+
+async def test_force_time_is_shown_while_the_target_shuts_down(tmp_path: Path) -> None:
+    """Groß herunterfahren belegt die VM; solange sie läuft, gilt die Wartezeit (ab v0.4.4)."""
+    time = FakeTime(auto=False)
+    setup = Setup(tmp_path, time)
+    time.auto = True
+    await setup.boot()
+    await setup.start_vm()
+    set_flag(fault_flag(setup.dir, "vm-hang"), True)
+    time.auto = False
+    assert await setup.request(ActionName.SHUTDOWN_TARGET) is None
+    await spin()
+    _, actions = setup.actions.snapshot(setup.monitor.current())
+    assert actions.force_available_at == time.clock() + timedelta(minutes=3)
+    assert actions.availability[ActionName.VM_FORCE_STOP] is ActionBlocker.FORCE_NOT_YET
+    while setup.actions.busy:
+        time.advance(3)
+        await spin()
+    # Der Abbruch wartete die ganze Zeit ab: Erzwingen ist jetzt sofort möglich.
+    assert setup.last("target") is ActionOutcome.VM_STOP_TIMEOUT
+    await setup.refresh()
+    assert setup.availability()[ActionName.VM_FORCE_STOP] is None
+
+
+async def test_no_force_time_once_the_vm_is_off(tmp_path: Path) -> None:
+    """Die VM ist aus, Groß fährt herunter: kein „möglich ab“ mehr, nur noch belegt."""
+    time = FakeTime(auto=False)
+    setup = Setup(tmp_path, time)
+    time.auto = True
+    await setup.boot()
+    await setup.start_vm()
+    time.auto = False
+    assert await setup.request(ActionName.SHUTDOWN_TARGET) is None
+    for _ in range(4):  # Die simulierte VM fährt in 8 s herunter.
+        time.advance(3)
+        await spin()
+        await setup.refresh()
+    _, actions = setup.actions.snapshot(setup.monitor.current())
+    assert actions.target.running is not None
+    assert actions.target.running.step is ActionStep.SHUTTING_DOWN
+    assert setup.monitor.current().vm.state is ResourceState.OFFLINE
+    assert actions.availability[ActionName.VM_FORCE_STOP] is ActionBlocker.BUSY
+    while setup.actions.busy:
+        time.advance(3)
+        await spin()
+    assert setup.last("target") is ActionOutcome.SUCCESS
 
 
 async def test_shutdown_without_vm(setup: Setup) -> None:

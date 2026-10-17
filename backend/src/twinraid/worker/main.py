@@ -5,6 +5,7 @@ import contextlib
 import logging
 import os
 import signal
+from collections.abc import Callable
 from pathlib import Path
 
 from twinraid.config import ConfigError, TwinRaidConfig, load_config
@@ -72,7 +73,16 @@ def main() -> int:
     server = WorkerServer(runtime.socket_path(env), allowed_uid, handler)
     log_enabled_actions(actions, mode)
     try:
-        asyncio.run(_serve(server, password_check, monitor, actions, integrations.background))
+        asyncio.run(
+            _serve(
+                server,
+                password_check,
+                monitor,
+                actions,
+                integrations.background,
+                integrations.retry_status_now,
+            )
+        )
     except SocketPathError as exc:
         logger.error("%s", exc)
         return EXIT_STARTUP_ERROR
@@ -127,6 +137,7 @@ async def _serve(
     monitor: StatusMonitor,
     actions: ActionCoordinator,
     background: tuple[BackgroundTask, ...] = (),
+    retry_status_now: Callable[[], None] = lambda: None,
 ) -> None:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -137,8 +148,14 @@ async def _serve(
         password_check.reset()
         logger.warning("Login throttling in the worker was reset (twinraid-admin unlock).")
 
+    def retry_status() -> None:
+        retry_status_now()
+        logger.info("Retry of the status connection requested (twinraid-admin trust-host-key).")
+
     # SIGUSR1 kommt von "twinraid-admin unlock" über s6-svc -1.
     loop.add_signal_handler(signal.SIGUSR1, reset_throttle)
+    # SIGUSR2 kommt von "twinraid-admin trust-host-key" über s6-svc -2 (Konzept 3.5, ab v0.4.4).
+    loop.add_signal_handler(signal.SIGUSR2, retry_status)
     await server.start()
     tasks = [
         asyncio.create_task(heartbeat(server.path.parent / HEARTBEAT_FILE)),
