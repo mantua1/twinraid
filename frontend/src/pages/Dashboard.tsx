@@ -8,6 +8,7 @@ import { ErrorNotice } from "@/components/ErrorNotice";
 import { HistoryTile } from "@/components/HistoryTile";
 import { NoticeList } from "@/components/NoticeList";
 import { PlaceholderTile } from "@/components/PlaceholderTile";
+import { RetryLine } from "@/components/RetryLine";
 import { StatusTile } from "@/components/StatusTile";
 import type { DashboardData } from "@/hooks/useDashboardData";
 
@@ -28,9 +29,10 @@ export function Dashboard({ data }: { data: DashboardData }) {
   const targetNotices = notices.filter((notice) => !VM_NOTICES.has(notice));
   const vmNotices = notices.filter((notice) => VM_NOTICES.has(notice));
   // Für die Begründung „Auf <Server> laufen noch weitere VMs: <Namen> …“ (Konzept 4.2).
+  const otherVms = status?.other_vms_running ?? [];
   const blockerValues = {
     target: names.target,
-    vms: (status?.other_vms_running ?? []).join(", "),
+    vms: otherVms.join(", "),
   };
   const shortTime = (value: string) =>
     new Intl.DateTimeFormat(i18n.resolvedLanguage, { timeStyle: "short" }).format(new Date(value));
@@ -145,6 +147,12 @@ export function Dashboard({ data }: { data: DashboardData }) {
           info={status?.target ?? UNKNOWN}
         >
           <NoticeList notices={targetNotices} target={names.target} />
+          {/* Nur Anzeige: ausgeschaltete VMs meldet guard.sh nicht (Konzept 4.1, ab v0.4.4). */}
+          {otherVms.length > 0 && (
+            <p className="text-sm" data-testid="other-vms">
+              {t("tiles.target.otherVms", { vms: blockerValues.vms })}
+            </p>
+          )}
           <ActivityLine
             activity={actions?.target}
             status={status}
@@ -164,6 +172,7 @@ export function Dashboard({ data }: { data: DashboardData }) {
           description={t("tiles.vm.description")}
           info={status?.vm ?? UNKNOWN}
         >
+          <RetryLine retry={status?.watch_retry} />
           <NoticeList notices={vmNotices} target={names.target} />
           <ActivityLine activity={actions?.vm} status={status} tile="vm" vmName={names.vm} />
           <ActionPanel
