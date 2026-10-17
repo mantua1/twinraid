@@ -7,7 +7,8 @@
 # poweroff. TwinRaid läuft gehärtet wie auf Unraid im Modus real.
 #
 # Prüft: die authorized_keys-Zeilen der Keys „status“ und „power“ aus init-ssh-keys
-# (restrict, from=, command=), trust-host-key mit Verbindungstest beider Keys, die
+# (restrict, from=, command=), trust-host-key mit Verbindungstest beider Keys, dass ein
+# bestandener Test mit dem Key „status“ die Pause nach einem abgelehnten Key beendet, die
 # Sitzung vm-watch (alle Zustände, weitere VMs, VM-Dienst aus oder hängend,
 # power.conf fehlt, Lebenszeichen, höchstens zwei Schleifen, Neuverbindung, keine
 # übrig bleibenden Prozesse), die Merkmale von Unraid Connect, dass Modus status nichts
@@ -259,16 +260,35 @@ expect_contains "status line forces guard.sh status" "${status_line}" 'command="
 expect_contains "status line names the key" "${status_line}" " twinraid-status"
 expect_contains "power line forces guard.sh power" "${power_line}" 'command="/bin/bash /boot/config/twinraid/guard.sh power" ssh-ed25519 '
 expect_not_contains "the private keys are never printed" "${init_out}" "PRIVATE KEY"
-printf '%s\n%s\n' "${status_line}" "${power_line}" | docker exec -i "${TARGET}" tee -a /boot/config/ssh/root/authorized_keys >/dev/null
 wait_for_status "without a confirmed host key nothing is sent" \
   '"vm":{"state":"unknown","reason":"ssh_host_untrusted"}'
 host_fp="$(fake ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $2}')"
 expect_contains "trust-host-key refuses a wrong fingerprint" \
   "$(admin trust-host-key target --fingerprint SHA256:falsch || true)" "does not match"
+# Der Fall aus dem Test von v0.4.3: Hostkey bestätigt, die Zeilen fehlen noch auf Groß.
+early_out="$(admin trust-host-key target --fingerprint "${host_fp}" || true)"
+expect_contains "trust-host-key shows the fingerprint" "${early_out}" "ED25519 ${host_fp}"
+expect_contains "without the lines on Groß the key status is rejected" "${early_out}" \
+  "The server rejects the key 'status'"
+expect_not_contains "a failed test does not end the wait" "${early_out}" "right away"
+wait_for_status "the status connection pauses after the rejected key" \
+  '"vm":{"state":"unknown","reason":"ssh_auth_failed"}'
+expect_contains "the status names the next attempt of the pause" "$(worker get_status)" \
+  '"paused":true}'
+printf '%s\n%s\n' "${status_line}" "${power_line}" | docker exec -i "${TARGET}" tee -a /boot/config/ssh/root/authorized_keys >/dev/null
 trust_out="$(admin trust-host-key target --fingerprint "${host_fp}" || true)"
-expect_contains "trust-host-key shows the fingerprint" "${trust_out}" "ED25519 ${host_fp}"
+expect_contains "the host key stays confirmed" "${trust_out}" "This host key was already confirmed."
 expect_contains "connection test with the key status" "${trust_out}" "OK: guard.sh answers (twinraid-guard 2 status ok)"
 expect_contains "connection test with the key power" "${trust_out}" "OK: guard.sh answers (twinraid-guard 2 power ok)"
+expect_contains "trust-host-key ends the wait (v0.4.4)" "${trust_out}" \
+  "TwinRaid connects with the key 'status' right away."
+# Ohne das Signal bliebe die Pause 30 Minuten; ohne power.conf meldet guard.sh nun den Stand.
+wait_for_status "the status connection is up within seconds" \
+  '"vm":{"state":"unknown","reason":"vm_not_configured"}' 15
+expect_contains "the worker got the signal" "$(docker logs "${APP}" 2>&1)" \
+  "Retry of the status connection requested"
+expect_contains "with a running session there is no next attempt" "$(worker get_status)" \
+  '"watch_retry":null'
 status_fp="$(docker exec "${APP}" ssh-keygen -lf /data/secrets/ssh-status.pub | awk '{print $2}')"
 power_fp="$(docker exec "${APP}" ssh-keygen -lf /data/secrets/ssh-power.pub | awk '{print $2}')"
 
