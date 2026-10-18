@@ -16,6 +16,7 @@ from twinraid.shared.actions import ActionBlocker, ActionName, ActionsSnapshot
 from twinraid.shared.addresses import configured, resolve_addresses
 from twinraid.shared.mode import RunMode
 from twinraid.shared.passwords import VerifyOutcome
+from twinraid.shared.source_guard import GuardState, SourceGuardStatus
 from twinraid.shared.status import UNKNOWN, StatusSnapshot
 from twinraid.web.app import WebApp, WebSettings, create_app
 from twinraid.web.db import WebDatabase
@@ -45,6 +46,7 @@ def unknown_status(password_set: bool = True, job_running: bool = False) -> Stat
         job_running=job_running,
         password_set=password_set,
         actions=ActionsSnapshot.blocked(ActionBlocker.TARGET_UNKNOWN),
+        source_guard=SourceGuardStatus(state=GuardState.NOT_MOUNTED),
     )
 
 

@@ -11,6 +11,8 @@ from twinraid.integrations.control import ActionControl, RealControl
 from twinraid.integrations.jobs import JobState, NoJobs
 from twinraid.integrations.mocks.jobs import MockJobSwitch
 from twinraid.integrations.mocks.lab import MockLab
+from twinraid.integrations.mocks.source_guard import MockSourceGuard
+from twinraid.integrations.source_guard import RealSourceGuard, SourceGuardSource
 from twinraid.integrations.ssh import GuardKey, SshPower, SshTarget
 from twinraid.integrations.status import RealStatusProvider, StatusProvider
 from twinraid.integrations.vm_watch import VmWatch
@@ -49,7 +51,10 @@ class Integrations:
     control: ActionControl
     # Simulationsmodus: Der feste Rundlauf ist eingeschaltet (twinraid-admin mock-tour).
     tour_active: Callable[[], bool]
-    # Aufgaben, die der Worker dauerhaft laufen lässt (Modus real: die Sitzung vm-watch).
+    # Wächter auf Klein (ab v0.5.0): Status für get_status.
+    source_guard: SourceGuardSource
+    # Aufgaben, die der Worker dauerhaft laufen lässt (Modus real: die Sitzung vm-watch und
+    # das Lesen des Wächters).
     background: tuple[BackgroundTask, ...] = ()
     # Gesetzt, wenn sich der Status ohne neue Prüfung geändert hat; der Monitor prüft dann sofort.
     status_changed: asyncio.Event | None = None
@@ -66,14 +71,16 @@ def build_integrations(
 ) -> Integrations:
     if mode is RunMode.MOCK:
         lab = MockLab(mock_flag_dir)
-        return Integrations(lab, lab, lab.tour_active)
+        return Integrations(lab, lab, lab.tour_active, MockSourceGuard(mock_flag_dir))
     watch = target_watch(config, paths)
     control = RealControl(config, watch, target_ssh(config, paths), wol)
+    guard = RealSourceGuard()
     return Integrations(
         RealStatusProvider(config, watch),
         control,
         _never,
-        background=(watch.run,),
+        guard,
+        background=(watch.run, guard.run),
         status_changed=watch.changed,
         retry_status_now=watch.retry_now,
     )

@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 from tests.conftest import REPO_ROOT
+from twinraid.integrations.source_guard import parse_status
 
 SCRIPT = REPO_ROOT / "host-scripts" / "source-guard.sh"
 EXAMPLE_CONF = REPO_ROOT / "host-scripts" / "source-guard.conf.example"
@@ -126,7 +127,10 @@ class Host:
         (self.private / "stop.request").unlink(missing_ok=True)
 
     def status(self) -> Status:
-        result: Status = json.loads(self.status_file.read_text())
+        raw = self.status_file.read_bytes()
+        result: Status = json.loads(raw)
+        # Jeder Status, den der Wächter hier schreibt, muss das Schema von TwinRaid erfüllen.
+        parse_status(raw)
         return result
 
     def wait_status(self, predicate: Callable[[Status], bool], timeout: float = 8) -> Status:

@@ -15,6 +15,7 @@ from twinraid.integrations.factory import build_integrations, build_job_state
 from twinraid.integrations.jobs import NoJobs
 from twinraid.integrations.mocks.jobs import MockJobSwitch
 from twinraid.integrations.mocks.lab import MockLab
+from twinraid.integrations.mocks.source_guard import GUARD_SCENARIO, MockSourceGuard
 from twinraid.integrations.mocks.status import (
     SCENARIO,
     STEP_SECONDS,
@@ -22,6 +23,7 @@ from twinraid.integrations.mocks.status import (
     MockStatusProvider,
 )
 from twinraid.integrations.network import tcp_reachable
+from twinraid.integrations.source_guard import RealSourceGuard
 from twinraid.integrations.status import RealStatusProvider, map_vm_state
 from twinraid.integrations.vm_watch import PERMANENT_REASONS, WatchReport, WatchView
 from twinraid.shared.datadirs import DataPaths
@@ -252,7 +254,10 @@ async def test_mock_scenario_cycles_through_all_states() -> None:
     # Konzept 6.4: jeder Zustand, jede Ursache und jeder Hinweis mindestens einmal.
     assert seen_states == set(ResourceState)
     assert seen_reasons == set(StatusReason)
-    assert seen_notices == set(StatusNotice)
+    # Die Hinweise zu Klein kommen aus dem Rundlauf des Wächters (GUARD_SCENARIO).
+    guard_notices = {notice for step in GUARD_SCENARIO for notice in step.notices}
+    assert seen_notices | guard_notices == set(StatusNotice)
+    assert not seen_notices & guard_notices
     # Nach einem Durchlauf beginnt der Ablauf von vorn.
     assert provider.step() == 0
 
@@ -298,11 +303,13 @@ def test_factory_by_mode(tmp_path: Path) -> None:
     assert mock.control is mock.status
     assert mock.background == ()
     assert mock.status_changed is None
+    assert isinstance(mock.source_guard, MockSourceGuard)
     real = build_integrations(RunMode.REAL, CONFIG, paths, tmp_path, None)
     assert isinstance(real.status, RealStatusProvider)
     assert isinstance(real.control, RealControl)
-    # Im Modus real läuft die Sitzung vm-watch im Hintergrund und meldet Änderungen.
-    assert len(real.background) == 1
+    # Im Modus real laufen die Sitzung vm-watch und das Lesen des Wächters im Hintergrund.
+    assert isinstance(real.source_guard, RealSourceGuard)
+    assert len(real.background) == 2
     assert real.status_changed is not None
     # Den Rundlauf gibt es nur in der Simulation.
     (tmp_path / "mock-tour").touch()

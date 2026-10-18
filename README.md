@@ -64,6 +64,9 @@ Die Simulation ist interaktiv: Groß und die VM starten ausgeschaltet, die Butto
 ./scripts/dev-admin.sh mock-fault guard-outdated on  # guard.sh auf Groß zu alt
 ./scripts/dev-admin.sh mock-fault connect-plugin on  # Unraid Connect mit Flash Backup auf Groß
 ./scripts/dev-admin.sh mock-fault status-key-rejected on  # Groß lehnt den Key „status“ ab
+./scripts/dev-admin.sh mock-fault source-guard-inactive on  # Wächter auf Klein läuft nicht
+./scripts/dev-admin.sh mock-fault source-guard-lost on  # Wächter hat seinen Zustand verloren
+./scripts/dev-admin.sh mock-fault source-guard-start-failed on  # Container startet nach dem Lauf nicht
 ./scripts/dev-admin.sh show-action-log            # Aktionslog des Workers
 ```
 

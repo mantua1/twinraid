@@ -9,6 +9,8 @@ from twinraid.integrations.control import ActionControl
 from twinraid.integrations.jobs import JobState
 from twinraid.integrations.mocks.jobs import MockJobSwitch
 from twinraid.integrations.mocks.lab import MockLab
+from twinraid.integrations.mocks.source_guard import MockSourceGuard
+from twinraid.integrations.source_guard import SourceGuardSource
 from twinraid.shared.mode import RunMode
 from twinraid.worker.action_log import ActionLog
 from twinraid.worker.actions import ActionCoordinator, StatusSource
@@ -24,6 +26,7 @@ def make_handler(
     password: str | None = TEST_PASSWORD,
     config: TwinRaidConfig | None = None,
     control: ActionControl | None = None,
+    source_guard: SourceGuardSource | None = None,
 ) -> CommandHandler:
     config = config or load_config(EXAMPLE_CONFIG)
     lab = MockLab(directory)
@@ -38,4 +41,11 @@ def make_handler(
         ActionLog(directory / "actions.jsonl"),
         tour_active=lab.tour_active,
     )
-    return CommandHandler(monitor, password_check(directory, password), job_state, mode, actions)
+    return CommandHandler(
+        monitor,
+        password_check(directory, password),
+        job_state,
+        mode,
+        actions,
+        source_guard or MockSourceGuard(directory),
+    )

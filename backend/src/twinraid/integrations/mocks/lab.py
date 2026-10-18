@@ -44,6 +44,10 @@ FAULTS = (
     "guard-outdated",
     "connect-plugin",
     "status-key-rejected",
+    # Wächter auf Klein (ab v0.5.0, MockSourceGuard)
+    "source-guard-inactive",
+    "source-guard-lost",
+    "source-guard-start-failed",
 )
 # Name der weiteren VM bei mock-fault other-vm.
 MOCK_OTHER_VM = "Test-VM"

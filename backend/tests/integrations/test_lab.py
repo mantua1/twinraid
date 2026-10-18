@@ -196,6 +196,9 @@ def test_fault_names_are_fixed(tmp_path: Path) -> None:
         "guard-outdated",
         "connect-plugin",
         "status-key-rejected",
+        "source-guard-inactive",
+        "source-guard-lost",
+        "source-guard-start-failed",
     )
     for name in ("../etc", "api-forbidden"):
         with pytest.raises(ValueError, match="unknown fault"):

@@ -85,6 +85,10 @@ async def test_get_status_before_the_first_check(server: WorkerServer) -> None:
     assert response.result.pop("other_vms_running") is None
     assert response.result.pop("notices") == []
     assert response.result.pop("watch_retry") is None
+    # Der simulierte Wächter ist aktiv (Konzept 6.4).
+    guard = response.result.pop("source_guard")
+    assert isinstance(guard, dict)
+    assert guard["state"] == "active"
     assert response.result == {
         "source": unknown,
         "target": unknown,

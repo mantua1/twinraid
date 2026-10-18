@@ -574,7 +574,7 @@ def build_parser() -> argparse.ArgumentParser:
     mock_tour.add_argument("state", choices=["on", "off"])
     mock_tour.set_defaults(handler=cmd_mock_tour)
     mock_fault = commands.add_parser(
-        "mock-fault", help="simulate a fault of the target server (simulation mode only)"
+        "mock-fault", help="simulate a fault of a server or the source guard (simulation mode only)"
     )
     mock_fault.add_argument("fault", choices=list(FAULTS))
     mock_fault.add_argument("state", choices=["on", "off"])
