@@ -28,17 +28,30 @@ def test_receive_options_match_the_concept() -> None:
     """Die Befehlszeile ist dieselbe wie in Konzept 3.7 (und später in guard.sh)."""
     concept = CONCEPT.read_text()
     match = re.search(
-        r"```\nzfs receive \\\n(.*?)mainpool/twinraid-mirror/<Name>\n```", concept, re.DOTALL
+        r"```\nzfs receive (.*?)mainpool/twinraid-mirror/<Name>\n```", concept, re.DOTALL
     )
     assert match is not None
     expected = [token for token in match.group(1).split() if token != "\\"]
+    mountpoint = expected.index("mountpoint=/mnt/mainpool/twinraid-mirror/<Name>")
+    assert expected[mountpoint - 1] == "-o"
+    del expected[mountpoint - 1 : mountpoint + 1]
+    assert "-x" not in expected
     assert _array("RECEIVE_OPTIONS") == expected
 
 
-def test_mirror_properties_are_the_receive_options() -> None:
-    options = _array("RECEIVE_OPTIONS")
-    set_values = [options[i + 1] for i, token in enumerate(options) if token == "-o"]
-    assert _array("MIRROR_PROPERTIES") == set_values
+def test_no_property_from_a_stream_is_allowed() -> None:
+    """Positivliste: nach dem Empfang darf keine Eigenschaft die Quelle received haben."""
+    text = SCRIPT.read_text()
+    assert "readonly RECEIVED_ALLOWED=()\n" in text
+
+
+def test_old_receive_line_only_for_the_finding() -> None:
+    """Die frühere Zeile mit -x dient nur dem Befund, nie dem eigentlichen Empfang."""
+    text = SCRIPT.read_text()
+    uses = [line for line in text.splitlines() if "X_RECEIVE_OPTIONS[@]" in line]
+    assert len(uses) == 1
+    function = text[: text.index(uses[0])].rsplit("\ncheck_", 1)[1]
+    assert function.startswith("x_finding()")
 
 
 def test_clone_options_match_the_concept() -> None:

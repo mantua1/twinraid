@@ -36,18 +36,24 @@ readonly FILE_POOL_SIZE=1G
 readonly MEASURE_BYTES=536870912
 readonly GIB=1073741824
 # Feste Befehlszeile für den Empfang, wie guard.sh sie ab Version 3 verwendet (Konzept 3.7).
+# Dazu kommt je Spiegel -o mountpoint=<fester Ort>; alle Werte gelten mit Quelle local.
 readonly RECEIVE_OPTIONS=(
+  -u
   -o readonly=on -o exec=off -o setuid=off -o devices=off
-  -o primarycache=metadata -o compression=lz4 -o atime=off
-  -o xattr=sa -o acltype=posix -o twinraid:mirror=1
-  -x recordsize -x secondarycache -x snapdir -x sync -x dedup
-  -x copies -x checksum -x quota -x refquota -x reservation
-  -x refreservation -x mountpoint -x canmount -x sharesmb -x sharenfs
+  -o primarycache=metadata -o secondarycache=all -o compression=lz4 -o atime=off
+  -o xattr=sa -o acltype=posix -o recordsize=128K -o snapdir=hidden
+  -o sync=standard -o dedup=off -o copies=1 -o checksum=on
+  -o quota=none -o refquota=none -o reservation=none -o refreservation=none
+  -o canmount=on
+  -o sharesmb=off -o sharenfs=off -o twinraid:mirror=1
 )
-# Eigenschaften, die nach jedem Empfang am Spiegel stehen müssen (Quelle local).
-readonly MIRROR_PROPERTIES=(
-  readonly=on exec=off setuid=off devices=off primarycache=metadata compression=lz4
-  atime=off xattr=sa acltype=posix twinraid:mirror=1
+# Eigenschaften mit Quelle received, die nach einem Empfang erlaubt sind. Leer: Ein Strom
+# des Wächters (ohne -p) bringt keine Eigenschaften mit. Jeder Eintrag braucht eine Begründung.
+readonly RECEIVED_ALLOWED=()
+# Die frühere Befehlszeile mit -x; nur noch für den Befund, ob -x auf diesem Server wirkt.
+readonly X_RECEIVE_OPTIONS=(
+  -o readonly=on -o exec=off -o setuid=off -o devices=off
+  -x quota -x mountpoint
 )
 # Eigenschaften der Klone im Notbetrieb (Konzept 4.6).
 readonly CLONE_OPTIONS=(
@@ -104,14 +110,84 @@ expect_failure() {
 prop() { zfs get -H -p -o value -- "$1" "$2"; }
 prop_source() { zfs get -H -o source -- "$1" "$2"; }
 
-# Sendet mit den Optionen des Wächters und empfängt mit der festen Befehlszeile.
+mountpoint_of() { zfs list -H -o mountpoint -- "$1"; }
+value_of() { zfs get -H -o value -- "$1" "$2"; }
+
+# Fester Ort eines Spiegels: unter dem Ort des übergeordneten Datasets. Setzt MOUNT_SHOWN
+# (wie zfs ihn anzeigt) und MOUNT_VALUE (der Wert für -o; ohne altroot des Datei-Pools).
+mirror_mountpoint() {
+  MOUNT_SHOWN="$(mountpoint_of "${1%/*}")/${1##*/}"
+  MOUNT_VALUE="${MOUNT_SHOWN#"${ALTROOT}"}"
+}
+
+# Eigenschaften mit Quelle received am Spiegel und an seinen Snapshots, ohne die erlaubten.
+received_properties() {
+  local line property allowed keep
+  {
+    zfs get -H -o name,property -s received -- all "$1" 2>/dev/null || true
+    zfs get -H -r -t snapshot -o name,property -s received -- all "$1" 2>/dev/null || true
+  } | sort -u | while IFS= read -r line; do
+    property="${line#*$'\t'}"
+    keep=1
+    for allowed in "${RECEIVED_ALLOWED[@]+"${RECEIVED_ALLOWED[@]}"}"; do
+      if [[ "${property}" == "${allowed}" ]]; then
+        keep=0
+      fi
+    done
+    if ((keep)) && [[ -n "${line}" ]]; then
+      printf '%s\n' "${line}"
+    fi
+  done
+}
+
+# Wie guard.sh nach dem Empfang (Konzept 3.7): erst prüfen, dann einhängen, dann den Ort
+# prüfen. Rückgabe: 0 eingehängt am festen Ort, 2 Eigenschaften aus dem Strom (bleibt
+# ausgehängt), 3 Einhängen gescheitert oder falscher Ort (wieder ausgehängt).
+verify_and_mount() {
+  local target="$1" where
+  mirror_mountpoint "${target}"
+  RECEIVED_FOUND="$(received_properties "${target}")"
+  if [[ -n "${RECEIVED_FOUND}" ]]; then
+    # Ein schon eingehängter Spiegel (inkrementeller Empfang) wird ausgehängt.
+    if [[ "$(value_of mounted "${target}")" == yes ]]; then
+      zfs unmount -- "${target}" >/dev/null 2>&1 || true
+    fi
+    return 2
+  fi
+  if [[ "$(value_of mounted "${target}")" != yes ]]; then
+    zfs mount -- "${target}" >/dev/null 2>&1 || return 3
+  fi
+  where="$(findmnt -n -o TARGET -S "${target}" 2>/dev/null || true)"
+  if [[ "${where}" != "${MOUNT_SHOWN}" ]]; then
+    zfs unmount -- "${target}" >/dev/null 2>&1 || true
+    return 3
+  fi
+}
+
+# Sendet mit den Optionen des Wächters (dazu weitere aus den Argumenten), empfängt mit der
+# festen Befehlszeile und hängt nach der Prüfung ein.
 send_receive() {
   local target="$1"
   shift
-  zfs send -L -c -e "$@" | zfs receive "${RECEIVE_OPTIONS[@]}" -- "${target}"
+  mirror_mountpoint "${target}"
+  zfs send -L -c -e "$@" | zfs receive "${RECEIVE_OPTIONS[@]}" -o "mountpoint=${MOUNT_VALUE}" \
+    -- "${target}" || return 1
+  verify_and_mount "${target}"
 }
 
-mountpoint_of() { zfs list -H -o mountpoint -- "$1"; }
+# Wie die Aufbewahrung in guard.sh: nur twinraid:received mit Quelle local zählt, älter als
+# days Tage, nie die drei neuesten Snapshots. Druckt die Snapshots, die gelöscht würden.
+retention_candidates() {
+  local dataset="$1" days="$2" limit snapshots i value source
+  limit=$(($(date +%s) - days * 86400))
+  mapfile -t snapshots < <(zfs list -H -t snapshot -o name -s createtxg -- "${dataset}")
+  for ((i = 0; i < ${#snapshots[@]} - 3; i++)); do
+    IFS=$'\t' read -r value source < <(zfs get -H -p -o value,source -- twinraid:received "${snapshots[i]}")
+    if [[ "${source}" == local && "${value}" =~ ^[0-9]{1,12}$ ]] && ((value < limit)); then
+      printf '%s\n' "${snapshots[i]}"
+    fi
+  done
+}
 
 # Inhalt eines Dateisystems: Typ, Rechte, Links, Größe, Zeit, Pfad, Ziel und SHA-256.
 listing() {
@@ -132,35 +208,30 @@ same_content() {
 
 snapshots_of() { zfs list -H -t snapshot -o name -s createtxg -- "$1" 2>/dev/null || true; }
 
+# Alle mit -o gesetzten Werte und der feste Ort müssen am Spiegel stehen, Quelle local.
 check_mirror_properties() {
-  local dataset="$1" label="$2" pair name value bad_list=""
-  for pair in "${MIRROR_PROPERTIES[@]}"; do
+  local dataset="$1" label="$2" i pair name value bad_list=""
+  mirror_mountpoint "${dataset}"
+  for ((i = 0; i < ${#RECEIVE_OPTIONS[@]}; i++)); do
+    if [[ "${RECEIVE_OPTIONS[i]}" != -o ]]; then
+      continue
+    fi
+    pair="${RECEIVE_OPTIONS[i + 1]}"
     name="${pair%%=*}"
     value="${pair#*=}"
-    if [[ "$(prop "${name}" "${dataset}")" != "${value}" ||
+    if [[ "$(value_of "${name}" "${dataset}")" != "${value}" ||
       "$(prop_source "${name}" "${dataset}")" != local ]]; then
       bad_list+=" ${name}"
     fi
   done
+  if [[ "$(value_of mountpoint "${dataset}")" != "${MOUNT_SHOWN}" ||
+    "$(prop_source mountpoint "${dataset}")" != local ]]; then
+    bad_list+=" mountpoint"
+  fi
   if [[ -z "${bad_list}" ]]; then
     ok "${label}: alle Eigenschaften am Spiegel mit Quelle local"
   else
     bad "${label}: Eigenschaften abweichend:${bad_list}"
-  fi
-}
-
-# Eine mit -x ausgeschlossene Eigenschaft: wirksamer Wert nicht aus dem Strom.
-# expected leer: nur die Quelle zählt (nicht received, nicht local).
-check_excluded() {
-  local dataset="$1" name="$2" expected="$3" value source
-  value="$(prop "${name}" "${dataset}")"
-  source="$(prop_source "${name}" "${dataset}")"
-  source="${source%% *}"
-  if [[ -n "${expected}" && "${value}" == "${expected}" ]] ||
-    [[ -z "${expected}" && "${source}" != received && "${source}" != local ]]; then
-    ok "-x ${name}: nicht aus dem Strom übernommen (Quelle ${source})"
-  else
-    bad "-x ${name}: Wert ${value//[^A-Za-z0-9._\/-]/} mit Quelle ${source} aus dem Strom"
   fi
 }
 
@@ -491,27 +562,8 @@ run_cases() {
   zfs destroy -- "${dst}@e"
   expect_success "danach klappt der Empfang" send_receive "${dst}" -i "${src}@d" "${src}@e"
 
-  echo "== Strom mit Eigenschaften (-p)"
-  zfs set -- quota=1G recordsize=1M setuid=on compression=off atime=on twinraid:mirror=0 "${src}"
-  zfs set -- mountpoint=legacy "${src}"
   zfs snapshot -- "${src}@f"
-  if zfs send -L -c -e -p -i "${src}@e" "${src}@f" | zfs receive "${RECEIVE_OPTIONS[@]}" -- "${dst}" >/dev/null 2>&1; then
-    ok "Empfang eines Stroms mit -p"
-  else
-    bad "Empfang eines Stroms mit -p"
-  fi
-  check_mirror_properties "${dst}" "nach Strom mit -p"
-  # Mit -x zählt der Wert aus dem Strom nicht: vererbbare Eigenschaften kommen vom
-  # übergeordneten Dataset, nicht vererbbare stehen auf ihrem Standard.
-  check_excluded "${dst}" quota 0
-  check_excluded "${dst}" mountpoint ""
-  check_excluded "${dst}" recordsize ""
-  zfs inherit -- mountpoint "${src}"
-  zfs set -- quota=none compression=lz4 atime=off "${src}"
-  zfs inherit -- setuid "${src}"
-  zfs inherit -- recordsize "${src}"
-  zfs inherit -- twinraid:mirror "${src}"
-  src_dir="$(mountpoint_of "${src}")"
+  expect_success "Empfang von @f" send_receive "${dst}" -i "${src}@e" "${src}@f"
 
   echo "== Lesezeichen und Hold"
   expect_success "Lesezeichen anlegen" zfs bookmark -- "${src}@f" "${src}#f"
@@ -541,6 +593,152 @@ run_cases() {
     expect_success "Klon wieder löschen" zfs destroy -- "${clone}"
   else
     bad "Klon angelegt"
+  fi
+
+  check_received_rules "${dst}"
+  check_each_option "${src}" "${src}@h"
+  check_hostile_stream
+  check_x_finding
+}
+
+# Prüfung vor dem Einhängen bei normalen Strömen und die Regel "nur Quelle local".
+check_received_rules() {
+  local dst="$1" candidates
+  echo "== Prüfung vor dem Einhängen, Aufbewahrung"
+  if [[ -z "$(received_properties "${dst}")" ]]; then
+    ok "normale Ströme bringen keine Eigenschaft mit Quelle received"
+  else
+    bad "normale Ströme bringen Eigenschaften mit: $(received_properties "${dst}" | cut -f2 | tr '\n' ' ')"
+  fi
+  if [[ "$(findmnt -n -o TARGET -S "${dst}" 2>/dev/null)" == "$(value_of mountpoint "${dst}")" ]]; then
+    ok "Spiegel hängt genau am festen Ort"
+  else
+    bad "Spiegel hängt nicht am festen Ort"
+  fi
+  zfs set -- twinraid:received=1000000000 "${dst}@a"
+  candidates="$(retention_candidates "${dst}" 30)"
+  if [[ "${candidates}" == "${dst}@a" ]]; then
+    ok "Aufbewahrung: nur der Snapshot mit altem twinraid:received (Quelle local)"
+  else
+    bad "Aufbewahrung wählt: ${candidates//$'\n'/ }"
+  fi
+  zfs inherit -- twinraid:received "${dst}@a"
+}
+
+# Nimmt guard.sh jedes -o auch beim inkrementellen Empfang an? Jede Option einzeln.
+check_each_option() {
+  local src="$1" base="$2" target="${ROOT}/einzeln" i n=0 pair previous="$2"
+  echo "== Jedes -o einzeln beim inkrementellen Empfang"
+  if ! send_receive "${target}" "${base}" >/dev/null 2>&1; then
+    bad "Ausgangsstand für die Einzelprüfung"
+    return 0
+  fi
+  mirror_mountpoint "${target}"
+  for ((i = 0; i < ${#RECEIVE_OPTIONS[@]}; i++)); do
+    if [[ "${RECEIVE_OPTIONS[i]}" != -o ]]; then
+      continue
+    fi
+    pair="${RECEIVE_OPTIONS[i + 1]}"
+    n=$((n + 1))
+    printf 'Option %d\n' "${n}" >>"$(mountpoint_of "${src}")/einzeln.txt"
+    zfs snapshot -- "${src}@o${n}"
+    if zfs send -L -c -e -i "${previous}" "${src}@o${n}" |
+      zfs receive -u -o "${pair}" -- "${target}" >/dev/null 2>&1; then
+      ok "-o ${pair} inkrementell angenommen"
+    else
+      bad "-o ${pair} inkrementell nicht angenommen"
+    fi
+    previous="${src}@o${n}"
+  done
+  n=$((n + 1))
+  zfs snapshot -- "${src}@o${n}"
+  if zfs send -L -c -e -i "${previous}" "${src}@o${n}" |
+    zfs receive -u -o "mountpoint=${MOUNT_VALUE}" -- "${target}" >/dev/null 2>&1; then
+    ok "-o mountpoint=<fester Ort> inkrementell angenommen"
+  else
+    bad "-o mountpoint=<fester Ort> inkrementell nicht angenommen"
+  fi
+}
+
+# Ein absichtlich böser Strom (mit -p und -I), wie ihn ein übernommenes Klein schicken
+# könnte: nichts darf woanders hängen, kein Wert darf wirken, die Aufbewahrung darf
+# nichts davon vorzeitig löschen (Konzept 3.7).
+check_hostile_stream() {
+  local evil="${ROOT}/boese-quelle" mirror="${ROOT}/boese" full="${ROOT}/boese-voll"
+  local elsewhere rc dir
+  echo "== Absichtlich böser Strom"
+  elsewhere="$(mountpoint_of "${ROOT}")/woanders"
+  zfs create -o "${PROPERTY}=${RUN_ID}" -- "${evil}" >/dev/null
+  dir="$(mountpoint_of "${evil}")"
+  printf 'Basis\n' >"${dir}/basis.txt"
+  zfs snapshot -- "${evil}@basis"
+  expect_success "Spiegel für den bösen Strom angelegt" send_receive "${mirror}" "${evil}@basis"
+  printf 'Mitte\n' >"${dir}/mitte.txt"
+  zfs snapshot -- "${evil}@mitte"
+  zfs set -- twinraid:received=1000000000 "${evil}@mitte"
+  printf 'x1\n' >"${dir}/x1.txt"
+  zfs snapshot -- "${evil}@x1"
+  printf 'x2\n' >"${dir}/x2.txt"
+  zfs snapshot -- "${evil}@x2"
+  zfs set -- canmount=noauto "${evil}"
+  zfs unmount -- "${evil}"
+  zfs set -- "mountpoint=${elsewhere#"${ALTROOT}"}" quota=1G refquota=1G reservation=1M \
+    twinraid:mirror=0 "${evil}"
+  # Ausgehängt wird nichts freigegeben; scheitert es trotzdem, fehlt nur dieser Wert im Strom.
+  if ! zfs set -- sharesmb=on "${evil}" >/dev/null 2>&1; then
+    info "sharesmb ließ sich an der Quelle nicht setzen; nicht im bösen Strom"
+  fi
+  zfs snapshot -- "${evil}@boese"
+  rc=0
+  send_receive "${mirror}" -p -I "${evil}@basis" "${evil}@boese" >/dev/null 2>&1 || rc=$?
+  if ((rc == 2)); then
+    ok "-p -I: Prüfung erkennt Eigenschaften aus dem Strom ($(printf '%s\n' "${RECEIVED_FOUND}" | grep -c .) Stück)"
+  else
+    bad "-p -I: Prüfung schlug nicht an (Code ${rc})"
+  fi
+  if [[ "$(value_of mounted "${mirror}")" == no ]]; then ok "-p -I: Spiegel bleibt ausgehängt"; else
+    bad "-p -I: Spiegel ist eingehängt"
+  fi
+  if [[ -z "$(findmnt -n -M "${elsewhere}" 2>/dev/null)" ]]; then ok "-p -I: nichts hängt am Ort aus dem Strom"; else
+    bad "-p -I: etwas hängt am Ort aus dem Strom"
+  fi
+  check_mirror_properties "${mirror}" "-p -I: feste Werte wirken, keiner aus dem Strom"
+  if [[ "$(prop_source twinraid:received "${mirror}@mitte")" == received ]]; then
+    ok "-p -I: altes twinraid:received am Zwischen-Snapshot hat Quelle received"
+  else
+    bad "-p -I: twinraid:received am Zwischen-Snapshot nicht mit Quelle received"
+  fi
+  if [[ -z "$(retention_candidates "${mirror}" 30)" ]]; then
+    ok "-p -I: Aufbewahrung würde nichts davon löschen"
+  else
+    bad "-p -I: Aufbewahrung würde löschen: $(retention_candidates "${mirror}" 30 | tr '\n' ' ')"
+  fi
+  rc=0
+  send_receive "${full}" -p "${evil}@boese" >/dev/null 2>&1 || rc=$?
+  if ((rc == 2)) && [[ "$(value_of mounted "${full}")" == no ]]; then
+    ok "-p vollständig: Prüfung erkennt Eigenschaften, Spiegel bleibt ausgehängt"
+  else
+    bad "-p vollständig: Code ${rc}, eingehängt: $(value_of mounted "${full}" 2>/dev/null)"
+  fi
+  check_mirror_properties "${full}" "-p vollständig: feste Werte wirken, keiner aus dem Strom"
+  if [[ -z "$(findmnt -n -M "${elsewhere}" 2>/dev/null)" ]]; then ok "-p vollständig: nichts hängt am Ort aus dem Strom"; else
+    bad "-p vollständig: etwas hängt am Ort aus dem Strom"
+  fi
+}
+
+# Befund, ob -x auf diesem Server wirkt (die frühere Befehlszeile). Ohne sharesmb und mit
+# mountpoint=legacy, damit dabei nichts eingehängt oder freigegeben wird.
+check_x_finding() {
+  local evil="${ROOT}/x-quelle" target="${ROOT}/mit-x"
+  echo "== Befund: wirkt -x?"
+  zfs create -o "${PROPERTY}=${RUN_ID}" -- "${evil}" >/dev/null
+  zfs set -- quota=1G mountpoint=legacy "${evil}"
+  zfs snapshot -- "${evil}@x"
+  if zfs send -L -c -e -p "${evil}@x" | zfs receive -u "${X_RECEIVE_OPTIONS[@]}" -- "${target}" >/dev/null 2>&1; then
+    info "Befund -x quota: Wert $(value_of quota "${target}"), Quelle $(prop_source quota "${target}" | cut -d' ' -f1)"
+    info "Befund -x mountpoint: Wert $(value_of mountpoint "${target}" | tr -cd 'A-Za-z0-9/._-'), Quelle $(prop_source mountpoint "${target}" | cut -d' ' -f1)"
+  else
+    info "Befund -x: Empfang mit -x gescheitert"
   fi
 }
 
