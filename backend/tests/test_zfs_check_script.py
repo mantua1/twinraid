@@ -91,6 +91,10 @@ def test_reset_as_in_the_concept() -> None:
     assert 'zfs destroy -- "${mirror}@${snap}"' in function
     assert 'zfs set -- canmount=on "${mirror}"' in function
     assert function.index("zfs inherit") < function.index("canmount=on")
+    # zfs inherit nur für gemeldete Eigenschaften und nie für eine feste.
+    assert function.count("zfs inherit") == 1
+    assert function.index("is_fixed_property") < function.index("zfs inherit")
+    assert "< <(received_properties" in function
 
 
 def test_clone_options_match_the_concept() -> None:

@@ -749,6 +749,20 @@ check_lock() {
   fi
 }
 
+# Eigenschaft aus der festen Empfangszeile (alle -o und der feste Ort)?
+is_fixed_property() {
+  local i
+  if [[ "$1" == mountpoint ]]; then
+    return 0
+  fi
+  for ((i = 0; i < ${#RECEIVE_OPTIONS[@]}; i++)); do
+    if [[ "${RECEIVE_OPTIONS[i]}" == -o && "${RECEIVE_OPTIONS[i + 1]%%=*}" == "$1" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Zurücksetzen nach props-mismatch wie in Konzept 3.7: verdächtige Snapshots einzeln löschen,
 # zurück zum letzten guten, Eigenschaften mit Quelle received zurücksetzen, Werte prüfen,
 # canmount=on; danach geht es inkrementell von der Basis weiter.
@@ -759,10 +773,17 @@ check_reset() {
     zfs destroy -- "${mirror}@${snap}" >/dev/null 2>&1 || bad "Zurücksetzen: ${snap} nicht gelöscht"
   done
   expect_success "Zurücksetzen: Rollback auf den letzten guten Snapshot" zfs rollback -- "${mirror}@basis"
+  # Nur genau die gemeldeten Eigenschaften, nie eine feste der Empfangszeile (sonst fiele
+  # etwa readonly=on weg); eine feste mit Quelle received wäre selbst schon ein Fehler.
   while IFS=$'\t' read -r name property; do
-    if [[ -n "${property}" ]]; then
-      zfs inherit -- "${property}" "${name}" >/dev/null 2>&1 || bad "Zurücksetzen: ${property} nicht zurückgesetzt"
+    if [[ -z "${property}" ]]; then
+      continue
     fi
+    if is_fixed_property "${property}"; then
+      bad "Zurücksetzen: feste Eigenschaft ${property} mit Quelle received, nicht zurückgesetzt"
+      continue
+    fi
+    zfs inherit -- "${property}" "${name}" >/dev/null 2>&1 || bad "Zurücksetzen: ${property} nicht zurückgesetzt"
   done < <(received_properties "${mirror}")
   if [[ -z "$(received_properties "${mirror}")" ]]; then
     ok "Zurücksetzen: keine Eigenschaft mehr mit Quelle received"
