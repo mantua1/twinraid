@@ -149,6 +149,21 @@ check_mirror_properties() {
   fi
 }
 
+# Eine mit -x ausgeschlossene Eigenschaft: wirksamer Wert nicht aus dem Strom.
+# expected leer: nur die Quelle zählt (nicht received, nicht local).
+check_excluded() {
+  local dataset="$1" name="$2" expected="$3" value source
+  value="$(prop "${name}" "${dataset}")"
+  source="$(prop_source "${name}" "${dataset}")"
+  source="${source%% *}"
+  if [[ -n "${expected}" && "${value}" == "${expected}" ]] ||
+    [[ -z "${expected}" && "${source}" != received && "${source}" != local ]]; then
+    ok "-x ${name}: nicht aus dem Strom übernommen (Quelle ${source})"
+  else
+    bad "-x ${name}: Wert ${value//[^A-Za-z0-9._\/-]/} mit Quelle ${source} aus dem Strom"
+  fi
+}
+
 # --- Aufräumen: nur eigene Objekte, einzeln, nie -r ---------------------------------------
 
 # Entfernt alle Objekte unter einem eigenen Wurzel-Dataset, das die Eigenschaft
@@ -165,7 +180,7 @@ remove_tree() {
     printf 'zfs-check: %s trägt %s nicht; nichts entfernt\n' "${root}" "${PROPERTY}" >&2
     return 1
   fi
-  zfs unallow -u "${ALLOWED_USER:-nobody}" -- receive:append "${root}" >/dev/null 2>&1 || true
+  zfs unallow -u "${ALLOWED_USER:-nobody}" -- receive:append,mount,create "${root}" >/dev/null 2>&1 || true
   while ((progress)); do
     progress=0
     names="$(zfs list -H -t snapshot -o name -r -- "${root}" 2>/dev/null || true)"
@@ -486,12 +501,11 @@ run_cases() {
     bad "Empfang eines Stroms mit -p"
   fi
   check_mirror_properties "${dst}" "nach Strom mit -p"
-  if [[ "$(prop quota "${dst}")" == 0 && "$(prop_source mountpoint "${dst}")" != local &&
-    "$(prop_source recordsize "${dst}")" != received ]]; then
-    ok "quota, mountpoint und recordsize nicht aus dem Strom übernommen"
-  else
-    bad "Eigenschaften aus dem Strom übernommen"
-  fi
+  # Mit -x zählt der Wert aus dem Strom nicht: vererbbare Eigenschaften kommen vom
+  # übergeordneten Dataset, nicht vererbbare stehen auf ihrem Standard.
+  check_excluded "${dst}" quota 0
+  check_excluded "${dst}" mountpoint ""
+  check_excluded "${dst}" recordsize ""
   zfs inherit -- mountpoint "${src}"
   zfs set -- quota=none compression=lz4 atime=off "${src}"
   zfs inherit -- setuid "${src}"
@@ -534,7 +548,7 @@ run_cases() {
 # ROOT, mit einem Benutzer ohne Rechte; die Rechte gelten nur auf ROOT und werden am
 # Ende entfernt. Ein Ergebnis in jede Richtung ist kein FEHLER, sondern ein Befund.
 check_receive_append() {
-  local src="${ROOT}/src" deleg="${ROOT}/delegiert" uid gid user=nobody incremental full
+  local src="${ROOT}/src" deleg="${ROOT}/delegiert" uid gid user=nobody incremental full reason
   echo "== receive:append"
   if ! command -v setpriv >/dev/null; then
     info "receive:append: setpriv fehlt; nicht geprüft"
@@ -550,7 +564,8 @@ check_receive_append() {
     return 0
   }
   zfs set -- "${PROPERTY}=${RUN_ID}" "${deleg}"
-  if ! zfs allow -u "${user}" -- receive:append "${ROOT}" >/dev/null 2>&1; then
+  # receive:append braucht laut zfs-allow(8) zusätzlich mount und create.
+  if ! zfs allow -u "${user}" -- receive:append,mount,create "${ROOT}" >/dev/null 2>&1; then
     info "receive:append: in dieser Version von OpenZFS nicht verfügbar"
     return 0
   fi
@@ -559,11 +574,12 @@ check_receive_append() {
   full="$(mktemp)"
   zfs send -L -c -e -i "${src}@a" "${src}@b" >"${incremental}"
   zfs send -L -c -e "${src}@a" >"${full}"
-  if setpriv --reuid "${uid}" --regid "${gid}" --clear-groups -- \
-    zfs receive -u -- "${deleg}" <"${incremental}" >/dev/null 2>&1; then
+  if reason="$(setpriv --reuid "${uid}" --regid "${gid}" --clear-groups -- \
+    zfs receive -u -- "${deleg}" <"${incremental}" 2>&1)"; then
     info "receive:append: inkrementeller Empfang als Benutzer ohne root klappt"
   else
-    info "receive:append: inkrementeller Empfang als Benutzer ohne root scheitert"
+    reason="${reason%%$'\n'*}"
+    info "receive:append: inkrementeller Empfang als Benutzer ohne root scheitert (${reason//[^A-Za-z0-9 :._\/@-]/})"
   fi
   # Bewusst -F, als Benutzer ohne root und nur auf das eigene Test-Dataset: genau das
   # soll receive:append verhindern (Konzept 3.7). Es ist die einzige Stelle mit -F.
@@ -580,7 +596,7 @@ check_receive_append() {
     info "receive:append: Löschen eines Snapshots wurde verhindert"
   fi
   rm -f -- "${incremental}" "${full}"
-  if zfs unallow -u "${user}" -- receive:append "${ROOT}" >/dev/null 2>&1; then
+  if zfs unallow -u "${user}" -- receive:append,mount,create "${ROOT}" >/dev/null 2>&1; then
     ok "receive:append: Recht wieder entfernt"
     ALLOWED_USER=""
   else

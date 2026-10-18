@@ -123,13 +123,14 @@ fi
 zfs destroy mainpool/twinraid-mirror/zfs-check
 
 echo "== Abbruch mit SIGTERM räumt auf"
-check target >"${WORK}/term.log" 2>&1 &
+# Direkt starten, damit SIGTERM das Skript selbst trifft.
+/bin/bash "${CHECK}" target >"${WORK}/term.log" 2>&1 &
 pid=$!
-sleep 2
+sleep 1
 kill -TERM "${pid}"
 rc=0
 wait "${pid}" || rc=$?
-if ((rc != 0)); then pass "terminated run ends with an error code (${rc})"; else fail "terminated run returned 0"; fi
+expect_equal "terminated run ends with code 130" "${rc}" 130
 expect_contains "abort reported" "$(cat "${WORK}/term.log")" "abgebrochen"
 expect_equal "nothing left after SIGTERM" "$(state)" "${before}"
 
