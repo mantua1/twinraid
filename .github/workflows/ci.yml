@@ -83,6 +83,19 @@ jobs:
           docker/rootfs/etc/s6-overlay/s6-rc.d/*/finish
           docker/fake-target/start.sh
 
+  # Wächter für Unraid Klein mit echtem Docker und tmpfs (Konzept 3.6). Läuft als root
+  # auf dem Wegwerf-Runner und hält zwischendurch den Docker-Dienst an.
+  source-guard:
+    name: Source guard (real Docker)
+    runs-on: ubuntu-24.04
+    needs: [scripts]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sudo SOURCE_GUARD_TEST_HOST=disposable docker/source-guard-test.sh
+
   container:
     name: Container (build and start test)
     runs-on: ubuntu-24.04
@@ -125,7 +138,7 @@ jobs:
   publish:
     name: Publish image (ghcr.io)
     runs-on: ubuntu-24.04
-    needs: [container]
+    needs: [container, source-guard]
     if: >-
       github.event_name == 'push'
       && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
