@@ -13,11 +13,12 @@
 # Abbruch), einen Lauf mit Anhalten und Wiederstarten des Testcontainers aus
 # host-scripts/twinraid-testcontainer.xml, Ablehnungen (nicht freigegeben, nicht
 # laufend, nicht vorhanden, ID-Präfix eines anderen Containers, TwinRaid nach Image,
-# Label und Einbindung), Angriffe aus dem Container (löschen, umbenennen, Symlink,
+# Label und Einbindung, auch über /var/run), die Pause zwischen zwei Läufen und ihr
+# Aufheben, Angriffe aus dem Container (löschen, umbenennen, Symlink,
 # chown, Schreiben in state/, übergroße Datei, falsche Prüfsumme, Shell-Zeichen, alte
 # Nummer) und dass ihr Inhalt nie in Syslog oder status.json landet, Hardlink und
 # fremden Besitzer auf dem Host, den Totmannschalter, selftest, Neustarts und
-# Auftragsnummern, den verlorenen Zustand, das Verzeichnis, das Docker anlegt, wenn
+# Auftragsnummern, eine mit kill -9 beendete Überwachungsschleife, den verlorenen Zustand, das Verzeichnis, das Docker anlegt, wenn
 # TwinRaid vor dem Wächter startet, und die Merkmale von Unraid Connect.
 #
 # Aufruf aus dem Repo-Hauptordner:
@@ -197,6 +198,7 @@ cleanup() {
   pkill -f "${GUARD} (supervise|run)" 2>/dev/null || true
   systemctl start docker.socket docker.service >/dev/null 2>&1 || true
   docker rm -f "${TEST}" "${APP}" "${OTHER}" "${STOPPED}" sg-twin-image sg-twin-label sg-twin-mount \
+    sg-twin-varrun \
     >/dev/null 2>&1 || true
   docker rmi "${SELF_IMAGE_TAG}" >/dev/null 2>&1 || true
   if findmnt -n -M "${BASE}/in" >/dev/null 2>&1; then
@@ -257,10 +259,13 @@ docker run -d --name sg-twin-label --network none \
   "${BUSYBOX}" sleep 86400 >/dev/null
 docker run -d --name sg-twin-mount --network none -v "${BASE}/state:/x:ro" \
   "${BUSYBOX}" sleep 86400 >/dev/null
+# Auf Unraid und auf dem Runner ist /var/run ein Link auf /run.
+docker run -d --name sg-twin-varrun --network none -v "/var${BASE}/state:/x:ro" \
+  "${BUSYBOX}" sleep 86400 >/dev/null
 other_id="$(docker inspect --type container --format '{{.Id}}' -- "${OTHER}")"
 prefix="${other_id:0:12}"
 
-for marker in sg-twin-image sg-twin-label sg-twin-mount; do
+for marker in sg-twin-image sg-twin-label sg-twin-mount sg-twin-varrun; do
   write_conf "allow ${TEST}
 allow ${marker}
 "
@@ -318,6 +323,17 @@ fi
 expect_contains "log goes on after the clean end" "$(tail -n 1 "${DATA}/testcontainer/log")" zaehler
 expect_contains "syslog: stop with name" "$(syslog)" "stop ${TEST}: stopped"
 
+echo "== Pause zwischen zwei Läufen"
+send begin
+expect_equal "next run is too soon after the last one" "${RESULT}" too_soon
+expect_equal "no run opened" "$(status_field run)" null
+if [[ "$(status_field run_allowed_at)" =~ ^[0-9]+$ ]]; then pass "status names the earliest next run"; else
+  fail "run_allowed_at missing"
+fi
+expect_contains "reset-run-interval" "$(guard reset-run-interval)" aufgehoben
+expect_wait "pause lifted" run_allowed_at null
+expect_contains "syslog: pause lifted" "$(syslog)" "pause between runs lifted"
+
 echo "== Ablehnungen"
 send begin
 send "stop ${OTHER}"
@@ -331,7 +347,7 @@ expect_equal "id prefix of another container is not found" "${RESULT}" not_found
 send "stop ${APP}"
 expect_equal "TwinRaid itself: not allowed" "${RESULT}" not_allowed
 send finish
-for name in "${OTHER}" sg-twin-image sg-twin-label sg-twin-mount "${APP}"; do
+for name in "${OTHER}" sg-twin-image sg-twin-label sg-twin-mount sg-twin-varrun "${APP}"; do
   expect_equal "${name} still runs" "$(running_state "${name}")" true
 done
 send snapshot
@@ -366,6 +382,7 @@ sleep 2
 expect_equal "old number is ignored" "$(status_field run)" null
 expect_not_contains "marker not in status.json" "$(cat "${STATUS}")" leakmarker4711
 expect_not_contains "marker not in syslog" "$(syslog)" leakmarker4711
+guard reset-run-interval >/dev/null
 send begin
 expect_equal "valid order after the attacks" "${RESULT}" opened
 send finish
@@ -381,6 +398,7 @@ chown 0 "${REQUEST}"
 expect_wait "recovers after owner change" error null
 
 echo "== Totmannschalter (30 s)"
+guard reset-run-interval >/dev/null
 send begin
 send "stop ${TEST}" 40
 expect_equal "stopped for deadman test" "${RESULT}" stopped
@@ -391,12 +409,17 @@ expect_contains "syslog: deadman" "$(syslog)" "deadman: no heartbeat"
 echo "== selftest"
 docker stop -t 1 "${APP}" >/dev/null
 out="$(guard selftest "${TEST}" 2>&1)" || true
+expect_contains "selftest refuses during the pause" "${out}" reset-run-interval
+guard reset-run-interval >/dev/null
+out="$(guard selftest "${TEST}" 2>&1)" || true
 expect_contains "selftest with the test container" "${out}" "OK: angehalten und wieder gestartet."
+guard reset-run-interval >/dev/null
 out="$(guard selftest "${OTHER}" 2>&1)" || true
 expect_contains "selftest with a refused container" "${out}" "OK: abgelehnt (not_allowed)"
 docker start "${APP}" >/dev/null
 
 echo "== Neustarts"
+guard reset-run-interval >/dev/null
 send begin
 send "stop ${TEST}" 40
 started="$(status_field started_at)"
@@ -415,6 +438,29 @@ expect_equal "open run kept after restart" "$(status_field run.stopped.0.name)" 
 guard stop >/dev/null
 expect_equal "stop finishes the open run" "$(running_state "${TEST}")" true
 expect_equal "reason stop_command" "$(status_field last_run.reason)" stop_command
+
+echo "== Überwachungsschleife mit kill -9 beendet"
+guard start >/dev/null
+expect_wait "guard runs again" error null 30
+started="$(status_field started_at)"
+pkill -9 -f "${GUARD} supervise"
+for ((i = 0; i < 40; i++)); do
+  if ! pgrep -f "${GUARD} run" >/dev/null; then break; fi
+  sleep 0.25
+done
+expect_equal "worker ends without its supervisor" "$(pgrep -c -f "${GUARD} run" || true)" 0
+expect_contains "syslog: supervisor gone" "$(syslog)" "supervisor is gone"
+sleep 1
+expect_contains "start works again after kill -9" "$(guard start)" gestartet
+for ((i = 0; i < 60; i++)); do
+  if (($(status_field started_at) > started)); then break; fi
+  sleep 0.5
+done
+if (($(status_field started_at) > started)); then pass "new worker runs"; else fail "no new worker"; fi
+sleep 1
+expect_equal "exactly one worker" "$(pgrep -c -f "${GUARD} run" || true)" 1
+expect_equal "exactly one supervisor after the new start" "$(pgrep -c -f "${GUARD} supervise" || true)" 1
+guard stop >/dev/null
 
 echo "== Verlorener Zustand"
 order_line 50 begin >"${REQUEST}"
