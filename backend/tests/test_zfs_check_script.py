@@ -1,0 +1,109 @@
+"""host-scripts/zfs-check.sh: Machbarkeitstest Z1 (Konzept 3.7 und 5.6).
+
+Das Skript braucht root und ZFS; mit Pools in Dateien prüft es docker/zfs-check-test.sh
+in der CI. Hier stehen die Prüfungen ohne ZFS: feste Befehlszeilen wie im Konzept,
+nie rekursives Löschen, und dass es ohne root nichts tut.
+"""
+
+import re
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from tests.conftest import REPO_ROOT
+
+SCRIPT = REPO_ROOT / "host-scripts" / "zfs-check.sh"
+CONCEPT = REPO_ROOT / "docs" / "KONZEPT.md"
+
+
+def _array(name: str) -> list[str]:
+    text = SCRIPT.read_text()
+    match = re.search(rf"^readonly {name}=\(\n(.*?)^\)", text, re.MULTILINE | re.DOTALL)
+    assert match is not None, name
+    return match.group(1).split()
+
+
+def test_receive_options_match_the_concept() -> None:
+    """Die Befehlszeile ist dieselbe wie in Konzept 3.7 (und später in guard.sh)."""
+    concept = CONCEPT.read_text()
+    match = re.search(
+        r"```\nzfs receive \\\n(.*?)mainpool/twinraid-mirror/<Name>\n```", concept, re.DOTALL
+    )
+    assert match is not None
+    expected = [token for token in match.group(1).split() if token != "\\"]
+    assert _array("RECEIVE_OPTIONS") == expected
+
+
+def test_mirror_properties_are_the_receive_options() -> None:
+    options = _array("RECEIVE_OPTIONS")
+    set_values = [options[i + 1] for i, token in enumerate(options) if token == "-o"]
+    assert _array("MIRROR_PROPERTIES") == set_values
+
+
+def test_clone_options_match_the_concept() -> None:
+    concept = CONCEPT.read_text()
+    match = re.search(r"mit ausdrücklich gesetzten Eigenschaften \(([^)]*)\)", concept)
+    assert match is not None
+    expected = re.findall(r"`([a-z]+=[a-z0-9]+)`", match.group(1))
+    options = _array("CLONE_OPTIONS")
+    assert [options[i + 1] for i, token in enumerate(options) if token == "-o"] == expected
+
+
+def test_script_never_destroys_recursively() -> None:
+    text = SCRIPT.read_text()
+    assert text.startswith("#!/bin/bash\n")
+    assert "set -euo pipefail" in text
+    assert "eval" not in text
+    code = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+    for line in code:
+        assert not re.search(r"\b(zfs|zpool) destroy\b.*\s-[a-zA-Z]*[rRf]", line), line
+        assert "rm -rf" not in line, line
+
+
+def test_receive_with_force_only_as_unprivileged_user() -> None:
+    """Die einzige Stelle mit -F prüft receive:append als Benutzer ohne root."""
+    lines = SCRIPT.read_text().splitlines()
+    forced = [i for i, line in enumerate(lines) if "zfs receive" in line and " -F" in line]
+    assert len(forced) == 1
+    assert "setpriv --reuid" in lines[forced[0] - 1]
+    assert '"${deleg}"' in lines[forced[0]]
+
+
+def test_fixed_paths() -> None:
+    text = SCRIPT.read_text()
+    for line in (
+        "readonly POOL=mainpool\n",
+        "readonly MIRROR_ROOT=mainpool/twinraid-mirror\n",
+        "readonly TARGET_ROOT=mainpool/twinraid-mirror/zfs-check\n",
+        "readonly PROPERTY=twinraid:zfs-check\n",
+        "readonly FILE_PREFIX=/tmp/twinraid-check-\n",
+    ):
+        assert line in text, line
+    assert "-o cachefile=none" in text
+
+
+@pytest.mark.parametrize("arguments", [["target"], ["source"], ["cleanup", "target"]])
+def test_refuses_without_root(arguments: list[str], tmp_path: Path) -> None:
+    result = subprocess.run(  # noqa: S603 - feste Argumente, nur im Test
+        ["/bin/bash", str(SCRIPT), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+        cwd=tmp_path,
+    )
+    assert result.returncode == 2
+    assert "muss als root laufen" in result.stderr
+
+
+@pytest.mark.parametrize("arguments", [[], ["unknown"], ["target", "extra"], ["cleanup"]])
+def test_usage(arguments: list[str]) -> None:
+    result = subprocess.run(  # noqa: S603 - feste Argumente, nur im Test
+        ["/bin/bash", str(SCRIPT), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 2
