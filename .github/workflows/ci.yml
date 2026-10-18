@@ -96,6 +96,31 @@ jobs:
           persist-credentials: false
       - run: sudo SOURCE_GUARD_TEST_HOST=disposable docker/source-guard-test.sh
 
+  # Machbarkeitstest Z1 (host-scripts/zfs-check.sh) mit Pools in Dateien (Konzept 5.6).
+  # zfsutils-linux nur hier in der CI, exakt gepinnt (Plan, Abschnitt 8). Bietet Ubuntu
+  # die Version nicht mehr an, nennt der Schritt die neue; dann ZFS_VERSION anheben.
+  zfs-check:
+    name: ZFS check (file pools)
+    runs-on: ubuntu-24.04
+    needs: [scripts]
+    timeout-minutes: 20
+    env:
+      ZFS_VERSION: 2.2.2-0ubuntu9.5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install ZFS (pinned)
+        run: |
+          sudo apt-get update -qq
+          if ! sudo apt-get install -y --no-install-recommends "zfsutils-linux=${ZFS_VERSION}"; then
+            echo "zfsutils-linux ${ZFS_VERSION} is not available; candidate:" >&2
+            apt-cache policy zfsutils-linux >&2
+            exit 1
+          fi
+          sudo modprobe zfs
+      - run: sudo ZFS_CHECK_TEST_HOST=disposable docker/zfs-check-test.sh
+
   container:
     name: Container (build and start test)
     runs-on: ubuntu-24.04
@@ -138,7 +163,7 @@ jobs:
   publish:
     name: Publish image (ghcr.io)
     runs-on: ubuntu-24.04
-    needs: [container, source-guard]
+    needs: [container, source-guard, zfs-check]
     if: >-
       github.event_name == 'push'
       && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
