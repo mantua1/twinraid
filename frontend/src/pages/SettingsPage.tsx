@@ -2,9 +2,10 @@ import { ArrowLeft, Download, KeyRound, Power, ShieldCheck } from "lucide-react"
 import { useTranslation } from "react-i18next";
 
 import { CA_CERTIFICATE_URL } from "@/api/client";
-import type { AppInfo, StatusNotice, TlsInfo } from "@/api/types";
+import type { AppInfo, SourceGuardStatus, StatusNotice, TlsInfo } from "@/api/types";
 import { ErrorNotice } from "@/components/ErrorNotice";
 import { NoticeList } from "@/components/NoticeList";
+import { SourceGuardCard } from "@/components/SourceGuardCard";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -13,6 +14,8 @@ interface SettingsPageProps {
   tls: TlsInfo | null;
   // Hinweise aus dem Live-Status, z. B. zu Unraid Connect auf Groß.
   notices: readonly StatusNotice[];
+  // Wächter auf Klein aus dem Live-Status (ab v0.5.0); null, solange er fehlt.
+  sourceGuard: SourceGuardStatus | null;
   onBack: () => void;
 }
 
@@ -176,7 +179,7 @@ function ActionsCard({ info }: { info: AppInfo }) {
   );
 }
 
-export function SettingsPage({ info, tls, notices, onBack }: SettingsPageProps) {
+export function SettingsPage({ info, tls, notices, sourceGuard, onBack }: SettingsPageProps) {
   const { t } = useTranslation();
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-6">
@@ -202,6 +205,7 @@ export function SettingsPage({ info, tls, notices, onBack }: SettingsPageProps) 
         </CardContent>
       </Card>
       {info !== null && <ConnectionCard info={info} notices={notices} />}
+      {info !== null && <SourceGuardCard guard={sourceGuard} name={info.names.source} />}
       {info !== null && <ActionsCard info={info} />}
     </div>
   );

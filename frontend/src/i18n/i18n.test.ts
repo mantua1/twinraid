@@ -8,6 +8,14 @@ import {
   AUDIT_ACTIONS,
   AUDIT_RESULTS,
   CA_CHANGE_REASONS,
+  GUARD_CONTAINER_STATES,
+  GUARD_ERROR_DETAILS,
+  GUARD_ERRORS,
+  GUARD_RESTARTS,
+  GUARD_RUN_ENDS,
+  GUARD_SELF_DATASETS,
+  GUARD_SETUP_PROBLEMS,
+  GUARD_STATUS_PROBLEMS,
   LOGIN_ERRORS,
   RESOURCE_STATES,
   STATUS_NOTICES,
@@ -75,6 +83,34 @@ describe("translations", () => {
     for (const reason of CA_CHANGE_REASONS) {
       expect(german.has(`caChange.reasons.${reason}`), reason).toBe(true);
     }
+  });
+});
+
+describe("source guard texts", () => {
+  const german = flatten(de);
+
+  it("cover every code of the guard (Konzept 3.6)", () => {
+    const lists: [string, readonly string[]][] = [
+      ["guard.errors", GUARD_ERRORS],
+      ["guard.errorDetails", GUARD_ERROR_DETAILS],
+      ["guard.setup", GUARD_SETUP_PROBLEMS],
+      ["guard.statusProblems", GUARD_STATUS_PROBLEMS],
+      ["guard.containerStates", GUARD_CONTAINER_STATES],
+      ["guard.restarts", GUARD_RESTARTS],
+      ["guard.runEnds", GUARD_RUN_ENDS],
+      ["guard.selfDataset", GUARD_SELF_DATASETS],
+    ];
+    for (const [prefix, codes] of lists) {
+      for (const code of codes) {
+        expect(german.has(`${prefix}.${code}`), `${prefix}.${code}`).toBe(true);
+      }
+    }
+  });
+
+  it("tell the user to start the guard when Docker created a directory", () => {
+    expect(german.get("guard.setup.request_is_directory")).toContain(
+      "Wächter starten, dann TwinRaid neu starten",
+    );
   });
 });
 
