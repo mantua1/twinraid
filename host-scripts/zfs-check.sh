@@ -726,20 +726,42 @@ check_hostile_stream() {
   fi
 }
 
-# Befund, ob -x auf diesem Server wirkt (die frühere Befehlszeile). Ohne sharesmb und mit
-# mountpoint=legacy, damit dabei nichts eingehängt oder freigegeben wird.
+# Befund, ob -x auf diesem Server wirkt (die frühere Befehlszeile), mit vollständigem und
+# inkrementellem Strom. Ohne sharesmb und mit mountpoint=legacy, damit dabei nichts
+# eingehängt oder freigegeben wird.
 check_x_finding() {
   local evil="${ROOT}/x-quelle" target="${ROOT}/mit-x"
   echo "== Befund: wirkt -x?"
   zfs create -o "${PROPERTY}=${RUN_ID}" -- "${evil}" >/dev/null
+  zfs snapshot -- "${evil}@x0"
   zfs set -- quota=1G mountpoint=legacy "${evil}"
-  zfs snapshot -- "${evil}@x"
-  if zfs send -L -c -e -p "${evil}@x" | zfs receive -u "${X_RECEIVE_OPTIONS[@]}" -- "${target}" >/dev/null 2>&1; then
-    info "Befund -x quota: Wert $(value_of quota "${target}"), Quelle $(prop_source quota "${target}" | cut -d' ' -f1)"
-    info "Befund -x mountpoint: Wert $(value_of mountpoint "${target}" | tr -cd 'A-Za-z0-9/._-'), Quelle $(prop_source mountpoint "${target}" | cut -d' ' -f1)"
+  zfs snapshot -- "${evil}@x1"
+  if zfs send -L -c -e -p "${evil}@x1" | zfs receive -u "${X_RECEIVE_OPTIONS[@]}" -- "${target}" >/dev/null 2>&1; then
+    report_x vollständig "${target}"
   else
-    info "Befund -x: Empfang mit -x gescheitert"
+    info "Befund -x vollständig: Empfang gescheitert"
   fi
+  zfs set -- quota=2G "${evil}"
+  zfs snapshot -- "${evil}@x2"
+  if zfs send -L -c -e -p -i "${evil}@x1" "${evil}@x2" |
+    zfs receive -u "${X_RECEIVE_OPTIONS[@]}" -- "${target}" >/dev/null 2>&1; then
+    report_x inkrementell "${target}"
+  else
+    info "Befund -x inkrementell: Empfang gescheitert"
+  fi
+}
+
+report_x() {
+  local kind="$1" target="$2" name value source
+  for name in quota mountpoint; do
+    value="$(value_of "${name}" "${target}" | tr -cd 'A-Za-z0-9/._-')"
+    source="$(prop_source "${name}" "${target}" | cut -d' ' -f1)"
+    if [[ "${source}" == received ]]; then
+      info "Befund -x ${kind}: ${name} kam aus dem Strom (${value}); -x wirkt nicht"
+    else
+      info "Befund -x ${kind}: ${name} nicht aus dem Strom (Quelle ${source}); -x wirkt"
+    fi
+  done
 }
 
 # Trägt receive:append unter Linux als zweite Sperre? Nur auf eigenem Dataset unter

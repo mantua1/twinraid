@@ -48,10 +48,11 @@ def test_no_property_from_a_stream_is_allowed() -> None:
 def test_old_receive_line_only_for_the_finding() -> None:
     """Die frühere Zeile mit -x dient nur dem Befund, nie dem eigentlichen Empfang."""
     text = SCRIPT.read_text()
-    uses = [line for line in text.splitlines() if "X_RECEIVE_OPTIONS[@]" in line]
-    assert len(uses) == 1
-    function = text[: text.index(uses[0])].rsplit("\ncheck_", 1)[1]
-    assert function.startswith("x_finding()")
+    start = text.index("\ncheck_x_finding() {")
+    end = text.index("\n}\n", start)
+    finding = text[start:end]
+    total = text.count('"${X_RECEIVE_OPTIONS[@]}"')
+    assert total == finding.count('"${X_RECEIVE_OPTIONS[@]}"') == 2
 
 
 def test_clone_options_match_the_concept() -> None:

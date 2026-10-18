@@ -57,6 +57,8 @@ state() {
 own_files() { find /tmp -maxdepth 1 -name 'twinraid-check-*' | sort; }
 
 cleanup() {
+  local rc=$?
+  set +e
   pkill -9 -f "${CHECK}" 2>/dev/null || true
   sleep 1
   zpool list -H -o name 2>/dev/null | grep -E '^twinraid-check-' | while IFS= read -r pool; do
@@ -64,6 +66,7 @@ cleanup() {
   done
   zpool destroy -f mainpool 2>/dev/null || true
   rm -rf "${WORK}" /tmp/twinraid-check-*
+  exit "${rc}"
 }
 trap cleanup EXIT
 
