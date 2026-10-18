@@ -11,9 +11,11 @@
 # Container eingebunden ist, und liest seinen Status (state/status.json, read-only
 # eingebunden). Was erlaubt ist, entscheidet der Wächter nach seiner eigenen
 # Konfiguration. Container hält er nur an, wenn sie in "allow" stehen, nie TwinRaid
-# selbst, und startet nur die wieder, die er selbst angehalten hat.
+# selbst, und startet nur die wieder, die er selbst angehalten hat. Zwischen zwei Läufen
+# liegt eine Pause (min_run_interval_minutes); alle Fristen laufen nach der Laufzeit des
+# Systems, nicht nach der Uhrzeit.
 #
-#   source-guard.sh start | stop | restart | status | check-config
+#   source-guard.sh start | stop | restart | status | check-config | reset-run-interval
 #   source-guard.sh selftest <Container> | selftest-deadman <Container>
 #
 # Version 1 (TwinRaid v0.5.0) kennt die Aufträge begin, stop, ping und finish.
@@ -30,6 +32,8 @@ readonly VERSION=1
 readonly PROTOCOL=1
 readonly CONF=/boot/config/twinraid/source-guard.conf
 readonly BASE_DIR=/run/twinraid-source-guard
+# Andere Schreibweise desselben Ordners: auf Unraid ist /var/run ein Link auf /run.
+readonly BASE_DIR_ALIAS=/var/run/twinraid-source-guard
 # Besitzer der Dateien und Ordner des Wächters (root); im Test der eigene Benutzer.
 readonly OWNER_UID=0
 readonly DOCKER=/usr/bin/docker
@@ -38,6 +42,8 @@ readonly ZPOOL=/usr/sbin/zpool
 readonly LOGGER=/usr/bin/logger
 readonly MOUNT=/bin/mount
 readonly FINDMNT=/bin/findmnt
+# Laufzeit des Systems für alle Fristen (unabhängig von Sprüngen der Uhr).
+readonly UPTIME=/proc/uptime
 readonly POOL=mainpool
 readonly SELF_DATASET=mainpool/appdata/twinraid
 # Merkmale von Unraid Connect (Konzept 3.5), wie in guard.sh.
@@ -47,7 +53,7 @@ readonly FLASHBACKUP_INI=/var/local/emhttp/flashbackup.ini
 # Selbstschutz: Image und Label von TwinRaid.
 readonly SELF_IMAGE=ghcr.io/mantua1/twinraid
 readonly SELF_SOURCE=https://github.com/mantua1/twinraid
-# Zeiten in Sekunden; MINUTE nur für max_stop_minutes (im Test kürzer).
+# Zeiten in Sekunden; MINUTE für max_stop_minutes und min_run_interval_minutes (im Test kürzer).
 readonly MINUTE=60
 readonly LOOP_SLEEP=1
 readonly STATUS_INTERVAL=5
@@ -88,9 +94,15 @@ readonly ORDER_RE='^TRSG1 ([1-9][0-9]{0,8}) ((begin|ping|snapshot|finish|prepare
 
 # --- Hilfen ------------------------------------------------------------------------------
 
+# NOW: Uhrzeit (Unix-Sekunden) für Zeitpunkte im Status und im Log.
+# UP: Laufzeit des Systems in Sekunden für Fristen, Abstände und Pausen.
 NOW=0
+UP=0
 now() {
+  local uptime rest
   printf -v NOW '%(%s)T' -1
+  read -r uptime rest <"${UPTIME}"
+  UP="${uptime%%.*}"
 }
 
 # Nur feste Texte und geprüfte Werte ins Syslog.
@@ -101,10 +113,10 @@ log() {
 # Höchstens einmal pro LOG_INTERVAL je Schlüssel.
 declare -A LOG_LAST=()
 log_limited() {
-  local key="$1" last="${LOG_LAST[$1]:-0}"
+  local key="$1" last="${LOG_LAST[$1]:--1}"
   now
-  if ((NOW - last >= LOG_INTERVAL)); then
-    LOG_LAST[${key}]="${NOW}"
+  if ((last < 0 || UP - last >= LOG_INTERVAL)); then
+    LOG_LAST[${key}]="${UP}"
     log "$2"
   fi
 }
@@ -187,6 +199,7 @@ DATASETS=()
 MAX_STOP_MINUTES=20
 HEARTBEAT_TIMEOUT=120
 STOP_TIMEOUT=60
+MIN_RUN_INTERVAL=30
 MAX_DELETIONS=1000
 TARGET_HOST=""
 TARGET_PORT=22
@@ -332,6 +345,10 @@ load_config() {
         int_in "${value}" 10 600 || config_fail bad_value "${number}" || return 1
         STOP_TIMEOUT="${INT}"
         ;;
+      min_run_interval_minutes)
+        int_in "${value}" 10 1440 || config_fail bad_value "${number}" || return 1
+        MIN_RUN_INTERVAL="${INT}"
+        ;;
       max_deletions)
         int_in "${value}" 0 10000000 || config_fail bad_value "${number}" || return 1
         MAX_DELETIONS="${INT}"
@@ -438,7 +455,8 @@ is_self() {
       fi
       continue
     fi
-    if [[ "${line}" == "${BASE_DIR}" || "${line}" == "${BASE_DIR}/"* ]]; then
+    if [[ "${line}" == "${BASE_DIR}" || "${line}" == "${BASE_DIR}/"* ||
+      "${line}" == "${BASE_DIR_ALIAS}" || "${line}" == "${BASE_DIR_ALIAS}/"* ]]; then
       SELF_BY=mount
       return 0
     fi
@@ -452,6 +470,7 @@ INSTANCE=""
 LAST_SEQ=0
 STATE_LOST=0
 RUN_OPEN=0
+# RUN_OPENED ist eine Uhrzeit; RUN_HEARTBEAT und RUN_MAX sind Fristen in Laufzeit (UP).
 RUN_OPENED=0
 RUN_HEARTBEAT=0
 RUN_MAX=0
@@ -460,6 +479,8 @@ RUN_NAMES=()
 LAST_RUN=0
 LAST_RUN_OPENED=0
 LAST_RUN_CLOSED=0
+# Ende des letzten Laufs in Laufzeit (UP), für die Pause zwischen zwei Läufen; 0: keine Pause.
+LAST_RUN_CLOSED_UP=0
 LAST_RUN_REASON=""
 LAST_RUN_IDS=()
 LAST_RUN_NAMES=()
@@ -522,6 +543,7 @@ load_run() {
 save_last_run() {
   local text i
   text="opened ${LAST_RUN_OPENED}"$'\n'"closed ${LAST_RUN_CLOSED}"$'\n'"reason ${LAST_RUN_REASON}"$'\n'
+  text+="closed_up ${LAST_RUN_CLOSED_UP}"$'\n'
   for i in "${!LAST_RUN_IDS[@]}"; do
     text+="container ${LAST_RUN_IDS[i]} ${LAST_RUN_NAMES[i]} ${LAST_RUN_RESULTS[i]}"$'\n'
   done
@@ -541,6 +563,7 @@ load_last_run() {
     case "${key}" in
       opened) [[ "${a}" =~ ${NUMBER_RE} ]] && LAST_RUN_OPENED="${a}" ;;
       closed) [[ "${a}" =~ ${NUMBER_RE} ]] && LAST_RUN_CLOSED="${a}" ;;
+      closed_up) [[ "${a}" =~ ${NUMBER_RE} ]] && LAST_RUN_CLOSED_UP="${a}" ;;
       reason) [[ "${a}" =~ ${CODE_RE} ]] && LAST_RUN_REASON="${a}" ;;
       container)
         if [[ "${a}" =~ ${ID_RE} && "${b}" =~ ${CONTAINER_RE} && "${c}" =~ ${CODE_RE} ]]; then
@@ -779,8 +802,8 @@ open_run() {
   now
   RUN_OPEN=1
   RUN_OPENED="${NOW}"
-  RUN_HEARTBEAT=$((NOW + HEARTBEAT_TIMEOUT))
-  RUN_MAX=$((NOW + MAX_STOP_MINUTES * MINUTE))
+  RUN_HEARTBEAT=$((UP + HEARTBEAT_TIMEOUT))
+  RUN_MAX=$((UP + MAX_STOP_MINUTES * MINUTE))
   RUN_IDS=()
   RUN_NAMES=()
   save_run
@@ -832,6 +855,7 @@ close_run() {
   LAST_RUN=1
   LAST_RUN_OPENED="${RUN_OPENED}"
   LAST_RUN_CLOSED="${NOW}"
+  LAST_RUN_CLOSED_UP="${UP}"
   LAST_RUN_REASON="${reason}"
   save_last_run
   RUN_OPEN=0
@@ -842,15 +866,42 @@ close_run() {
   STATUS_DIRTY=1
 }
 
+# Sekunden, bis wieder ein Lauf geöffnet werden darf (Pause nach dem letzten Lauf). Setzt WAIT.
+run_wait() {
+  local pause=$((MIN_RUN_INTERVAL * MINUTE))
+  WAIT=0
+  now
+  # Ein Ende "in der Zukunft" stammt aus einem früheren Systemstart und zählt nicht.
+  if ((LAST_RUN_CLOSED_UP > 0 && LAST_RUN_CLOSED_UP <= UP)); then
+    WAIT=$((LAST_RUN_CLOSED_UP + pause - UP))
+    if ((WAIT < 0)); then
+      WAIT=0
+    fi
+  fi
+}
+
+# source-guard.sh reset-run-interval legt diese Datei an; nur root auf Klein kann das.
+check_reset_request() {
+  if [[ -f "${PRIVATE_DIR}/reset-run-interval" ]]; then
+    rm -f -- "${PRIVATE_DIR}/reset-run-interval"
+    LAST_RUN_CLOSED_UP=0
+    if ((LAST_RUN)); then
+      save_last_run
+    fi
+    log "pause between runs lifted by root on Klein"
+    STATUS_DIRTY=1
+  fi
+}
+
 check_deadman() {
   if ((RUN_OPEN == 0)); then
     return 0
   fi
   now
-  if ((NOW >= RUN_MAX)); then
+  if ((UP >= RUN_MAX)); then
     log_limited deadman "deadman: maximum time of the run exceeded"
     close_run deadman_max || true
-  elif ((NOW >= RUN_HEARTBEAT)); then
+  elif ((UP >= RUN_HEARTBEAT)); then
     log_limited deadman "deadman: no heartbeat from TwinRaid"
     close_run deadman_heartbeat || true
   fi
@@ -918,8 +969,11 @@ execute_order() {
   esac
   case "${order}" in
     begin)
+      run_wait
       if ((RUN_OPEN)); then
         RESULT=run_open
+      elif ((WAIT > 0)); then
+        RESULT=too_soon
       elif ! docker_check; then
         RESULT=docker_unavailable
       else
@@ -930,7 +984,7 @@ execute_order() {
     ping)
       if ((RUN_OPEN)); then
         now
-        RUN_HEARTBEAT=$((NOW + HEARTBEAT_TIMEOUT))
+        RUN_HEARTBEAT=$((UP + HEARTBEAT_TIMEOUT))
         save_run
         RESULT=extended
       else
@@ -1092,6 +1146,10 @@ check_self_dataset() {
     if [[ ! "${id}" =~ ${ID_RE} ]]; then
       continue
     fi
+    # Nur über Image oder Label erkannte Container zählen. Ein Container, der nur die
+    # Ordner des Wächters einbindet, ist kein Beweis für TwinRaid; er wird übersprungen.
+    # Bleibt kein TwinRaid übrig, ergibt das no_container, und appdata wird nicht gesendet:
+    # die vorsichtige Richtung.
     if ! is_self "${id}" || [[ "${SELF_BY}" == mount ]]; then
       continue
     fi
@@ -1283,7 +1341,8 @@ write_status() {
   json+=',"host":{"connect":"'"${CONNECT}"'","flash_backup":"'"${FLASH_BACKUP}"'"}'
   json+=',"limits":{"max_stop_minutes":'"${MAX_STOP_MINUTES}"
   json+=',"heartbeat_timeout_seconds":'"${HEARTBEAT_TIMEOUT}"
-  json+=',"stop_timeout_seconds":'"${STOP_TIMEOUT}"',"max_deletions":'"${MAX_DELETIONS}"
+  json+=',"stop_timeout_seconds":'"${STOP_TIMEOUT}"',"min_run_interval_minutes":'"${MIN_RUN_INTERVAL}"
+  json+=',"max_deletions":'"${MAX_DELETIONS}"
   json+=',"snapshot_keep_days":'"${SNAPSHOT_KEEP_DAYS}"
   json+=',"snapshot_reserve_percent":'"${SNAPSHOT_RESERVE_PERCENT}"'}'
   # Ziel für das Senden (ab v0.5.1): nur ob eingetragen und der Port, keine Adresse.
@@ -1308,10 +1367,17 @@ write_status() {
       container_json "${RUN_NAMES[i]}" "${RUN_IDS[i]}"
       list+="${list:+,}${JSON}"
     done
-    json+=',"run":{"opened_at":'"${RUN_OPENED}"',"heartbeat_deadline":'"${RUN_HEARTBEAT}"
-    json+=',"max_deadline":'"${RUN_MAX}"',"stopped":['"${list}"']}'
+    # Fristen laufen in Laufzeit; im Status stehen sie als Uhrzeit.
+    json+=',"run":{"opened_at":'"${RUN_OPENED}"',"heartbeat_deadline":'"$((NOW + RUN_HEARTBEAT - UP))"
+    json+=',"max_deadline":'"$((NOW + RUN_MAX - UP))"',"stopped":['"${list}"']}'
   else
     json+=',"run":null'
+  fi
+  run_wait
+  if ((WAIT > 0)); then
+    json+=',"run_allowed_at":'"$((NOW + WAIT))"
+  else
+    json+=',"run_allowed_at":null'
   fi
   if ((LAST_RUN)); then
     list=""
@@ -1372,14 +1438,31 @@ on_term() {
   STOP_REQUESTED=1
 }
 
+# Aktueller Elternprozess (Feld 4 in /proc/self/stat, nach dem Namen in Klammern).
+parent_pid() {
+  local stat
+  stat="$(<"/proc/$$/stat")"
+  stat="${stat##*) }"
+  read -r _ PARENT _ <<<"${stat}"
+}
+
 run_guard() {
   local next_docker=0 next_containers=0 next_zfs=0 next_host=0 next_status=0
-  local was_docker=-1 sleeper=""
+  local was_docker=-1 sleeper="" run_lock first_parent
   need_root
   now
   STARTED_AT="${NOW}"
+  parent_pid
+  first_parent="${PARENT}"
   prepare_layout || true
   ensure_dir "${PRIVATE_DIR}" 0700 || die "private/ ist nicht nutzbar"
+  # Eigene Sperre: Nie lesen zwei Wächter gleichzeitig Aufträge, auch nicht kurz nach
+  # einem Neustart, während ein alter Wächter noch endet.
+  exec {run_lock}>>"${PRIVATE_DIR}/run.lock"
+  if ! flock -w 10 "${run_lock}"; then
+    log "another guard process still runs, ending"
+    exit 1
+  fi
   init_private
   if ! load_config; then
     log "config invalid: ${CONFIG_DETAIL} in line ${CONFIG_LINE}"
@@ -1387,6 +1470,14 @@ run_guard() {
   trap on_term TERM INT
   log "started (version ${VERSION})"
   while ((STOP_REQUESTED == 0)); do
+    # Fehlt die Überwachungsschleife (etwa nach kill -9), endet der Wächter ohne finish;
+    # ein neues "start" übernimmt den gespeicherten Zustand.
+    parent_pid
+    if [[ "${PARENT}" != "${first_parent}" ]]; then
+      log "supervisor is gone, ending"
+      break
+    fi
+    check_reset_request
     now
     if ((NOW >= next_docker)); then
       docker_check || true
@@ -1469,7 +1560,8 @@ supervise() {
   SUP_STOP=0
   trap 'SUP_STOP=1; if [[ -n "${child}" ]]; then kill -TERM "${child}" 2>/dev/null || true; fi' TERM INT
   while true; do
-    /bin/bash "${SELF}" run &
+    # Die Sperre gehört nur der Überwachungsschleife und wird nicht an den Wächter vererbt.
+    /bin/bash "${SELF}" run {lock}>&- &
     child=$!
     rc=0
     while true; do
@@ -1483,7 +1575,7 @@ supervise() {
       break
     fi
     now
-    started="${NOW}"
+    started="${UP}"
     kept=()
     for t in "${times[@]+"${times[@]}"}"; do
       if ((started - t < RESTART_WINDOW)); then
@@ -1629,6 +1721,9 @@ selftest_ready() {
   status_value '"error":(null|"[a-z_]+")' || die "status.json fehlt"
   [[ "${VALUE}" == null ]] || die "Der Wächter meldet einen Fehler: ${VALUE}"
   status_value '"run":(null)' || die "Es ist schon ein Lauf offen."
+  if ! status_value '"run_allowed_at":(null)'; then
+    die "Der letzte Lauf ist noch keine ${MIN_RUN_INTERVAL} Minuten her. Warten oder: source-guard.sh reset-run-interval"
+  fi
   echo "Hinweis: Während des Selbsttests darf TwinRaid keine Aufträge schreiben."
 }
 
@@ -1686,9 +1781,30 @@ cmd_selftest_deadman() {
   die "Der Totmannschalter hat nicht ausgelöst."
 }
 
+# Hebt die Pause zwischen zwei Läufen auf (Konzept 3.6). Nur root auf Klein.
+cmd_reset_run_interval() {
+  local i
+  need_root
+  ensure_dir "${BASE_DIR}" 0755 || die "${BASE_DIR} ist nicht nutzbar"
+  ensure_dir "${PRIVATE_DIR}" 0700 || die "${PRIVATE_DIR} ist nicht nutzbar"
+  : >"${PRIVATE_DIR}/reset-run-interval"
+  if ! supervisor_pid; then
+    echo "Der Wächter läuft nicht; die Pause entfällt beim nächsten Start."
+    return 0
+  fi
+  for ((i = 0; i < 20; i++)); do
+    if [[ ! -e "${PRIVATE_DIR}/reset-run-interval" ]]; then
+      echo "Die Pause zwischen zwei Läufen ist aufgehoben."
+      return 0
+    fi
+    sleep 0.5
+  done
+  die "Der Wächter hat die Anfrage nicht übernommen."
+}
+
 usage() {
   cat >&2 <<'EOF'
-Aufruf: source-guard.sh start | stop | restart | status | check-config
+Aufruf: source-guard.sh start | stop | restart | status | check-config | reset-run-interval
         source-guard.sh selftest <Container> | selftest-deadman <Container>
 EOF
   exit 2
@@ -1704,6 +1820,7 @@ case "${command}" in
     ;;
   status) cmd_status ;;
   check-config) cmd_check_config ;;
+  reset-run-interval) cmd_reset_run_interval ;;
   selftest)
     [[ $# -eq 2 ]] || usage
     cmd_selftest "$2"

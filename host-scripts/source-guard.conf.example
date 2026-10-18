@@ -12,6 +12,8 @@ allow twinraid-testcontainer
 max_stop_minutes 20                # Höchstzeit eines Laufs (5–120)
 heartbeat_timeout_seconds 120      # Frist ohne ping (30–600)
 stop_timeout_seconds 60            # docker stop vor SIGKILL (10–600)
+min_run_interval_minutes 30        # Pause zwischen zwei Läufen (10–1440); aufheben nur von Hand
+                                   # mit "source-guard.sh reset-run-interval"
 
 # Datasets mainpool/<Name>, die gespiegelt werden (ab v0.5.1). Nie system oder domains.
 dataset twinraidtest

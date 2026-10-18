@@ -76,6 +76,7 @@ class Host:
     plugins: Path
     loaded_plugins: Path
     flash_ini: Path
+    alias: Path
     processes: list[subprocess.Popen[bytes]] = field(default_factory=list)
 
     @property
@@ -253,6 +254,7 @@ def make_host(tmp_path: Path, **constants: str) -> Host:
     paths = {
         "CONF": str(root / "boot/config/twinraid/source-guard.conf"),
         "BASE_DIR": str(base),
+        "BASE_DIR_ALIAS": str(root / "var" / "run" / "twinraid-source-guard"),
         "OWNER_UID": str(os.getuid()),
         "DOCKER": str(bin_dir / "docker"),
         "ZFS": str(bin_dir / "zfs"),
@@ -281,6 +283,7 @@ def make_host(tmp_path: Path, **constants: str) -> Host:
         plugins=Path(paths["PLUGIN_DIR"]),
         loaded_plugins=Path(paths["LOADED_PLUGIN_DIR"]),
         flash_ini=Path(paths["FLASHBACKUP_INI"]),
+        alias=Path(paths["BASE_DIR_ALIAS"]),
     )
     host.set_containers(
         container("twinraid-testcontainer"),
@@ -358,6 +361,7 @@ def test_status_lists_allowed_containers_and_limits(running: Host) -> None:
         "max_stop_minutes": 20,
         "heartbeat_timeout_seconds": 120,
         "stop_timeout_seconds": 60,
+        "min_run_interval_minutes": 30,
         "max_deletions": 1000,
         "snapshot_keep_days": 7,
         "snapshot_reserve_percent": 15,
@@ -454,6 +458,8 @@ def test_example_config_is_valid(host: Host) -> None:
         ("heartbeat_timeout_seconds 29\n", "bad_value", 1),
         ("stop_timeout_seconds 9\n", "bad_value", 1),
         ("stop_timeout_seconds 1e3\n", "bad_value", 1),
+        ("min_run_interval_minutes 9\n", "bad_value", 1),
+        ("min_run_interval_minutes 1441\n", "bad_value", 1),
         ("target_host 999.1.1.1\n", "bad_value", 1),
         ("target_host Host_Name\n", "bad_value", 1),
         ("target_port 0\n", "bad_value", 1),
@@ -480,6 +486,8 @@ def test_invalid_config(host: Host, text: str, detail: str, line: int) -> None:
         "# nur Kommentar\n\n   \n",
         "allow a\r\ndataset b\r\n",
         "target_host 192.168.10.11\ntarget_port 2222\n",
+        "min_run_interval_minutes 10\n",
+        "min_run_interval_minutes 1440\n",
         "target_host groß.example\n".replace("ß", "ss"),
         "",
     ],
@@ -505,12 +513,16 @@ def test_missing_or_symlinked_config_is_invalid(host: Host, tmp_path: Path) -> N
         {"image": "ghcr.io/mantua1/twinraid@sha256:" + "a" * 64},
         {"image": "twinraid"},
         {"labels": {"org.opencontainers.image.source": "https://github.com/mantua1/twinraid"}},
-        {"mounts": [{"Source": "/run/twinraid-source-guard/state", "Destination": "/x"}]},
+        {"mounts": [{"Source": "BASE/state", "Destination": "/x"}]},
+        {"mounts": [{"Source": "ALIAS/in/request", "Destination": "/x"}]},
+        {"mounts": [{"Source": "ALIAS", "Destination": "/x"}]},
     ],
 )
 def test_allow_must_not_contain_twinraid(host: Host, values: dict[str, Any]) -> None:
     if "mounts" in values:
-        values = {"mounts": [{"Source": f"{host.base}/state", "Destination": "/x"}]}
+        source = values["mounts"][0]["Source"]
+        source = source.replace("BASE", str(host.base)).replace("ALIAS", str(host.alias))
+        values = {"mounts": [{"Source": source, "Destination": "/x"}]}
     host.change_container("twinraid-testcontainer", **values)
     result = host.command("check-config")
     assert result.returncode == 1
@@ -549,8 +561,9 @@ def test_run_stops_and_restarts_an_allowed_container(running: Host) -> None:
         "at": running.status()["last"]["at"],
     }
     run = running.status()["run"]
-    assert run["max_deadline"] - run["opened_at"] == 20  # 20 "Minuten" zu je 1 s im Test
-    assert run["heartbeat_deadline"] - run["opened_at"] == 120
+    # Fristen laufen nach der Laufzeit; als Uhrzeit umgerechnet höchstens 1 s ungenau.
+    assert abs(run["max_deadline"] - run["opened_at"] - 20) <= 1  # 20 "Minuten" zu je 1 s
+    assert abs(run["heartbeat_deadline"] - run["opened_at"] - 120) <= 1
     last = running.send("stop twinraid-testcontainer")
     assert last["result"] == "stopped"
     assert last["container"] == "twinraid-testcontainer"
@@ -580,11 +593,11 @@ def test_run_stops_and_restarts_an_allowed_container(running: Host) -> None:
 def test_ping_moves_only_the_heartbeat(running: Host) -> None:
     running.send("begin")
     before = running.status()["run"]
-    time.sleep(1.1)
+    time.sleep(2.1)
     running.send("ping")
     after = running.status()["run"]
     assert after["heartbeat_deadline"] > before["heartbeat_deadline"]
-    assert after["max_deadline"] == before["max_deadline"]
+    assert abs(after["max_deadline"] - before["max_deadline"]) <= 1
 
 
 def test_containers_restart_in_reverse_order(host: Host) -> None:
@@ -615,6 +628,62 @@ def test_orders_without_run(running: Host, order: str, expected: str) -> None:
 def test_second_begin_is_refused(running: Host) -> None:
     running.send("begin")
     assert running.send("begin")["result"] == "run_open"
+
+
+def test_next_run_only_after_the_pause(running: Host) -> None:
+    """Sonst könnte ein übernommener TwinRaid Container fast dauerhaft unten halten."""
+    running.send("begin")
+    running.send("stop twinraid-testcontainer")
+    running.send("finish")
+    status = running.status()
+    assert status["run_allowed_at"] is not None
+    assert abs(status["run_allowed_at"] - status["last_run"]["closed_at"] - 30) <= 1
+    assert running.send("begin")["result"] == "too_soon"
+    assert running.status()["run"] is None
+    assert running.docker_changes()[-1][0] == "start"
+
+
+def test_pause_ends_after_the_interval(host: Host) -> None:
+    host.configure(DEFAULT_CONF + "min_run_interval_minutes 10\n")  # 10 s im Test
+    host.start_run()
+    host.wait_status(lambda s: s["error"] is None)
+    host.send("begin")
+    host.send("finish")
+    assert host.send("begin")["result"] == "too_soon"
+    host.wait_status(lambda s: s["run_allowed_at"] is None, timeout=15)
+    assert host.send("begin")["result"] == "opened"
+
+
+def test_pause_survives_a_restart(host: Host) -> None:
+    process = host.start_run()
+    host.wait_status(lambda s: s["error"] is None)
+    host.send("begin")
+    host.send("finish")
+    host.stop_run(process)
+    host.start_run()
+    host.wait_status(lambda s: s["error"] is None)
+    assert host.send("begin")["result"] == "too_soon"
+
+
+def test_reset_run_interval_lifts_the_pause(host: Host) -> None:
+    host.command("start")
+    host.wait_status(lambda s: s["error"] is None)
+    host.send("begin")
+    host.send("finish")
+    assert host.send("begin")["result"] == "too_soon"
+    result = host.command("reset-run-interval")
+    assert result.returncode == 0, result.stderr
+    assert "aufgehoben" in result.stdout
+    host.wait_status(lambda s: s["run_allowed_at"] is None)
+    assert host.send("begin")["result"] == "opened"
+    assert "pause between runs lifted by root on Klein" in host.syslog()
+    host.command("stop")
+
+
+def test_reset_run_interval_without_running_guard(host: Host) -> None:
+    result = host.command("reset-run-interval")
+    assert result.returncode == 0
+    assert "beim nächsten Start" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -829,6 +898,8 @@ def test_deadman_max_restarts_the_containers(host: Host) -> None:
     assert status["last_run"]["reason"] == "deadman_max"
     assert host.running("twinraid-testcontainer")
     assert any("deadman" in line for line in host.syslog())
+    # Auch nach dem Totmannschalter gilt die Pause bis zum nächsten Lauf.
+    assert host.send("begin")["result"] == "too_soon"
 
 
 def test_deadman_heartbeat_after_a_restart(host: Host) -> None:
@@ -840,7 +911,7 @@ def test_deadman_heartbeat_after_a_restart(host: Host) -> None:
     host.stop_run(process)
     run_file = host.private / "run"
     lines = run_file.read_text().splitlines()
-    past = int(time.time()) - 1
+    past = _uptime() - 1
     run_file.write_text(
         "\n".join(f"heartbeat {past}" if line.startswith("heartbeat ") else line for line in lines)
         + "\n"
@@ -968,6 +1039,38 @@ def test_supervisor_restarts_a_killed_worker(host: Host) -> None:
     host.command("stop")
 
 
+def test_killed_supervisor_does_not_keep_the_lock(host: Host) -> None:
+    """Nach kill -9 der Überwachungsschleife endet der Wächter, und start klappt wieder."""
+    host.command("start")
+    status = host.wait_status(lambda s: s["error"] is None)
+    supervisor = int((host.private / "supervisor.pid").read_text())
+    os.kill(supervisor, signal.SIGKILL)
+    _wait_for(lambda: _pids(host, "run") == [])
+    assert any("supervisor is gone" in line for line in host.syslog())
+    time.sleep(1.1)  # started_at zählt in Sekunden
+    result = host.command("start")
+    assert "gestartet" in result.stdout, result.stdout
+    restarted = host.wait_status(lambda s: s["started_at"] > status["started_at"])
+    assert restarted["instance"] == status["instance"]
+    time.sleep(0.5)
+    assert len(_pids(host, "run")) == 1
+    assert len(_pids(host, "supervise")) == 1
+    host.command("stop")
+
+
+def test_second_worker_waits_for_the_lock(host: Host) -> None:
+    """Zwei Wächter lesen nie gleichzeitig Aufträge."""
+    first = host.start_run()
+    host.wait_status(lambda s: s["error"] is None)
+    second = host.start_run(wait=False)
+    time.sleep(1)
+    assert second.poll() is None  # wartet auf die Sperre
+    host.stop_run(first)
+    host.wait_status(lambda s: s["error"] is None)
+    assert second.poll() is None
+    assert host.send("begin")["result"] == "opened"
+
+
 def test_stop_command_finishes_an_open_run(host: Host) -> None:
     host.command("start")
     host.wait_status(lambda s: s["error"] is None)
@@ -989,6 +1092,19 @@ def test_selftest_stops_and_starts_an_allowed_container(host: Host) -> None:
     host.command("stop")
 
 
+def test_second_selftest_needs_the_pause_or_a_reset(host: Host) -> None:
+    host.command("start")
+    host.wait_status(lambda s: s["error"] is None)
+    assert host.command("selftest", "twinraid-testcontainer", timeout=60).returncode == 0
+    result = host.command("selftest", "twinraid-testcontainer", timeout=60)
+    assert result.returncode == 1
+    assert "reset-run-interval" in result.stderr
+    host.command("reset-run-interval")
+    result = host.command("selftest", "twinraid-testcontainer", timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    host.command("stop")
+
+
 @pytest.mark.parametrize(
     ("name", "expected"), [("other", "not_allowed"), ("TwinRaid", "not_allowed")]
 )
@@ -1006,6 +1122,33 @@ def test_selftest_with_refused_container(host: Host, name: str, expected: str) -
 def test_usage_errors(host: Host, arguments: list[str]) -> None:
     result = host.command(*arguments)
     assert result.returncode != 0
+
+
+def _uptime() -> int:
+    return int(float(Path("/proc/uptime").read_text().split()[0]))
+
+
+def _pids(host: Host, word: str) -> list[int]:
+    marker = f"{host.script} {word}".encode()
+    found = []
+    for proc in Path("/proc").iterdir():
+        if proc.name.isdigit():
+            try:
+                cmdline = (proc / "cmdline").read_bytes().replace(b"\0", b" ")
+                state = (proc / "stat").read_text().rsplit(")", 1)[1].split()[0]
+            except OSError, IndexError:
+                continue
+            if marker in cmdline and state != "Z":
+                found.append(int(proc.name))
+    return found
+
+
+def _wait_for(condition: Callable[[], bool], timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError("condition not reached in time")
+        time.sleep(0.05)
 
 
 def _kill_worker(host: Host) -> None:
