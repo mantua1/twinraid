@@ -304,15 +304,18 @@ expect_equal "test container is stopped" "$(running_state "${TEST}")" false
 expect_contains "test container ended cleanly" "$(tail -n 1 "${DATA}/testcontainer/log")" "sauber beendet"
 send ping
 expect_equal "ping" "${RESULT}" extended
-counter="$(cat "${DATA}/testcontainer/counter")"
 send finish
 expect_equal "finish" "${RESULT}" finished
 expect_equal "test container runs again" "$(running_state "${TEST}")" true
 expect_equal "last run: started" "$(status_field last_run.containers.0.result)" started
+# Nach dem Neustart zählt der Testcontainer wieder ab 1.
+sleep 1
+counter="$(cat "${DATA}/testcontainer/counter")"
 sleep 1
 if (($(cat "${DATA}/testcontainer/counter") > counter)); then pass "test container counts again"; else
   fail "test container does not count"
 fi
+expect_contains "log goes on after the clean end" "$(tail -n 1 "${DATA}/testcontainer/log")" zaehler
 expect_contains "syslog: stop with name" "$(syslog)" "stop ${TEST}: stopped"
 
 echo "== Ablehnungen"
