@@ -1,6 +1,6 @@
 # TwinRaid – Projektkonzept
 
-> Arbeitstitel „TwinRaid“ · Version 0.12.1 · Stand 17.10.2026
+> Arbeitstitel „TwinRaid“ · Version 0.13 · Stand 18.10.2026
 > Dieses Dokument ist die verbindliche Grundlage für die Entwicklung. Änderungen am Konzept werden hier eingetragen, bevor sie umgesetzt werden.
 
 ---
@@ -12,11 +12,11 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 - den stromhungrigen Unraid-Server („Unraid Groß“) per Wake-on-LAN starten und sauber herunterfahren,
 - den Online-Status beider Server und der Gaming-VM sehen,
 - die Gaming-VM auf Unraid Groß starten und stoppen,
-- einen **Spiegel-Sync** aller konfigurierten Shares von Klein nach Groß starten, inklusive Container-Daten (appdata) und Container-Vorlagen (Templates). Der Sync läuft manuell oder zeitgesteuert und zeigt Live-Fortschritt und Restzeit.
+- einen **Spiegel-Sync** der konfigurierten Shares von Klein nach Groß starten, inklusive Container-Daten (appdata). Klein hält dafür die freigegebenen Container kurz an, legt ZFS-Snapshots an und sendet sie mit `zfs send` nach Groß; jeder Lauf ist dort ein eigener Snapshot, ältere Stände bleiben 30 Tage erhalten (ab Phase 5, Entscheidung E25). Container-Vorlagen (Templates) folgen mit v0.5.4. Der Sync läuft manuell oder zeitgesteuert und zeigt Live-Fortschritt und Restzeit.
 
-**Ziel des Syncs:** Fällt Unraid Klein aus, wird Unraid Groß manuell gebootet. Dort lassen sich alle Container mit dem Stand des letzten Syncs sofort anlegen und starten.
+**Ziel des Syncs:** Fällt Unraid Klein aus, wird Unraid Groß manuell gebootet. Dort lassen sich alle Container mit dem Stand des letzten Syncs anlegen und starten; die Schritte stehen in `docs/WIEDERHERSTELLUNG.md` (siehe 4.6).
 
-**Nicht-Ziele:** Zugriff aus dem Internet, Mehrbenutzerverwaltung, Bearbeiten der Konfiguration über die Weboberfläche, Sync in Gegenrichtung (Groß → Klein).
+**Nicht-Ziele:** Zugriff aus dem Internet, Mehrbenutzerverwaltung, Bearbeiten der Konfiguration über die Weboberfläche, Sync in Gegenrichtung (Groß → Klein; den Rückweg nach einem Notbetrieb erledigt der Nutzer von Hand, siehe 4.6), Notbetrieb als Funktion von TwinRaid.
 
 ---
 
@@ -27,11 +27,12 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 | Rolle | läuft immer, Sync-Quelle | läuft bei Bedarf, Sync-Ziel und Gaming-Host |
 | Version | Unraid OS 7.3.3 | Unraid OS 7.3.3 |
 | Besonderheit | hostet den TwinRaid-Container | Gaming-VM (Bild und USB auf einen TV in einem anderen Raum) |
+| Dateisystem (ab Phase 5) | ZFS-Pool `mainpool`; jede gesicherte Share ist ein eigenes Dataset `mainpool/<Share>` | ZFS-Pool `mainpool` nur für die Spiegel; VMs und `system` liegen auf einem anderen Pool, der nie gespiegelt wird |
 
 - Beide Server liegen im selben Subnetz („Server-Netz“) und sind mit 2,5 GbE angebunden. Es sind maximal ca. 1 TB Daten zu synchronisieren.
 - Die Weboberfläche muss auch aus einem anderen Subnetz („Client-Netz“) erreichbar sein. Das wird über eine UniFi-Firewall-Regel freigegeben.
-- Die Shares haben auf beiden Systemen **identische Namen**, liegen aber auf **unterschiedlichen Pools**.
-- Auf Groß sind die Container im Normalbetrieb **ausgeschaltet**, damit es keine Konflikte mit Klein gibt. Auf Groß existieren keine eigenen appdata-Daten oder Templates, die geschützt werden müssen.
+- Auf Groß liegen die Spiegel unter `mainpool/twinraid-mirror/<Share>`. Erst im Notbetrieb entstehen dort Shares mit **denselben Namen** und unter **denselben Pfaden** `/mnt/mainpool/<Share>` wie auf Klein (Klone der Spiegel, siehe 4.6). Im Normalbetrieb gibt es auf Groß keine Share-Konfigurationen mit diesen Namen (Entscheidung E26).
+- Auf Groß ist der **Docker-Dienst** im Normalbetrieb **ausgeschaltet**, damit es keine Konflikte mit Klein gibt. Auf Groß existieren keine eigenen appdata-Daten oder Templates, die geschützt werden müssen (E1).
 
 ---
 
@@ -45,41 +46,50 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
   │  Browser  │ ──────────────┐
   └───────────┘  (UniFi-Regel)│
                               ▼
-  ┌──────────────────────── Unraid KLEIN (immer an) ────────────────────────┐
+  ┌───────────────────────── Unraid KLEIN (immer an) ────────────────────────┐
   │                                                                          │
-  │   Container "TwinRaid"  (eigene IP auf br0)                              │
+  │   Container "TwinRaid"  (eigene IP auf br0, ohne Shares und Key „sync“)  │
   │   ┌────────────────────┐   Unix-Socket    ┌─────────────────────────┐    │
   │   │ Web-Prozess        │ ───────────────▶ │ Worker-Prozess          │    │
   │   │ unprivilegiert     │  feste Befehle   │ minimal privilegiert    │    │
-  │   │ UI, Login, API,SSE │                  │ Status, WoL, SSH, rsync │    │
-  │   └────────────────────┘                  └───────────┬─────────────┘    │
-  │                                                       │                  │
-  │   Shares (read-only gemountet) ◀──────────────────────┤                  │
-  │   Unraid-API Klein (Container stop/start) ◀───────────┤                  │
-  └───────────────────────────────────────────────────────┼──────────────────┘
-                                                          │
-        WoL · SSH: guard.sh status (VM-Status) und power (VM, Shutdown) · rsync über SSH
-                                                          ▼
-  ┌──────────────────────── Unraid GROSS (bei Bedarf) ──────────────────────┐
-  │   Gaming-VM   ·   gespiegelte Shares   ·   Container-Templates           │
+  │   │ UI, Login, API,SSE │                  │ Status, WoL, SSH        ├──┐ │
+  │   └────────────────────┘                  └───┬───────────────▲─────┘  │ │
+  │                                  Auftrag (rw) │    Status (ro)│        │ │
+  │  ─ ─ Host von Klein (root) ─ ─ ─ ─ ─ ─ ─ ─ ─ ─│─ ─ ─ ─ ─ ─ ─ ─│─ ─ ─ ─ │ │
+  │   ┌───────────────────────────────────────────▼───────────────┴─────┐  │ │
+  │   │ Wächter source-guard.sh: freigegebene Container anhalten und    │  │ │
+  │   │ starten (Docker-CLI), ZFS-Snapshots in mainpool, zfs send       │  │ │
+  │   └──────────────────────────────┬──────────────────────────────────┘  │ │
+  └──────────────────────────────────┼─────────────────────────────────────┼─┘
+                                     │ zfs send über SSH      WoL, SSH mit │
+                                     │ Key „sync“            Keys „status“ │
+                                     │ (ab v0.5.1)             und „power“ │
+                                     ▼                                     ▼
+  ┌───────────────────────── Unraid GROSS (bei Bedarf) ──────────────────────┐
+  │   guard.sh sync → mainpool/twinraid-mirror/<Share> (schreibgeschützt)    │
+  │   guard.sh status · power → Gaming-VM, weitere VMs, Herunterfahren       │
+  │   VMs und system auf einem anderen Pool, der nie gespiegelt wird         │
   └──────────────────────────────────────────────────────────────────────────┘
 ```
+
+Ab Phase 5 (v0.5.0) läuft auf dem Host von Klein der Wächter `source-guard.sh` (3.6). TwinRaid erreicht ihn nur über eine eingebundene Auftragsdatei und liest seinen Status. Shares, Docker und den Key „sync“ erreicht nur der Wächter; auf Groß nimmt `guard.sh sync` die Snapshots an (3.7).
 
 ### 3.2 Zwei Prozesse in einem Container (zentrale Sicherheitsgrenze)
 
 | | Web-Prozess | Worker-Prozess |
 |---|---|---|
-| Aufgabe | Weboberfläche ausliefern, Login, Sessions, REST-API, Live-Updates (SSE) | alles mit Außenwirkung: Status-Checks, WoL, Unraid-API, SSH/rsync, Zeitsteuerung |
-| Benutzer | eigene unprivilegierte UID (z. B. 10001) | root im Container, nach dem Start nur mit Capability `DAC_READ_SEARCH` (darf alles lesen, nichts schreiben) |
+| Aufgabe | Weboberfläche ausliefern, Login, Sessions, REST-API, Live-Updates (SSE) | alles mit Außenwirkung: Status-Checks, WoL, SSH, Aufträge an den Wächter auf Klein (ab v0.5.0), Zeitsteuerung |
+| Benutzer | eigene unprivilegierte UID (z. B. 10001) | root im Container, nach dem Start nur mit Capability `DAC_READ_SEARCH` (darf alles lesen, nichts schreiben; ob sie ab v0.5.1 entfallen kann, prüft der Starttest, siehe 5.4) |
 | Zugriff auf Secrets | **nein** | ja |
-| Zugriff auf Share-Daten | **nein** | nur lesend |
+| Zugriff auf Share-Daten | **nein** | **nein** (ab Phase 5: die Daten sendet der Wächter auf Klein, siehe 3.6) |
 
-- Die beiden Prozesse kommunizieren über einen Unix-Socket mit einer **festen, kleinen Befehlsliste**: `get_status`, `verify_password`, `wake_target`, `shutdown_target`, `shutdown_target_force_vm` (ab v0.4.1, siehe 4.2), `vm_start`, `vm_stop`, `vm_force_stop`, `sync_start`, `sync_cancel`, `sync_confirm_deletions`.
+- Die beiden Prozesse kommunizieren über einen Unix-Socket mit einer **festen, kleinen Befehlsliste**: `get_status`, `verify_password`, `wake_target`, `shutdown_target`, `shutdown_target_force_vm` (ab v0.4.1, siehe 4.2), `vm_start`, `vm_stop`, `vm_force_stop`, `sync_start`, `sync_dry_run` (ab v0.5.1, Entscheidung E19), `sync_cancel`, `sync_confirm_deletions`.
 - Befehle haben **keine frei wählbaren Parameter** (keine Pfade, Hosts oder Shell-Befehle). Erlaubt sind höchstens IDs, die der Worker selbst vergeben hat (z. B. eine Job-ID).
 - **Einzige Ausnahme `verify_password` (ab Phase 2):** Der Befehl trägt das eingegebene Passwort, höchstens 1024 Zeichen. Der Worker vergleicht es nur mit dem Argon2id-Hash und verwendet es nie als Pfad, Argument oder Logeintrag. So bleibt der Hash ein Secret, das nur der Worker lesen kann (siehe 5.3).
 - **Drosselung im Worker:** Der Worker prüft immer nur ein Passwort gleichzeitig. Jede Prüfung dauert mindestens 1 Sekunde. Nach 5 Fehlversuchen in 15 Minuten wartet er vor jeder weiteren Prüfung zusätzlich, beginnend mit 1 Sekunde und verdoppelt bis höchstens 30 Sekunden. Ein erfolgreicher Login setzt die Zählung zurück, ebenso `twinraid-admin unlock`. So kann auch ein übernommener Web-Prozess nicht schnell durchprobieren.
 - **Konsequenz:** Wird der Web-Prozess kompromittiert, kann ein Angreifer nur das tun, was auch die Buttons können. Er kann keine Keys stehlen, keine Daten lesen und keine Pfade ändern.
-- **Pfadschutz:** Datenmounts und Secrets liegen unter `/srv/worker` (Rechte `0700`, Besitzer root). Selbst Dateien, die auf den Shares für alle lesbar sind, kann der Web-Prozess dadurch nicht erreichen.
+- **Pfadschutz:** Die Einbindungen des Wächters liegen unter `/srv/worker/source-guard` (ab v0.5.0), die Secrets unter `/data/secrets`; beide Ordner haben die Rechte `0700` und gehören root. Shares bindet TwinRaid seit E25 gar nicht mehr ein.
+- **Aufträge an den Wächter (ab v0.5.0):** Nur der Worker schreibt Aufträge im festen Format aus 3.6 in die eingebundene Auftragsdatei und liest den Status des Wächters. Auch ein übernommener Worker kann damit nur anfordern, was der Wächter nach seinen eigenen Regeln erlaubt. Neue Auftragsarten nur nach Rückfrage, wie bei den Worker-Befehlen.
 
 ### 3.3 Technik
 
@@ -92,10 +102,11 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 | Persistenz | SQLite in `/data` (Job-Historie, Sessions, Audit-Log) |
 | Zeitsteuerung | im Worker; Zeitplan aus Wochentagen, Uhrzeit und Zeitzone (siehe 4.8); die technische Umsetzung wird in Phase 6 festgelegt |
 | Prozessverwaltung | s6-overlay mit read-only Root (entschieden, siehe 5.4) |
-| Unraid-Steuerung | Groß: SSH mit erzwungenem Befehl über `guard.sh`, ohne API-Key (ab v0.4.3, Entscheidung E22); Klein: siehe E7 (Abschnitt 10.1) |
-| Kopieren | `rsync` über SSH |
+| Unraid-Steuerung | Groß: SSH mit erzwungenem Befehl über `guard.sh`, ohne API-Key (ab v0.4.3, Entscheidung E22); Klein: Wächter `source-guard.sh` auf dem Host mit der Docker-CLI, ohne API-Key (ab v0.5.0, Entscheidungen E7 und E13, siehe 3.6) |
+| Kopieren | ZFS: Snapshots auf Klein, `zfs send` durch den Wächter über SSH, `zfs receive` über `guard.sh` auf Groß (ab v0.5.1, Entscheidung E25, siehe 3.6 und 3.7); kein rsync |
+| Host-Skripte | `guard.sh` (Groß) und `source-guard.sh` (Klein) in Bash, nur mit den Bordmitteln von Unraid 7.3.3 (bash, coreutils, flock, logger, docker, zfs, ssh, virsh); kein Python auf den Servern; geprüft mit shellcheck |
 | SSH-Client | `openssh-client` aus Debian, Version exakt gepinnt (ab Phase 4); das setuid-Programm `ssh-keysign` wird entfernt |
-| Tests | pytest (Backend), Vitest (Frontend); Mocks für alle externen Systeme |
+| Tests | pytest (Backend), Vitest (Frontend); Mocks für alle externen Systeme; in der CI zusätzlich der Wächter mit echtem Docker (ab v0.5.0) und echte ZFS-Pools in Dateien (`zfsutils-linux`, nur in der CI, ab v0.5.1) |
 | Qualität | ruff, mypy (strict), ESLint, Prettier; CI über GitHub Actions |
 | Veröffentlichung | Image auf `ghcr.io`, gebaut und veröffentlicht nur von GitHub Actions, mit Herkunftsnachweis (siehe 5.8) |
 
@@ -107,13 +118,14 @@ Eine Weboberfläche in **einem einzigen Docker-Container** auf dem stromsparende
 | Klein online/offline | keine Prüfung: TwinRaid läuft auf Klein, im Modus `real` gilt Klein deshalb immer als online (ab v0.3.2, siehe 4.1) | keine |
 | Wake-on-LAN | UDP-Magic-Packet an die Broadcast-Adresse des Server-Netzes (siehe 4.2) | keine |
 | Gaming-VM Status, weitere VMs | SSH: eine dauerhafte Sitzung `guard.sh status` → `vm-watch`, solange Groß online ist (ab v0.4.3, siehe 3.5) | SSH-Key „status“, darf nur `check` und `vm-watch` |
-| Gaming-VM starten und erzwingen | SSH: `guard.sh power` → `vm-start` bzw. `vm-force-stop` (`virsh start`, `virsh destroy`), ab v0.4.3 | SSH-Key „power“ |
+| Grenze des ZFS-Caches (ARC) von Groß | dieselbe Statuszeile von `vm-watch` meldet `zfs_arc_max` und `c_max` (ab v0.5.1, siehe 3.5) | SSH-Key „status“ |
+| Gaming-VM starten und erzwingen | SSH: `guard.sh power` → `vm-start` bzw. `vm-force-stop` (`virsh start`, `virsh destroy`), ab v0.4.3; ab v0.5.1 prüft `vm-start` vorher den freien Arbeitsspeicher und erkennt belegte Geräte (siehe 3.5) | SSH-Key „power“ |
 | Gaming-VM herunterfahren | SSH: `guard.sh power` → `vm-shutdown` (`virsh shutdown`), nur ACPI (ab Phase 4, Entscheidung E8) | SSH-Key „power“ |
-| Container stoppen/starten (Konsistenz beim Sync) | Unraid-API auf Klein; der Weg dorthin ohne „Host access to custom networks“ ist offen (E7) | API-Key nur mit Docker-Rechten |
-| Daten kopieren | rsync über SSH nach Groß | SSH-Key „sync“, per Wrapper auf erlaubte Zielpfade beschränkt |
-| Groß herunterfahren | SSH: `guard.sh` führt `/sbin/poweroff` aus, wie der Button in der Unraid-WebGUI (ab Phase 4); ab v0.4.3 nur, wenn alle VMs aus sind | SSH-Key „power“, darf ausschließlich `check`, `vm-start`, `vm-shutdown`, `vm-force-stop` und `poweroff`, alle ohne Parameter (siehe 5.6) |
+| Container anhalten und starten (Konsistenz beim Sync) | Wächter `source-guard.sh` auf dem Host von Klein: TwinRaid schreibt einen Auftrag in die eingebundene Auftragsdatei, der Wächter ruft die Docker-CLI mit fester Argumentliste auf (ab v0.5.0, E7 und E13, siehe 3.6) | in TwinRaid keine; der Wächter läuft als root auf Klein und hält nur Container aus seiner Erlaubnisliste an |
+| Snapshots und Senden | Wächter: `zfs snapshot`, `zfs diff` und `zfs send` auf Klein, über SSH an `guard.sh sync` auf Groß, dort `zfs receive` mit fester Befehlszeile (ab v0.5.1, E25, siehe 3.6 und 3.7) | SSH-Key „sync“, liegt nur auf dem Host von Klein; `guard.sh` empfängt nur in `mainpool/twinraid-mirror/<Name>` |
+| Groß herunterfahren | SSH: `guard.sh` führt `/sbin/poweroff` aus, wie der Button in der Unraid-WebGUI (ab Phase 4); ab v0.4.3 nur, wenn alle VMs aus sind; ab v0.5.1 nicht während eines Empfangs | SSH-Key „power“, darf ausschließlich `check`, `vm-start`, `vm-shutdown`, `vm-force-stop` und `poweroff`, alle ohne Parameter (siehe 5.6) |
 
-**Kein Docker-Socket. Kein Root-Shell-Zugang auf irgendeinem Server.** Welche VM gemeint ist, steht nur auf Groß in `/boot/config/twinraid/power.conf`; TwinRaid schickt guard.sh nie Parameter (ab v0.4.3).
+**Kein Docker-Socket und kein Key mit Docker-Rechten im Container. Kein Root-Shell-Zugang auf irgendeinem Server.** Welche VM gemeint ist, steht nur auf Groß in `/boot/config/twinraid/power.conf`; TwinRaid schickt guard.sh nie Parameter (ab v0.4.3).
 
 **Ergebnisse der Prüfung in Phase 4** (Quellcode von Unraid-API v4.37.5 und Unraid-WebGUI 7.3):
 
@@ -129,40 +141,44 @@ Bis v0.4.2 fragte TwinRaid den VM-Status über die Unraid-API von Groß ab und s
 
 **Welche VM:** Die Gaming-VM steht nur auf Groß in `/boot/config/twinraid/power.conf`: genau eine Zeile `vm <UUID>`, dazu höchstens Leerzeilen und Zeilen, die mit `#` beginnen. Die UUID steht in Unraid bei der VM (Bearbeiten, XML-Ansicht) oder kommt von `virsh domuuid "<Name>"`. Die Datei ist kein Secret; TwinRaid kann sie weder lesen noch ändern. Fehlt sie oder ist sie ungültig, meldet `vm-watch` `NOT_CONFIGURED`, und alle VM-Befehle werden abgelehnt. Eine andere VM wird auf Groß eingetragen, ohne TwinRaid zu ändern.
 
-**guard.sh Version 2** (im Repo `host-scripts/guard.sh`, auf Groß `/boot/config/twinraid/guard.sh`):
+**guard.sh Version 3** (ab v0.5.1; Version 2 seit v0.4.3; im Repo `host-scripts/guard.sh`, auf Groß `/boot/config/twinraid/guard.sh`):
 
 ```
 guard.sh status       Key „status“: kann nichts verändern
-  check          → twinraid-guard 2 status ok
+  check          → twinraid-guard 3 status ok
   vm-watch       → eine Statuszeile bei jeder Änderung, sonst alle 15 s
 
 guard.sh power        Key „power“: nur für freigeschaltete Aktionen
-  check          → twinraid-guard 2 power ok
-  vm-start       → virsh start --domain <UUID aus power.conf>
+  check          → twinraid-guard 3 power ok
+  vm-start       → Speicherprüfung, dann virsh start --domain <UUID aus power.conf>
   vm-shutdown    → virsh shutdown --domain <UUID>   (nur ACPI, E8)
   vm-force-stop  → virsh destroy --domain <UUID>
-  poweroff       → nur wenn alle VMs aus sind, dann /sbin/poweroff
+  poweroff       → nur wenn alle VMs aus sind und kein Empfang läuft, dann /sbin/poweroff
 
-guard.sh sync         Key „sync“ (Phase 5); bis dahin wird alles abgelehnt
+guard.sh sync         Key „sync“ vom Host von Klein (siehe 3.7)
+  check          → twinraid-guard 3 sync ok, dazu eine Zeile je Spiegel
+  receive <Name> → zfs receive mit fester Befehlszeile nach mainpool/twinraid-mirror/<Name>
 ```
 
-- Die Anfrage steht in `SSH_ORIGINAL_COMMAND` und wird nur mit festen Texten verglichen; Parameter gibt es nicht. Alles andere endet mit Exit-Code 2 („denied“) und einem Eintrag im Syslog von Groß.
-- Exit-Code 3 heißt: Die Anfrage ist erlaubt, eine Prüfung in guard.sh lehnt sie aber ab. Auf stderr steht dann `twinraid-guard: refused <Grund>` mit `vm-not-configured`, `vm-running`, `other-vms-running`, `vm-state-unknown` oder `watch-busy`.
+- Die Anfrage steht in `SSH_ORIGINAL_COMMAND` und wird nur mit festen Texten verglichen; Parameter gibt es nicht. Einzige Ausnahme ist `receive <Name>` im Modus `sync`: Der Name muss genau einer Zeile `mirror <Name>` in `mirror.conf` entsprechen (3.7). Alles andere endet mit Exit-Code 2 („denied“) und einem Eintrag im Syslog von Groß.
+- Exit-Code 3 heißt: Die Anfrage ist erlaubt, eine Prüfung in guard.sh lehnt sie aber ab. Auf stderr steht dann `twinraid-guard: refused <Grund>` mit `vm-not-configured`, `vm-running`, `other-vms-running`, `vm-state-unknown` oder `watch-busy`; ab Version 3 zusätzlich `memory-low`, `device-busy` und `sync-running` (Modus `power`) sowie die Gründe des Modus `sync` aus 3.7.
 - Höchstens zwei `vm-watch`-Schleifen laufen gleichzeitig (Sperrdateien `/var/run/twinraid-guard-watch.<1|2>.lock` mit `flock`). Eine dritte Sitzung lehnt guard.sh mit `watch-busy` ab; TwinRaid versucht es wie nach einem Abbruch erneut. Zwei Plätze genügen, weil eine alte Schleife nach einem Abbruch spätestens beim nächsten Lebenszeichen endet. So kann auch ein übernommener TwinRaid auf Groß nicht beliebig viele Schleifen starten.
-- Jeder Aufruf von virsh läuft mit `LC_ALL=C` und einem Zeitlimit (`timeout`): 10 s für Abfragen, 90 s für `vm-start`, 60 s für `vm-force-stop`, 30 s für `vm-shutdown`. Ausgaben von virsh gibt guard.sh nie weiter.
+- Jeder Aufruf von virsh läuft mit `LC_ALL=C` und einem Zeitlimit (`timeout`): 10 s für Abfragen, 90 s für `vm-start`, 60 s für `vm-force-stop`, 30 s für `vm-shutdown`. Ausgaben von virsh gibt guard.sh nie weiter; ab Version 3 liest es die Fehlermeldung von `virsh start` nur intern, um ein belegtes Gerät zu erkennen (siehe „Start der VM“).
 - Ins Syslog kommen nur feste Texte und die geprüfte UUID, nie die Anfrage selbst.
-- **Version:** TwinRaid ab 0.4.3 verlangt guard.sh Version 2 (0.4.4 ändert guard.sh nicht). `check` und jede Statuszeile nennen die Version; ist sie älter, lautet die Ursache `guard_outdated` mit dem Hinweis, guard.sh neu zu kopieren. guard.sh Version 1 kennt den Modus `status` nicht und lehnt ab (`ssh_denied`); auch dann weist die Oberfläche auf das Kopieren hin.
+- **Version:** TwinRaid ab 0.4.3 verlangt guard.sh Version 2 (0.4.4 und 0.5.0 ändern guard.sh nicht), TwinRaid ab 0.5.1 Version 3. `check` und jede Statuszeile nennen die Version; ist sie älter, lautet die Ursache `guard_outdated` mit dem Hinweis, guard.sh neu zu kopieren. guard.sh Version 1 kennt den Modus `status` nicht und lehnt ab (`ssh_denied`); auch dann weist die Oberfläche auf das Kopieren hin.
 
-**Statuszeile von `vm-watch`** (nur ASCII, höchstens 16 KiB):
+**Statuszeile von `vm-watch`** (nur ASCII, höchstens 16 KiB), zuerst Version 2 (v0.4.3 bis v0.5.0), darunter Version 3 (ab v0.5.1, zusätzlich `arc_max` und `c_max`):
 
 ```
 watch 2 vm=<Zustand> name=<Hex|-> others=<Anzahl|?> names=<Hex>,<Hex>…|- connect=<present|absent> flash_backup=<active|inactive|unknown>
+watch 3 vm=<Zustand> name=<Hex|-> others=<Anzahl|?> names=<Hex>,<Hex>…|- connect=<present|absent> flash_backup=<active|inactive|unknown> arc_max=<Byte|-|?> c_max=<Byte|-|?>
 ```
 
 - `vm`: Zustand der eingetragenen VM aus `virsh domstate`, in denselben Werten wie bisher die API: `RUNNING`, `IDLE`, `PAUSED`, `SHUTDOWN`, `SHUTOFF`, `CRASHED`, `PMSUSPENDED`, `NOSTATE`. Dazu `NOT_CONFIGURED` (`power.conf` fehlt oder ist ungültig), `NOT_FOUND` (keine VM mit dieser UUID), `LIBVIRT_DOWN` (der VM-Dienst läuft nicht) und `UNKNOWN` (virsh antwortet nicht innerhalb des Zeitlimits). Die Zuordnung zur Anzeige steht in 4.1.
 - `name`: Name der eingetragenen VM, hex-kodiert. `gaming_vm.unraid_vm_name` ist ab v0.4.3 optional. Ist es gesetzt und weicht der Name ab, zeigt die VM-Kachel den Hinweis `vm_name_mismatch` („Auf Groß ist eine VM mit anderem Namen eingetragen“). Das fängt eine falsche UUID in `power.conf` ab.
 - `others` und `names`: weitere VMs (Konzept 4.2), also alle außer der eingetragenen in jedem Zustand außer „shut off“. Die Namen sind hex-kodiert, höchstens 20, je höchstens 256 Byte. `others=?` heißt: Die Liste ist nicht lesbar (dann `names=-`).
 - `connect` und `flash_backup`: Merkmale von Unraid Connect (siehe unten).
+- `arc_max` und `c_max` (ab Version 3): die in Unraid eingetragene Grenze des ZFS-Caches (ARC) aus `/sys/module/zfs/parameters/zfs_arc_max` und die wirksame Obergrenze `c_max` aus `/proc/spl/kstat/zfs/arcstats`, jeweils in Byte als Dezimalzahl mit höchstens 20 Ziffern. `-`: ZFS ist auf Groß nicht geladen; `?`: nicht lesbar. Siehe „Grenze des ARC“ unten.
 - Die Namen sind Text von Groß und eine bewusste Ausnahme von der Regel, dass kein fremder Text in den Status gelangt: TwinRaid dekodiert sie als UTF-8 und bereinigt sie (Steuer- und unsichtbare Formatzeichen werden ersetzt, höchstens 64 Zeichen je Name, höchstens 20 Namen), liefert sie nur über geschützte Routen aus und loggt sie nie; Aktionslog und Container-Log enthalten nur den festen Code `other_vms_running`.
 - Eine Zeile, die nicht genau diesem Format entspricht, beendet die Sitzung (`watch_interrupted`).
 
@@ -174,7 +190,7 @@ watch 2 vm=<Zustand> name=<Hex|-> others=<Anzahl|?> names=<Hex>,<Hex>…|- conne
 | Aufbau der Sitzung `vm-watch` mit dem Key „status“ | einmal, sobald Groß online ist; danach nur nach einem Abbruch (Neuversuche unten) | Worker |
 | VM-Zustände lesen (`virsh list --all --uuid`, `virsh list --inactive --uuid`, `virsh domstate`) | alle 3 s | guard.sh, lokal |
 | Namen weiterer VMs (`virsh domname`) | nur für VMs, die nicht aus sind | guard.sh |
-| `power.conf` und Name der eingetragenen VM neu lesen; Merkmale von Unraid Connect | alle 15 s bzw. alle 60 s | guard.sh |
+| `power.conf` und Name der eingetragenen VM neu lesen; Merkmale von Unraid Connect und Werte des ARC | alle 15 s bzw. alle 60 s | guard.sh |
 | Zeile an TwinRaid | bei jeder Änderung, sonst alle 15 s als Lebenszeichen | guard.sh |
 | Sitzung gilt als hängend | nach 40 s ohne Zeile; eine tote Verbindung erkennt SSH schon nach 10–15 s (`ServerAliveInterval=5`, `ServerAliveCountMax=2`) | Worker |
 | `get_status` | alle 2 s, nur solange ein Dashboard offen ist; liest nur den Stand im Worker | Web-Prozess |
@@ -201,20 +217,216 @@ watch 2 vm=<Zustand> name=<Hex|-> others=<Anzahl|?> names=<Hex>,<Hex>…|- conne
 - Eine ältere `vm-watch`-Schleife auf Groß endet spätestens beim nächsten Lebenszeichen (≤ 15 s), weil das Schreiben in die geschlossene Verbindung scheitert.
 - Im Container-Log stehen Beginn, Ende und Fehler der Sitzung nur als feste Codes, gleiche Meldungen höchstens einmal pro Minute.
 
-**Prüfung vor `poweroff` in guard.sh:** Unmittelbar vor `/sbin/poweroff` prüft guard.sh selbst: Die eingetragene VM ist „shut off“ oder „crashed“ (wie im Worker), jede andere VM ist „shut off“. Ohne gültige `power.conf` muss jede VM „shut off“ sein. Sonst endet guard.sh mit Exit-Code 3 (`vm-running`, `other-vms-running`, oder `vm-state-unknown`, wenn virsh nicht antwortet), schreibt einen Eintrag ins Syslog, und Groß bleibt an. TwinRaid ordnet das `vm_running`, `other_vms_running` bzw. `vm_service_unavailable` zu. So gilt „nie ausschalten, solange VMs laufen“ (4.2) auch gegen einen übernommenen TwinRaid. Herunterfahren über die Unraid-Oberfläche bleibt immer möglich.
+**Prüfung vor `poweroff` in guard.sh:** Unmittelbar vor `/sbin/poweroff` prüft guard.sh selbst: Die eingetragene VM ist „shut off“ oder „crashed“ (wie im Worker), jede andere VM ist „shut off“. Ohne gültige `power.conf` muss jede VM „shut off“ sein. Sonst endet guard.sh mit Exit-Code 3 (`vm-running`, `other-vms-running`, oder `vm-state-unknown`, wenn virsh nicht antwortet), schreibt einen Eintrag ins Syslog, und Groß bleibt an. TwinRaid ordnet das `vm_running`, `other_vms_running` bzw. `vm_service_unavailable` zu. So gilt „nie ausschalten, solange VMs laufen“ (4.2) auch gegen einen übernommenen TwinRaid. Ab Version 3 lehnt guard.sh `poweroff` außerdem ab, solange ein Empfang läuft (`sync-running`, TwinRaid: `sync_running`). Herunterfahren über die Unraid-Oberfläche bleibt immer möglich.
+
+**Start der VM (ab Version 3, Entscheidung E25e):**
+
+- **Speicherprüfung vor `vm-start`:** guard.sh liest „Max memory“ der eingetragenen VM aus `virsh dominfo`. Als frei gilt `MemAvailable` aus `/proc/meminfo` plus der Teil des ARC über `c_min` (aus `/proc/spl/kstat/zfs/arcstats`), weil ZFS diesen Teil bei Bedarf abgibt. Reicht das nicht für die VM plus 1 GiB Sicherheitsabstand, endet guard.sh mit Exit-Code 3 und `refused memory-low`, ohne `virsh start` aufzurufen. Ob `MemAvailable` den ARC schon teilweise enthält, misst der Machbarkeitstest Z1; dann zählt guard.sh nur den übrigen Teil, damit nichts doppelt gezählt wird. Das schützt laufende VMs vor einem Start aus TwinRaid; ein Start über die Unraid-Oberfläche wird nicht geprüft. VMs mit durchgereichten Geräten belegen ihren ganzen Speicher schon beim Start; ohne Swap beendet der Kernel sonst meist eine laufende VM.
+- **Belegtes Gerät:** Scheitert `virsh start` und passt seine Fehlermeldung (mit `LC_ALL=C`) auf das feste Muster `is in use by`, endet guard.sh mit `refused device-busy`. Andere Fehler geben den Exit-Code von virsh weiter. Die Meldung selbst gibt guard.sh nie weiter und schreibt sie nie ins Syslog.
+- **Anzeige in TwinRaid:** `vm_device_busy` „Ein durchgereichtes Gerät der VM, etwa die Grafikkarte, wird gerade von einer anderen VM benutzt.“ (solange weitere VMs laufen, mit ihren Namen); `vm_memory_low` „Auf Groß ist nicht genug Arbeitsspeicher frei, um die VM zu starten.“; andere Fehler von `vm-start` als `vm_start_failed` „Unraid konnte die VM nicht starten; den Grund nennt das libvirt-Log.“ statt des allgemeinen `remote_failed`.
+
+**Grenze des ARC (ab Version 3, Entscheidung E25a):**
+
+- Die Grenze des ZFS-Caches legt der Nutzer nur in Unraid fest (*Settings → Disk Settings → Tunable (zfs_arc_max)*). `twinraid.yaml` enthält dafür keinen Wert, und TwinRaid rechnet nicht mit Annahmen über Arbeitsspeicher oder VMs.
+- Ist `arc_max` genau `0`, ist in Unraid keine Grenze eingetragen, und OpenZFS wählt sie selbst. Dann zeigt die Kachel Groß den gelben Hinweis `target_arc_unlimited` („Auf Groß ist keine Grenze für den ZFS-Cache eingetragen. Trage sie in Unraid unter Settings → Disk Settings ein.“). Bei jedem anderen Wert, bei `-` und bei `?` erscheint kein Hinweis.
+- Die Einstellungsseite und `twinraid-admin sync-check` zeigen `arc_max` und `c_max` als Information.
 
 **Warnung zu Unraid Connect:**
 
 - **Merkmal:** die Datei `/boot/config/plugins/dynamix.unraid.net.plg`; genau sie prüft die Unraid-API 4.37.5 selbst (`isConnectPluginInstalled()`). Zusätzlich zählen `/var/log/plugins/dynamix.unraid.net.plg` (im laufenden Betrieb geladen) und der ältere Name `dynamix.unraid.net.staging.plg` an beiden Orten. Eines davon genügt für `connect=present`. Kein Merkmal ist der Ordner `/boot/config/plugins/dynamix.my.servers`: Seit Unraid 7.2 legt die eingebaute API dort ihre Keys ab.
 - **Flash Backup:** aus `/var/local/emhttp/flashbackup.ini`, Schlüssel `activated`. Ein Wert außer leer, `0`, `false`, `no` und `off`: `active`; Datei oder Wert fehlt: `inactive`; nicht lesbar: `unknown`.
 - **Anzeige:** ein gelber Hinweis in der Kachel von Groß, solange das Merkmal besteht (Hinweis `target_connect_plugin`; bei aktivem Flash Backup zusätzlich `target_flash_backup`). Nur feste Texte; TwinRaid liest keine Daten von Connect (Konto, Servername).
-- Auf Klein prüft das ab v0.5.0 der Container-Wächter (E7).
+- Auf Klein prüft der Wächter `source-guard.sh` dieselben Merkmale (ab v0.5.0, siehe 3.6); die Kachel Klein zeigt dann `source_connect_plugin` bzw. `source_flash_backup`. Dort ist der Hinweis besonders wichtig, weil der Key „sync“ auf dem Boot-Medium von Klein liegt.
 
 **HTTPS der WebGUI von Groß:** TwinRaid überträgt nichts mehr über die WebGUI von Groß; übrig bleibt die TCP-Prüfung, ob der Port offen ist. Ob Unraid dort HTTPS nutzt, spielt keine Rolle. `webgui.scheme` und `webgui.port` bleiben gültig und bestimmen nur den Port der Online-Prüfung (Standard 80 bei http, 443 bei https). Der bestätigte Fingerabdruck des Zertifikats und die Warnung „unverschlüsselt“ entfallen.
 
 **Umstieg von v0.4.2:** `twinraid-init` löscht `target-api-key` und `target-api-cert.sha256` einmal und schreibt einen Hinweis ins Log, den Key auch in Unraid zu löschen (*Settings → Management Access → API Keys*). Die Schritte stehen in `docs/EINRICHTUNG.md`.
 
 **Ursachen bei Fehlern** (siehe 4.1): Server offline, Verbindung wird aufgebaut (`watch_connecting`), Sitzung unterbrochen (`watch_interrupted`), SSH-Key „status“ fehlt (`ssh_key_missing`), Hostkey nicht bestätigt (`ssh_host_untrusted`), Hostkey geändert (`ssh_host_key_mismatch`), Key abgelehnt (`ssh_auth_failed`), SSH nicht erreichbar (`ssh_unreachable`), guard.sh lehnt ab (`ssh_denied`), guard.sh zu alt (`guard_outdated`), sonstiger SSH-Fehler (`ssh_failed`), VM nicht eingetragen (`vm_not_configured`), VM nicht gefunden (`vm_not_found`), VM-Dienst nicht bereit (`vm_service_unavailable`).
+
+### 3.6 Wächter auf Klein (`source-guard.sh`, ab v0.5.0, Entscheidungen E7, E13, E14, E16–E18)
+
+Der Wächter ist ein Bash-Skript, das als root auf dem Host von Klein läuft, nur mit den Bordmitteln von Unraid 7.3.3. Im Repo liegen `host-scripts/source-guard.sh` und `host-scripts/source-guard.conf.example`. TwinRaid gibt ihm nur Aufträge; was erlaubt ist, entscheidet der Wächter nach seiner eigenen Konfiguration auf Klein.
+
+- **v0.5.0:** Container anhalten und wieder starten, Status, Merkmale von Unraid Connect (wie 3.5), lesender ZFS-Teil (Datasets vorhanden, eigenes Dataset von TwinRaid, freier Platz, Kompression). TwinRaid zeigt nur an.
+- **v0.5.1:** Snapshots, Prüfen, Senden, Aufbewahrung auf Klein, `init-key` und `trust-target`.
+
+**Ablage und Austausch**
+
+| Pfad auf Klein | Inhalt | im Container | schreibt |
+|---|---|---|---|
+| `/boot/config/twinraid/source-guard.sh` | Skript | – | Nutzer (Kopie aus dem Repo) |
+| `/boot/config/twinraid/source-guard.conf` | Erlaubnisliste der Container, Zeiten, Datasets, Ziel, Grenzen; keine Secrets | – | Nutzer |
+| `/boot/config/twinraid/ssh-sync`, `ssh-sync.pub` | Key „sync“ (root, `0600`), erzeugt mit `source-guard.sh init-key` (ab v0.5.1) | – | Wächter |
+| `/boot/config/twinraid/target-known-hosts` | bestätigter Hostkey von Groß (`source-guard.sh trust-target`, ab v0.5.1) | – | Wächter |
+| `/run/twinraid-source-guard/in/` | eigenes tmpfs, 64 KiB, `0700` | – | Wächter, einmal beim ersten Start |
+| `/run/twinraid-source-guard/in/request` | Auftragsdatei, 256 Byte | `/srv/worker/source-guard/request`, rw, einzelne Datei | nur TwinRaid |
+| `/run/twinraid-source-guard/state/` | `status.json` | `/srv/worker/source-guard/state`, ro | nur Wächter |
+| `/run/twinraid-source-guard/private/` | Instanz, letzte Auftragsnummer, offener Lauf und Job, Sperrdatei; nach einem Neustart von Klein leer | – | nur Wächter |
+
+- **Eine Datei statt eines Ordners:** Der Container kann nur den Inhalt der Auftragsdatei ändern, aber keine Namen, Symlinks, FIFOs oder Unterordner anlegen; `rename` und `unlink` scheitern am Mount-Punkt mit `EBUSY`. Der Wächter liest nur diesen festen Pfad und prüft trotzdem bei jedem Lesen: reguläre Datei, kein Symlink, Besitzer root, ein Hardlink, höchstens 256 Byte. Er schreibt dort nie.
+- **Eigenes Mini-tmpfs:** Über die Auftragsdatei kann der Container höchstens 64 KiB Arbeitsspeicher auf Klein belegen. `/run` statt appdata: kein Warten auf das Array, kein FUSE.
+- **Antworten getrennt:** `state/` ist read-only eingebunden; TwinRaid prüft in `/proc/self/mountinfo`, dass es wirklich read-only ist, sonst gilt der Wächter als falsch eingerichtet (`misconfigured`).
+- **Schreiben an Ort und Stelle:** Der Worker schreibt die Datei direkt; jede Zeile endet mit einer Prüfsumme, damit ein halb gelesener Auftrag nicht gilt.
+- **Der Key „sync“ liegt nur auf Klein**, nie in TwinRaid. Er liegt auf dem Boot-Medium von Klein; die Freigabe „flash“ muss den Export „No“ haben, und Unraid Connect sollte nicht installiert sein (Hinweis in der Kachel Klein, siehe 3.5).
+
+**Aufträge**
+
+```
+TRSG1 <Nr> begin <Prüfsumme>
+TRSG1 <Nr> stop <Container> <Prüfsumme>
+TRSG1 <Nr> ping <Prüfsumme>
+TRSG1 <Nr> snapshot <Prüfsumme>
+TRSG1 <Nr> finish <Prüfsumme>
+TRSG1 <Nr> prepare <Prüfsumme>
+TRSG1 <Nr> confirm <Prüfsumme>
+TRSG1 <Nr> send <Prüfsumme>
+TRSG1 <Nr> close <Prüfsumme>
+```
+
+- Genau eine ASCII-Zeile, mit Leerzeichen auf 255 Zeichen aufgefüllt, plus Zeilenende; ein einziger regulärer Ausdruck prüft sie, alles andere ergibt `rejected_format`.
+- `<Nr>`: 1 bis 999 999 999, größer als die zuletzt angenommene. `<Container>`: Zeichen wie bei Docker, `[A-Za-z0-9][A-Za-z0-9_.-]{0,127}`; der Name dient nur zum Nachschlagen, an Docker geht die selbst ermittelte ID. `<Prüfsumme>`: die ersten 16 Hex-Zeichen von SHA-256 über den Text davor.
+- Höchstens ein Auftrag pro Sekunde. Abgelehnte Aufträge stehen höchstens einmal pro Minute im Syslog, nie mit Inhalt.
+- `stop` ist der einzige Auftrag mit einem Wert. Datasets, Ziel, Optionen und Snapshot-Namen kann TwinRaid nicht wählen.
+- `snapshot`, `prepare`, `confirm`, `send` und `close` nimmt der Wächter ab v0.5.1 an; in v0.5.0 lehnt er sie mit `not_supported` ab.
+
+**Regeln**
+
+| Auftrag | nur, wenn … | Wirkung |
+|---|---|---|
+| `begin` | kein Lauf und kein Job offen | öffnet einen Lauf (Fenster für angehaltene Container) mit Höchstzeit und Herzschlag-Frist |
+| `stop X` | Lauf offen; X steht in `allow`, nicht in `deny` und ist nicht TwinRaid selbst; der Container existiert | läuft X: ID merken, `docker stop --time <stop_timeout> -- <ID>`, Ergebnis prüfen; läuft X nicht: `not_running`, nicht gemerkt |
+| `ping` | Lauf offen | verlängert die Herzschlag-Frist, nie die Höchstzeit |
+| `snapshot` | kein Job offen; seit dem letzten Snapshot mindestens 30 min; Platzreserve auf `mainpool` und höchstens 50 eigene Snapshots je Dataset | ein Aufruf `zfs snapshot` für alle Datasets der Liste (ein Pool, also atomar), Name `twinraid-<UTC-Zeit>`, Eigenschaft `twinraid:created-by=source-guard`; öffnet einen Job. Sonst `snapshot_low_space`, `snapshot_limit` bzw. `too_soon` |
+| `finish` | Lauf offen | startet in umgekehrter Reihenfolge die gemerkten Container, wenn dieselbe ID noch existiert und nicht läuft; schließt den Lauf |
+| `prepare` | Job mit neuem Snapshot, Lauf geschlossen | je Dataset `zfs diff` gegen die Basis (nur gezählt: gelöscht, geändert, neu, umbenannt), `referenced` neu gegen Basis, Größe mit `zfs send -nvP`; `guard.sh sync check` (Zustand der Spiegel, Basis-GUID, Platz, Empfang, Klon, Eigenschaften). Ergebnis im Status |
+| `confirm` | `prepare` meldet mehr Löschungen als `max_deletions` oder `referenced` unter 50 % der Basis | gibt genau diesen Job frei |
+| `send` | `prepare` fertig, Grenzen eingehalten oder freigegeben, Ziel bereit | je Dataset `zfs send -L -c -e -v [-i @Basis] @neu` an `ssh … receive <Name>`, beim ersten Mal (Spiegel laut `check` `absent`) vollständig; danach neue Basis mit Hold, Lesezeichen, alter Hold frei |
+| `close` | Job offen | schließt den Job; eine laufende Übertragung bricht ab (auf Groß scheitert der Empfang, dort ändert sich nichts). Der Snapshot bleibt und läuft nach 7 Tagen ab |
+| Totmannschalter | Herzschlag-Frist oder Höchstzeit des Laufs überschritten | wie `finish`, Grund `deadman_heartbeat` bzw. `deadman_max`, Warnung im Syslog |
+| Job-Frist | Job ohne `send` oder `close` nach 30 min (Warten auf Freigabe), Übertragung länger als 12 h | Wächter schließt den Job selbst (`job_timeout`) |
+
+- **Ablauf eines Syncs:** `begin`, `stop` je Container, `snapshot`, `finish`; danach `prepare`, falls nötig `confirm`, dann `send` bei laufenden Containern. Mit `stop_containers: false` entfallen `begin`, `stop` und `finish`; der Snapshot ist dann absturzkonsistent. „Nur Probelauf“ ist `snapshot`, `prepare`, `close`.
+- **Start nur für selbst Angehaltenes:** Es gibt keinen Start-Auftrag. Ein inzwischen neu angelegter Container (andere ID) wird nicht gestartet und als `changed` gemeldet.
+- **Selbstschutz:** Nie angehalten wird ein Container, der Pfade unter `/run/twinraid-source-guard` einbindet, dessen Image `ghcr.io/mantua1/twinraid` oder lokal `twinraid` heißt oder der das Label `org.opencontainers.image.source=https://github.com/mantua1/twinraid` trägt; steht so einer in `allow`, ist das ein Konfigurationsfehler. TwinRaid schickt für die eigene ID (aus `/proc/self/mountinfo`, siehe 10.1) zusätzlich nie `stop`.
+- **Nie gesendet:** `system` und `domains` lehnt der Wächter fest ab, auch wenn sie in der Liste stehen; gesendet wird nie rekursiv (`-R`) und nie mit Eigenschaften (`-p`).
+
+**Snapshots auf Klein (ab v0.5.1, Entscheidung E25b)**
+
+- **Basis:** der neueste eigene Snapshot je Dataset, dessen GUID zum neuesten Snapshot des Spiegels auf Groß passt. Der Wächter hält ihn mit `zfs hold twinraid-base` fest; nach einem erfolgreichen Senden bekommt die neue Basis zuerst den Hold, dann wird der alte freigegeben. Dazu legt er je Senden ein Lesezeichen `#twinraid-<Zeit>` an; fehlt der Basis-Snapshot doch einmal, sendet er inkrementell vom Lesezeichen.
+- **Aufbewahrung:** Eigene Snapshots (Namensanfang und Eigenschaft) älter als `snapshot_keep_days` löscht der Wächter nach jedem erfolgreichen Senden und einmal täglich; nie die Basis, nie einen mit Hold oder Klon, nie mit `-r`, nie einen Namen ohne `@`. Fremde Snapshots fasst er nie an.
+- **Statt vorzeitig zu löschen** lehnt der Wächter neue Snapshots ab: Platzreserve `snapshot_reserve_percent` von `mainpool`, höchstens 50 je Dataset, Mindestabstand 30 min. Ein übernommener TwinRaid kann so höchstens weitere Läufe blockieren, nichts löschen.
+- **Nutzen:** Einzelne Dateien der letzten Tage liegen direkt auf Klein unter `/mnt/mainpool/<Share>/.zfs/snapshot/…`.
+- **Kompression (Entscheidung E25c):** Der Nutzer stellt sie in Unraid in den Einstellungen des Pools ein („Compression on“); alle Datasets erben sie. Unraid setzt den Wert der obersten Ebene bei jedem Start auf diese Einstellung zurück. `on` und `lz4` gelten als gleichwertig; der Status meldet den Wert je Dataset.
+
+**Konfiguration auf Klein**
+
+```
+# /boot/config/twinraid/source-guard.conf
+allow twinraid-testcontainer       # Container, die angehalten werden dürfen
+# deny <Name>                      # zusätzlich nie anhalten
+max_stop_minutes 20                # Höchstzeit eines Laufs (5–120), E16
+heartbeat_timeout_seconds 120      # Frist ohne ping (30–600), E16
+stop_timeout_seconds 60            # docker stop vor SIGKILL (10–600), E16
+dataset twinraidtest               # mainpool/<Name> wird gespiegelt (ab v0.5.1)
+max_deletions 1000                 # Löschgrenze je Job (Summe über die Datasets)
+target_host 192.168.10.11          # Unraid Groß (Beispielwert)
+target_port 22
+snapshot_keep_days 7
+snapshot_reserve_percent 15
+```
+
+Unbekannte oder fehlerhafte Zeilen: Der Wächter startet nicht, nennt den Grund im Syslog und meldet `config_invalid`. Änderungen gelten nach `source-guard.sh restart`. Der Pool ist fest `mainpool`; die Datasets liegen direkt darunter (`mainpool/<Name>`), ihre Namen folgen den Regeln für Share-Namen (6.3).
+
+**Status für TwinRaid**
+
+`state/status.json` wird alle 5 Sekunden und nach jedem Auftrag atomar neu geschrieben, höchstens 64 KiB, mit strengem Schema in TwinRaid (unbekannte Felder sind ein Fehler):
+
+- **Allgemein:** `protocol`, `version`, `heartbeat_at`, `error`, `instance`, `started_at`, `last_seq`, `last` (Nummer, Auftrag, Ergebnis, Zeit), `host` (Connect installiert, Flash Backup).
+- **Container:** `limits`, `allowed` (Name, ID, Zustand), offener `run` (Fristen, angehaltene Container), `last_run`.
+- **ZFS:** je Dataset Basis (Zeit, GUID), Anzahl und Alter der eigenen Snapshots, Lesezeichen vorhanden, `referenced`, `compression`; eigenes Dataset von TwinRaid gefunden; freier Platz auf `mainpool`.
+- **Job (ab v0.5.1):** Zustand (`snapshot`, `prepared`, `awaiting_confirm`, `sending`, `done`, `failed`, `closed`), Zählungen aus `zfs diff`, Größe, gesendete Bytes je Dataset, Ergebnis.
+- **Ziel (ab v0.5.1):** Ergebnis des letzten `guard.sh sync check` (3.7): je Spiegel Zustand, letzter Snapshot (Zeit, GUID), Anzahl, ältester, Eigenschaften in Ordnung; freier Platz, Empfang läuft, Klon vorhanden.
+- Container-Namen sind Text von Klein. TwinRaid bereinigt sie wie die VM-Namen (3.5), liefert sie nur über geschützte Routen aus und loggt sie nie.
+
+**Aktiv** heißt: Herzschlag höchstens 30 Sekunden alt, Protokoll 1, kein `error`. Die Kachel Klein zeigt „Wächter: aktiv · Herzschlag vor 4 s · 1 Container freigegeben“, sonst „nicht aktiv seit …“ oder den Fehler (`config_invalid`, `docker_unavailable`, `zfs_unavailable`, `request_not_a_file`, `misconfigured`, `state_lost`).
+
+**Auftragsnummer und Neustarts**
+
+- **Nur der Wächter führt die Nummer** (in `private/`, im Status als `last_seq` mit `instance`). TwinRaid speichert keine eigene. Ein Auftrag: Status lesen, Wächter aktiv, `n = last_seq + 1`, schreiben, auf `last.seq = n` warten (10 s, bei `stop` `stop_timeout` + 15 s, bei `prepare` 120 s). Ändert sich `instance` oder läuft die Frist ab, gilt der Auftrag als gescheitert; im Lauf folgt trotzdem `finish`.
+- **Annahme:** Format oder Prüfsumme falsch: verworfen, `last_seq` bleibt. Nummer kleiner oder gleich `last_seq`: ignoriert. Größer: zuerst `last_seq` speichern, dann prüfen und ausführen; Lücken sind erlaubt. Obergrenze 999 999 999 (`seq_exhausted`).
+
+| Fall | Wächter | TwinRaid | Container und Job |
+|---|---|---|---|
+| Klein startet neu (`/run` leer) | startet aus der go-Datei vor Docker; neue `instance`, `last_seq = 0`; Auftragsdatei leer angelegt; eigene Snapshots, Holds und Lesezeichen bleiben (sie liegen im Pool) | liest `last_seq = 0`, der nächste Auftrag hat die Nummer 1 | ein unterbrochener Lauf ist verloren; Unraid startet Container mit Autostart; ein Job ist weg, die Übertragung abgebrochen, Groß unverändert |
+| Wächter startet neu, Klein läuft | liest `private/`: `instance`, `last_seq`, offener Lauf und Job bleiben; eine abgebrochene Übertragung gilt als gescheitert | sieht die Lücke im Herzschlag | gemerkte Container bleiben gemerkt; `finish` oder der Totmannschalter starten sie |
+| `private/` fehlt, Auftragsdatei besteht (nur nach Eingriff von Hand) | neue `instance`; den vorgefundenen Auftrag führt er nie aus (`discarded_at_start`), Fehler `state_lost` | erkennt die neue `instance`; ein laufender Abschnitt endet mit `source_guard_lost` | das Dashboard nennt die Container, die TwinRaid anhalten ließ, und erklärt den Start in Unraid |
+| TwinRaid startet neu | unverändert; eine laufende Übertragung läuft weiter | macht bei `last_seq + 1` weiter; offener Lauf: sofort `finish`; offener Job ohne Übertragung: `close` | Container werden gestartet; eine Übertragung endet normal und steht danach im Status |
+| Wächter läuft nicht | – | Status „nicht aktiv“; Sync und Probelauf gesperrt (`source_guard_inactive`) | – |
+
+**Start und Überwachung (Entscheidung E14)**
+
+- Eine Zeile in `/boot/config/go` vor `emhttp`: `/bin/bash /boot/config/twinraid/source-guard.sh start`. `start` legt `/run/twinraid-source-guard` und das tmpfs an, nur wenn sie fehlen, und startet mit `setsid` eine Überwachungsschleife (Neustart nach 5 s, höchstens 10-mal in 10 min). `flock` verhindert eine zweite Instanz.
+- Der Wächter wartet auf `mainpool`, bevor er ZFS-Aufträge annimmt; bis dahin meldet er `zfs_unavailable`.
+- Weitere Befehle: `stop` (vorher `finish`, falls ein Lauf offen ist; eine Übertragung wird abgebrochen), `restart`, `status`, `check-config`, `init-key`, `trust-target`, `selftest <Container>`, `selftest-deadman <Container>`.
+- Syslog mit der Kennung `twinraid-source-guard`: Start, Stopp, jeder angenommene Auftrag (bei `stop` mit Container-Name), Snapshots, Senden, Löschen, Totmann-Fälle, Fehler; nie Inhalte der Auftragsdatei.
+- **SSH-Client im Wächter (ab v0.5.1):** feste Argumentliste wie im Worker (5.6) mit eigenem `UserKnownHostsFile=/boot/config/twinraid/target-known-hosts` und dem Key „sync“.
+
+### 3.7 Spiegel auf Groß (`guard.sh sync`, ab v0.5.1, Entscheidungen E25 und E26)
+
+**Pool und Ort**
+
+- Auf Groß liegen die Spiegel im ZFS-Pool `mainpool` unter `mainpool/twinraid-mirror/<Name>`. `mainpool/twinraid-mirror` ist eine Unraid-Share, die der Nutzer anlegt (Primärspeicher `mainpool`, kein Sekundärspeicher, Export „No“).
+- guard.sh empfängt nur dorthin: Pool und Wurzel stehen fest im Code, `<Name>` ist ein einzelner Bestandteil aus `mirror.conf`. Andere Pools auf Groß, etwa der Pool für VMs und `system`, erreicht guard.sh nie, auch nicht mit einer veränderten `mirror.conf`. Fehlt `mainpool/twinraid-mirror` oder ist es kein Dateisystem im Pool `mainpool`, lehnt guard.sh ab (`mirror-root-missing`).
+- guard.sh legt Datasets nur durch `zfs receive` an, liest keine Share-Konfigurationen, importiert keine Pools und listet nur unterhalb von `mainpool/twinraid-mirror`.
+
+**`mirror.conf`** (`/boot/config/twinraid/mirror.conf` auf Groß, kein Secret): Zeilen `mirror <Name>` mit den Zeichen von Share-Namen (6.3); `system` und `domains` in jeder Schreibweise immer abgelehnt; dazu `keep_days 30`, `reserve_percent 15`, `min_interval_minutes 10`. Eine fehlerhafte Zeile macht die ganze Datei ungültig; dann lehnt guard.sh jeden Empfang ab. Status und Herunterfahren stört das nicht.
+
+**Empfang**
+
+```
+zfs receive \
+  -o readonly=on -o exec=off -o setuid=off -o devices=off \
+  -o primarycache=metadata -o compression=lz4 -o atime=off \
+  -o xattr=sa -o acltype=posix -o twinraid:mirror=1 \
+  -x recordsize -x secondarycache -x snapdir -x sync -x dedup \
+  -x copies -x checksum -x quota -x refquota -x reservation \
+  -x refreservation -x mountpoint -x canmount -x sharesmb -x sharenfs \
+  mainpool/twinraid-mirror/<Name>
+```
+
+- **Fest:** kein `-F`, kein `-c` (Heilen), kein `-s` (Fortsetzen), kein `-d` oder `-e`. Der Name kommt nur aus `mirror.conf`. Aus dem Strom übernimmt Groß nur die Daten und die Eigenschaften, die zum Dateisystem gehören (`normalization`, `utf8only`, `casesensitivity`).
+- **Eigenschaften direkt am Spiegel:** Alle schützenden Eigenschaften setzt guard.sh bei **jedem** Empfang mit `-o` direkt am Spiegel (Quelle `local`), nicht über Vererbung von `twinraid-mirror` oder `mainpool`. Grund: Unraid setzt Eigenschaften der obersten Ebene eines Pools bei jedem Start auf die Pool-Einstellungen zurück (beobachtet für `compression`; ein `zfs set` am Terminal hält dort nur bis zum Neustart). `compression=on` und `lz4` gelten als gleichwertig (Unraid stellt „Compression on“ ein, OpenZFS nimmt dafür lz4). Eine Abweichung meldet `check`; der nächste Empfang korrigiert sie.
+- **Vorher geprüft** (sonst Exit-Code 3 mit festem Grund): Name in `mirror.conf` (`name-denied`), Wurzel vorhanden (`mirror-root-missing`), an der Stelle des Spiegels kein fremdes Dataset (`target-exists`, E26), freier Platz über der Reserve (`space-low`), Mindestabstand je Spiegel (`too-soon`), kein Klon eines Spiegel-Snapshots (`clone-active`), kein anderer Empfang (`receive-busy`, `flock`).
+- **Nachher:** Eigenschaft `twinraid:received=<Zeit von Groß>` am neuen Snapshot, dann Aufbewahrung: Gelöscht werden nur Snapshots der Spiegel aus `mirror.conf`, älter als `keep_days` laut `twinraid:received`, nie die drei neuesten, nie einer mit Klon, nie mit `-r`, nie ein Name ohne `@`. Einen Snapshot ohne `twinraid:received` löscht guard.sh nie. Klein und TwinRaid haben dafür keinen Befehl.
+- **`check`:** gibt `twinraid-guard 3 sync ok` aus, danach je Zeile aus `mirror.conf` eine Zeile mit Zustand (`absent`, `mirror`, `foreign`), neuestem Snapshot (Zeit, GUID), Anzahl und ältestem Snapshot und `props=ok|mismatch`, dazu eine Zeile mit freiem Platz, laufendem Empfang und vorhandenen Klonen. Festes Format, nur ASCII; `check` verändert nichts.
+
+| Fall ohne `-F` | Verhalten | Beleg |
+|---|---|---|
+| Snapshots löschen, die der Sender nicht hat | geht nur mit `-F` | zfs-receive(8) |
+| Ziel seit dem letzten Snapshot verändert | Abbruch (`ETXTBSY`) | `dmu_recv.c`, `recv_begin_check_existing_impl` |
+| Vollständiger Strom in ein vorhandenes Dataset | Abbruch (`EEXIST`) | ebenda |
+| Snapshot mit vorhandenem Namen | Abbruch (`EEXIST`) | ebenda |
+| Inkrementeller Strom | nur wenn der neueste Snapshot des Ziels die Basis ist; hängt einen Snapshot an | zfs-receive(8) |
+| Fremdes Dataset an der Stelle des Spiegels | guard.sh lehnt vor dem Empfang ab (`target-exists`) | E26 |
+
+Ein Dataset, das auf Klein gelöscht und neu angelegt wurde, kann den Spiegel deshalb nicht ersetzen. `readonly=on` verhindert zusätzlich, dass schon ein Lesen mit atime das Ziel „verändert“. Ob `receive:append` (zfs-allow(8)) unter Linux als zweite Schranke trägt, klärt der Machbarkeitstest Z1; wenn ja, empfängt guard.sh als eigener Nutzer mit dieser Berechtigung.
+
+**Erster Empfang und Datasets, die Unraid selbst anlegt (Entscheidung E26)**
+
+- Unraid legt für Shares Datasets auf oberster Ebene eines Pools an (`<Pool>/<Share>`), auch ohne Zutun, wenn es die Share-Konfiguration schon gibt, und zwar auch auf einem anderen Pool als dem eingetragenen, wenn dieser fehlt. Beobachtet auf Groß: `mainpool/isos` entstand, obwohl in der Konfiguration ein nicht mehr vorhandener Pool steht; vermutlich hat der ISO-Ordner des VM-Managers (`/mnt/user/isos`) es ausgelöst. Die Spiegel liegen eine Ebene tiefer. Z3 prüft nach einem Neustart von Groß und nach Stopp und Start der Pools, dass Unraid auf keinem Pool Datasets mit gespiegelten Namen und unterhalb von `mainpool/twinraid-mirror` nichts anlegt, auch nicht beim Start des VM-Managers.
+- **Erster Empfang:** Der Wächter sendet einen vollständigen Strom nur, wenn `check` den Spiegel als `absent` meldet, sonst inkrementell von der Basis. guard.sh nimmt einen Empfang in ein vorhandenes Dataset nur an, wenn es ein eigener Spiegel ist (Eigenschaft `twinraid:mirror=1` mit Quelle `local`, gesetzt beim ersten Empfang); sonst endet es mit `refused target-exists`, bevor `zfs receive` startet. guard.sh löscht nie ein Dataset, das es nicht selbst empfangen hat, und ersetzt nichts. TwinRaid zeigt `target_exists` mit dem Verweis auf `docs/EINRICHTUNG.md`: Dataset ansehen und von Hand entfernen.
+- **Normalbetrieb:** Auf Groß gibt es keine Share-Konfigurationen (`/boot/config/shares/<Name>.cfg`) mit den Namen der gespiegelten Shares. Umstellen genügt nicht, weil Unraid auf einen anderen Pool ausweichen kann; der Nutzer löscht sie bei der Einrichtung, nachdem er geprüft hat, dass die Shares leer sind. Kein Pfad in Unraid zeigt auf eine solche Share, insbesondere nicht der ISO-Ordner des VM-Managers. Er kann nach dem ersten Sync von isos auf den Spiegel `/mnt/mainpool/twinraid-mirror/isos/` zeigen; dort sind aber keine Downloads möglich (etwa des VirtIO-ISOs), weil der Spiegel schreibgeschützt ist.
+- **Notbetrieb:** Die Klone entstehen auf oberster Ebene (`mainpool/<Share>`), also genau dort, wo Unraid Datasets für Shares anlegt. `docs/WIEDERHERSTELLUNG.md` legt zuerst die Klone an und danach die Shares neu an, mit Primärspeicher `mainpool`; hat Unraid trotzdem schon ein Dataset angelegt, wird es vorher geprüft (keine Dateien, keine Snapshots, keine Kinder) und von Hand entfernt (4.6).
+
+**Angriffsfläche im Kernel:** Den Strom wertet der Kernel von Groß aus. Erreichbar ist der Empfänger nur mit dem Key „sync“ von der Adresse des Hosts Klein, praktisch also nur mit root auf Klein. Gegenmaßnahmen: Updates von Unraid zeitnah auf beiden Servern (gleiche OpenZFS-Version; Unraid 7.3.3 bringt OpenZFS 2.4.4); keine Roh- und keine verschlüsselten Ströme; kein `-c` beim Empfang (CVE-2026-49430 betrifft den Heilmodus); feste Befehlszeile; Empfang höchstens alle 10 min je Spiegel. Gegen root auf Klein mit einer Kernel-Lücke hilft nur eine Kopie, die Klein nicht erreicht; sie ist nicht Teil des Projekts.
+
+**Speicher:** Ein Empfang schreibt den ganzen Strom durch den ARC; die Spiegel haben deshalb `primarycache=metadata`. Die Grenze des ARC trägt der Nutzer in Unraid ein (3.5).
+
+**Grenzen bei einem Angriff**
+
+- **Übernommener TwinRaid-Container:** kann Läufe auslösen (einer zur Zeit, Abstand 30 min im Wächter, je Spiegel ein Empfang je 10 min), Löschungen freigeben wie der Button (ältere Stände bleiben in den Snapshots) und freigegebene Container auf Klein bis zu 20 min anhalten. Er kann nicht: gespiegelte Daten lesen, nach Groß schreiben, Datasets, Ziel oder Optionen wählen, Snapshots auf Klein oder Groß löschen, andere Container anhalten oder starten, Container aktualisieren, pausieren oder ihre Logs lesen.
+- **Übernommenes Klein (root):** hat Key und Daten und kann selbst gebaute Ströme an den Empfänger im Kernel schicken. Ältere Snapshots auf Groß kann es nicht löschen (kein `-F`, kein Befehl dafür). Gegen ein übernommenes Klein schützen nur diese Snapshots.
 
 ---
 
@@ -224,10 +436,10 @@ watch 2 vm=<Zustand> name=<Hex|-> others=<Anzahl|?> names=<Hex>,<Hex>…|- conne
 
 Kacheln:
 
-1. **Unraid Klein:** Status. Im Modus `real` immer „Online“ mit der Ursache „TwinRaid läuft auf diesem Server“ (siehe „Prüfung“).
-2. **Unraid Groß:** Status mit den Buttons „Wecken“ und „Herunterfahren“. Laufen außer der Gaming-VM weitere VMs (jeder Zustand außer „shut off“, wie in 4.2), nennt die Kachel sie dauerhaft: „Weitere laufende VMs: …“ (ab v0.4.4, nur Anzeige, keine Steuerung). Ausgeschaltete VMs erscheinen nicht; ist die Liste unbekannt oder Groß aus, entfällt die Zeile.
+1. **Unraid Klein:** Status. Im Modus `real` immer „Online“ mit der Ursache „TwinRaid läuft auf diesem Server“ (siehe „Prüfung“). Ab v0.5.0 zusätzlich der Wächter (3.6): „Wächter: aktiv · Herzschlag vor 4 s · 1 Container freigegeben“, sonst „nicht aktiv seit …“ oder der Fehler, dazu die Hinweise zu Unraid Connect auf Klein.
+2. **Unraid Groß:** Status mit den Buttons „Wecken“ und „Herunterfahren“. Laufen außer der Gaming-VM weitere VMs (jeder Zustand außer „shut off“, wie in 4.2), nennt die Kachel sie dauerhaft: „Weitere laufende VMs: …“ (ab v0.4.4, nur Anzeige, keine Steuerung). Ausgeschaltete VMs erscheinen nicht; ist die Liste unbekannt oder Groß aus, entfällt die Zeile. Ab v0.5.1 erscheint ein gelber Hinweis, wenn auf Groß keine Grenze für den ZFS-Cache eingetragen ist (3.5).
 3. **Gaming-VM:** Status mit den Buttons „Starten“ und „Herunterfahren“. Nach einem Timeout zusätzlich „Erzwingen“: Der Button erscheint, sobald ein Herunterfahren läuft oder gescheitert ist, und wird erst `shutdown_timeout_minutes` nach dem letzten Versuch aktiv (siehe 4.2). Bis dahin steht darunter „Erzwingen: möglich ab hh:mm:ss“, auch während das Herunterfahren noch läuft (ab v0.4.4). Ist ein Herunterfahren von Groß an der VM gescheitert, zeitweise zusätzlich „Erzwingen und danach Server herunterfahren“ (ab v0.4.1, siehe 4.2).
-4. **Sync:** letzter Lauf (Ergebnis, Dauer, Datenmenge), nächster geplanter Lauf, Button „Jetzt synchronisieren“, Live-Fortschritt während eines Laufs.
+4. **Sync** (ab v0.5.1): letzter Lauf (Ergebnis, Dauer, Datenmenge), nächster geplanter Lauf (bis Phase 6 „Zeitplan aus (ab Phase 6)“), Buttons „Jetzt synchronisieren“ und „Nur Probelauf“, während eines Laufs „Abbrechen“, Live-Fortschritt (4.4), Zählungen je Share (gelöscht, geändert, neu, umbenannt), Dialog zur Freigabe von Löschungen; ab v0.5.3 die Snapshots beider Seiten.
 5. **Verlauf:** Liste der letzten Aktionen und Sync-Läufe (Audit-Log).
 
 Statuswerte: `Online`, `Offline`, `Startet …`, `Fährt herunter …`, `Unbekannt`. Zu jedem Status kann eine **Ursache** aus einer festen Liste kommen (z. B. „Server offline“, „VM-Dienst nicht bereit“, „Key abgelehnt“, „VM pausiert“; siehe 3.5). So ist bei einem Fehler klar unterscheidbar, ob der Server aus ist, der VM-Dienst nicht antwortet oder der Key nicht passt.
@@ -235,11 +447,11 @@ Statuswerte: `Online`, `Offline`, `Startet …`, `Fährt herunter …`, `Unbekan
 - **Prüfung:** Der Worker prüft Groß alle 10 Sekunden per TCP-Check. Die VM kommt aus der Sitzung `vm-watch`, solange Groß online ist (ab v0.4.3, siehe 3.5); jede Änderung löst sofort eine neue Prüfung aus. Ist Groß offline, gilt die VM als aus mit der Ursache „Server offline“. `get_status` liefert sofort den zuletzt geprüften Stand.
 - **Klein (ab v0.3.2):** TwinRaid läuft auf Klein. Solange der Worker antwortet, ist Klein also online. Im Modus `real` entfällt deshalb der TCP-Check von Klein; die Kachel zeigt „Online“ mit der festen Ursache „TwinRaid läuft auf diesem Server“. Grund: Ohne „Host access to custom networks“ (siehe 5.1) erreicht der Container seinen eigenen Host nicht, ein TCP-Check würde Klein fälschlich als offline melden.
 - **VM-Zustände** (libvirt, ab v0.4.3 über guard.sh): `RUNNING` und `IDLE` → Online; `PAUSED` → Online, Ursache „pausiert“; `PMSUSPENDED` → Online, Ursache „im Ruhezustand“; `SHUTDOWN` → Fährt herunter …; `SHUTOFF` → Offline; `CRASHED` → Offline, Ursache „abgestürzt“; `NOSTATE` und Unbekanntes → Unbekannt. Dazu von guard.sh: `NOT_CONFIGURED` → Unbekannt, Ursache „VM auf Groß nicht eingetragen“; `NOT_FOUND` → Unbekannt, Ursache „VM nicht gefunden“; `LIBVIRT_DOWN` und `UNKNOWN` → Unbekannt, Ursache „VM-Dienst nicht bereit“.
-- **Hinweise (ab v0.4.3):** Der Status enthält eine Liste fester Hinweise (`notices`): `target_connect_plugin` und `target_flash_backup` für die Kachel Groß, `vm_name_mismatch` für die VM-Kachel (siehe 3.5). Sie ändern weder Zustand noch Verfügbarkeit der Aktionen.
+- **Hinweise (ab v0.4.3):** Der Status enthält eine Liste fester Hinweise (`notices`): `target_connect_plugin` und `target_flash_backup` für die Kachel Groß, `vm_name_mismatch` für die VM-Kachel (siehe 3.5); ab v0.5.0 `source_connect_plugin` und `source_flash_backup` für die Kachel Klein (3.6), ab v0.5.1 `target_arc_unlimited` für die Kachel Groß (3.5). Sie ändern weder Zustand noch Verfügbarkeit der Aktionen.
 - **Live-Updates:** Die Oberfläche öffnet einen SSE-Datenstrom (`GET /api/events`, geschützt). Ein einziger Abfrage-Task im Web-Prozess fragt den Worker alle 2 Sekunden mit dem vorhandenen Befehl `get_status` und schickt Änderungen an alle offenen Datenströme. Es gibt dafür keinen neuen Worker-Befehl. Höchstens 32 Datenströme gleichzeitig.
-- **Kopierjob:** Der Status enthält das Feld `job_running` („Kopierjob läuft“). Ab Phase 5 kommt es vom echten Sync. Bis dahin ist es im Modus `real` immer aus und im Simulationsmodus mit `twinraid-admin mock-job on|off` schaltbar. Es steuert die Ausnahme vom Inaktivitäts-Timeout (siehe 5.3).
+- **Kopierjob:** Der Status enthält das Feld `job_running` („Kopierjob läuft“). Ab v0.5.1 kommt es vom echten Job des Wächters (Probelauf, Warten auf Freigabe, Senden), im Simulationsmodus vom simulierten Sync; `twinraid-admin mock-job` entfällt dann. Bis dahin ist es im Modus `real` immer aus und im Simulationsmodus mit `twinraid-admin mock-job on|off` schaltbar. Es steuert die Ausnahme vom Inaktivitäts-Timeout (siehe 5.3).
 
-Destruktive oder störende Aktionen (Herunterfahren, Force-Stop, Sync mit vielen Löschungen) erfordern einen Bestätigungsdialog. Ab Phase 4: Groß herunterfahren, VM herunterfahren und Erzwingen. Wecken und VM starten laufen ohne Dialog.
+Destruktive oder störende Aktionen (Herunterfahren, Force-Stop, Sync mit vielen Löschungen) erfordern einen Bestätigungsdialog. Ab Phase 4: Groß herunterfahren, VM herunterfahren und Erzwingen. Ab v0.5.2: Freigabe von Löschungen und Abbrechen eines Syncs. Wecken, VM starten, „Jetzt synchronisieren“ und „Nur Probelauf“ laufen ohne Dialog.
 
 ### 4.2 Aktionen und Sperren
 
@@ -251,7 +463,8 @@ Destruktive oder störende Aktionen (Herunterfahren, Force-Stop, Sync mit vielen
 | Gaming-VM herunterfahren | ACPI-Signal per SSH, dann „Fährt herunter …“, bis die VM aus ist, höchstens `shutdown_timeout_minutes`. Danach Meldung „reagiert nicht“ und „Erzwingen“ |
 | Gaming-VM erzwingen | erst `shutdown_timeout_minutes` nach dem letzten erfolgreich gesendeten ACPI-Signal und nur, solange die VM noch läuft; per SSH (`vm-force-stop`, bis v0.4.2 über die API) |
 | Erzwingen und danach Server herunterfahren (ab v0.4.1) | nur nach einem Herunterfahren von Groß, das abgebrochen wurde, weil die VM nicht rechtzeitig herunterfuhr; höchstens 10 Minuten lang und nur, solange sich nichts geändert hat (siehe unten) |
-| Sync starten | gesperrt, wenn bereits ein Sync läuft; ist Groß offline, wird es automatisch geweckt |
+| Sync starten (ab v0.5.2) | gesperrt, wenn bereits ein Sync läuft, wenn der Wächter nicht aktiv ist (`source_guard_inactive`), wenn die drei Ebenen nicht zusammenpassen (`levels_mismatch`, siehe 4.3), wenn appdata gespiegelt wird und das eigene Dataset von TwinRaid fehlt (`self_dataset_missing`) und solange auf Groß ein Klon eines Spiegels besteht (`target_clone_active`). Ist Groß offline, wird es automatisch geweckt |
+| Nur Probelauf (ab v0.5.1) | Sperren wie bei „Sync starten“; schreibt nichts nach Groß und endet nach der Prüfung (4.3) |
 | Automatisches Herunterfahren nach Sync | nur wenn **der Sync den Server geweckt hat** UND die Gaming-VM nicht läuft UND keine weitere VM auf Groß läuft (Schutz vor weiteren VMs, siehe unten) UND währenddessen keine manuelle Aktion auf Groß stattfand |
 
 **Broadcast-Adresse für Wake-on-LAN (ab Phase 4):** `servers.target.wol_broadcast` wird optional. Fehlt der Wert, verwendet der Worker die Broadcast-Adresse des eigenen Netzes (aus IP und Netzmaske der Schnittstelle), sofern `servers.target.host` in diesem Netz liegt. Liegt Groß in einem anderen Netz, ist die Angabe Pflicht: Ist `actions.wake` freigeschaltet, startet der Container sonst nicht und nennt den Grund; ohne Freischaltung warnt das Startlog nur. So muss der Wert nicht doppelt gepflegt werden. Das Magic Packet (6 × `FF`, dann 16 × die MAC von Groß) geht dreimal an UDP-Port 9.
@@ -260,8 +473,8 @@ Alle Aktionen laufen über eine zentrale Sperrlogik im Worker (eine Aktion pro R
 
 **Sperrlogik und Abläufe (ab Phase 4):**
 
-- **Ressourcen** sind Groß und die VM. Groß wecken belegt Groß, VM herunterfahren und Erzwingen belegen die VM, VM starten, Groß herunterfahren und „Erzwingen und danach Server herunterfahren“ belegen beide. Ist eine Ressource belegt, wird der Befehl abgelehnt; es gibt keine Warteschlange.
-- **Verfügbarkeit:** Der Worker berechnet für jede Aktion, ob sie gerade möglich ist, und sonst den Grund aus einer festen Liste: `not_enabled`, `busy`, `sync_running`, `target_online`, `target_offline`, `target_unknown`, `vm_running`, `vm_off`, `vm_unknown`, `force_not_yet`, `not_offered` (ab v0.4.1: kein gültiges Angebot für „Erzwingen und danach Server herunterfahren“), `other_vms_running` (ab v0.4.2: auf Groß laufen weitere VMs), `tour`. Er liefert das mit `get_status` aus und prüft bei jedem Befehl erneut. Die Oberfläche deaktiviert Buttons nur nach dieser Angabe und nennt die Gründe, die nicht schon aus dem Status hervorgehen. Für „Erzwingen“ geht `force_not_yet` dem Grund `busy` vor, solange die Wartezeit läuft und Groß und die VM noch als laufend gemeldet werden (ab v0.4.4): Während „VM herunterfahren“ oder „Groß herunterfahren“ die VM belegt, nennt die Oberfläche so die Uhrzeit, ab der Erzwingen möglich ist. Ist die VM schon aus, bleibt es bei `busy` bzw. `vm_off`.
+- **Ressourcen** sind Groß, die VM und ab v0.5.1 der Sync. Groß wecken belegt Groß, VM herunterfahren und Erzwingen belegen die VM, VM starten, Groß herunterfahren und „Erzwingen und danach Server herunterfahren“ belegen beide. Sync und Probelauf belegen den Sync, für das Wecken zusätzlich Groß. Ist eine Ressource belegt, wird der Befehl abgelehnt; es gibt keine Warteschlange. Während eines Syncs sind „Groß herunterfahren“ und „Erzwingen und danach Server herunterfahren“ gesperrt (`sync_running`); VM-Aktionen bleiben möglich.
+- **Verfügbarkeit:** Der Worker berechnet für jede Aktion, ob sie gerade möglich ist, und sonst den Grund aus einer festen Liste: `not_enabled`, `busy`, `sync_running`, `target_online`, `target_offline`, `target_unknown`, `vm_running`, `vm_off`, `vm_unknown`, `force_not_yet`, `not_offered` (ab v0.4.1: kein gültiges Angebot für „Erzwingen und danach Server herunterfahren“), `other_vms_running` (ab v0.4.2: auf Groß laufen weitere VMs), `tour`; ab v0.5.1 für Sync und Probelauf zusätzlich `source_guard_inactive`, `levels_mismatch`, `self_dataset_missing` und `target_clone_active`. Er liefert das mit `get_status` aus und prüft bei jedem Befehl erneut. Die Oberfläche deaktiviert Buttons nur nach dieser Angabe und nennt die Gründe, die nicht schon aus dem Status hervorgehen. Für „Erzwingen“ geht `force_not_yet` dem Grund `busy` vor, solange die Wartezeit läuft und Groß und die VM noch als laufend gemeldet werden (ab v0.4.4): Während „VM herunterfahren“ oder „Groß herunterfahren“ die VM belegt, nennt die Oberfläche so die Uhrzeit, ab der Erzwingen möglich ist. Ist die VM schon aus, bleibt es bei `busy` bzw. `vm_off`.
 - **Zwischenzustände:** Solange eine Aktion läuft, meldet der Status „Startet …“ bzw. „Fährt herunter …“ und den aktuellen Schritt: `waking`, `waiting_for_vm_service` (bis v0.4.2 `waiting_for_api`), `starting_vm`, `stopping_vm`, `forcing_vm`, `shutting_down`. Während Groß nach dem Wecken bootet, zeigt die VM die Ursache „Wartet auf den Server“ (`target_starting`).
 - **Ergebnis:** Je Ressource meldet der Status das letzte Ergebnis aus einer festen Liste (siehe Aktionslog in 5.3). Es bleibt bis zur nächsten Aktion auf dieser Ressource bzw. bis zum Neustart des Workers sichtbar.
 - **Meldung und Hinweis (ab v0.4.1):** Die Oberfläche zeigt zu jedem Ergebnis die Meldung als Verlauf. Ein Hinweis, was jetzt zu tun ist, erscheint nur, solange er nach dem aktuellen Status zutrifft: „Erzwingen ist jetzt möglich“ nur, solange Erzwingen angeboten wird; der Verweis auf „Erzwingen und danach Server herunterfahren“ nur, solange das Angebot gilt; „Wake-on-LAN prüfen“ nach `boot_timeout` nur, solange Groß aus ist; der Hinweis nach `shutdown_timeout` nur, solange Groß an ist. Hinweise, die sich nicht prüfen lassen (z. B. guard.sh lehnt ab), bleiben bis zur nächsten Aktion stehen. Eine Ablehnung beim Absenden („eine andere Aktion läuft gerade“) verschwindet mit dem nächsten Live-Status.
@@ -287,7 +500,7 @@ Alle Aktionen laufen über eine zentrale Sperrlogik im Worker (eine Aktion pro R
 - **Erneute Prüfung im Worker:** unmittelbar vor `poweroff`, also auch nach dem Herunterfahren der Gaming-VM; bei der erzwungenen Variante zusätzlich vor dem Erzwingen, damit die Gaming-VM nicht umsonst hart ausgeschaltet wird. Läuft dann eine weitere VM, bricht der Ablauf mit `other_vms_running` ab; lässt sich die Liste nicht lesen, mit der Ursache aus 3.5 (z. B. `vm_service_unavailable`). Lehnt guard.sh das Ausschalten ab, gilt dasselbe (`vm_running`, `other_vms_running` oder `vm_service_unavailable`). Groß bleibt in allen Fällen an; das Ergebnis steht im Status und im Aktionslog.
 - **Liste unbekannt** (z. B. VM-Dienst nicht bereit): Herunterfahren bleibt gesperrt (`vm_unknown`), wie bei unbekanntem Zustand der Gaming-VM.
 
-**Aktionen im Echtbetrieb einzeln freischalten (Entscheidung E9):** In `twinraid.yaml` gibt es den optionalen Abschnitt `actions` mit `wake`, `vm` und `shutdown`, alle standardmäßig aus. Er gilt nur im Modus `real`; im Simulationsmodus sind alle Aktionen verfügbar.
+**Aktionen im Echtbetrieb einzeln freischalten (Entscheidung E9):** In `twinraid.yaml` gibt es den optionalen Abschnitt `actions` mit `wake`, `vm` und `shutdown`, ab v0.5.1 zusätzlich `sync_dry_run` und `sync` (Entscheidung E19), alle standardmäßig aus. Er gilt nur im Modus `real`; im Simulationsmodus sind alle Aktionen verfügbar.
 
 | Aktion | braucht |
 |---|---|
@@ -296,54 +509,67 @@ Alle Aktionen laufen über eine zentrale Sperrlogik im Worker (eine Aktion pro R
 | VM starten | `vm`; ist Groß aus, zusätzlich `wake` |
 | VM herunterfahren, Erzwingen | `vm` |
 | Erzwingen und danach Server herunterfahren | `vm` und `shutdown` |
+| Nur Probelauf (ab v0.5.1) | `sync_dry_run` oder `sync`; ist Groß aus, zusätzlich `wake` |
+| Sync starten (ab v0.5.2) | `sync`; ist Groß aus, zusätzlich `wake` |
 
-Eine nicht freigeschaltete Aktion lehnt der Worker mit `not_available` ab, die Oberfläche zeigt „nicht freigeschaltet“. Sind alle Aktionen aus, bleibt das Banner „Nur Statusanzeige“. Änderungen wirken nach einem Neustart des Containers. Die Sync-Befehle bleiben bis Phase 5 gesperrt.
+Eine nicht freigeschaltete Aktion lehnt der Worker mit `not_available` ab, die Oberfläche zeigt „nicht freigeschaltet“. Sind alle Aktionen aus, bleibt das Banner „Nur Statusanzeige“. Änderungen wirken nach einem Neustart des Containers. Die Sync-Befehle bleiben bis v0.5.1 (Probelauf) bzw. v0.5.2 (Sync) gesperrt.
 
-### 4.3 Sync-Ablauf
+### 4.3 Sync-Ablauf (ab v0.5.1, Entscheidung E25)
 
-1. **Vorabprüfung:** Groß erreichbar (sonst wecken); SSH-Hostkey stimmt; alle Quell-Shares existieren und sind nicht leer; Templates auf Pool-Pfade prüfen (siehe 4.7).
-2. **Dry-Run** (`rsync --dry-run --stats`) pro Share: ermittelt Anzahl und Größe der zu übertragenden Dateien sowie die Anzahl der Löschungen.
-3. **Löschschutz:** Würden mehr als `max_deletions` Dateien gelöscht, gilt:
-   - Bei manuellem Lauf: Anzeige der Zahl und Freigabe durch den Nutzer.
-   - Bei geplantem Lauf: Abbruch mit Benachrichtigung.
-4. **Phase A – Hauptkopie bei laufenden Containern:** alle Shares inklusive appdata spiegeln (`rsync -aHAX --delete --numeric-ids …`). Hier fällt die meiste Datenmenge an.
-5. **Phase B – Konsistenzlauf:** laufende Container merken, stoppen (außer `never_stop` und dem eigenen Container), appdata erneut spiegeln (nur noch das Delta, typischerweise Sekunden bis wenige Minuten), Container-Templates kopieren.
-6. **Container wieder starten:** genau die, die vorher liefen, auch bei einem Fehler in Phase B (`try/finally`).
-7. **Abschluss:** Notfall-Info auf Groß schreiben (siehe 4.6), Ergebnis in die Historie eintragen.
-8. **Optional:** Groß herunterfahren (Bedingungen siehe 4.2, einschließlich des Schutzes vor weiteren VMs).
+Den Ablauf steuert der Worker über Aufträge an den Wächter (3.6); TwinRaid selbst liest und schreibt keine Share-Daten.
 
-**Delta:** rsync überträgt grundsätzlich nur geänderte Dateien, bei geänderten Dateien über das Netzwerk nur die geänderten Blöcke. Folge-Syncs sind deshalb deutlich schneller als der erste.
+1. **Vorabprüfung:** Sperren aus 4.2; Wächter aktiv; die **drei Ebenen** passen zusammen: `sync.shares` in `twinraid.yaml`, Zeilen `dataset` in `source-guard.conf` auf Klein und Zeilen `mirror` in `mirror.conf` auf Groß (laut letztem `check`), sonst `levels_mismatch`; eigenes Dataset von TwinRaid gefunden, wenn appdata dabei ist (E18). Ist Groß aus: wecken (braucht `actions.wake`) und bis `boot_timeout_minutes` warten.
+2. **Snapshot:** mit `stop_containers: true`: `begin`, `stop` je Kandidat (in der Erlaubnisliste des Wächters, laufend, nicht in `never_stop`, nicht der eigene Container), `ping` alle 15 s, `snapshot`, `finish` (immer, auch nach Fehlern); mit `stop_containers: false` nur `snapshot` (absturzkonsistent). Alle Shares stammen aus demselben Zeitpunkt; die Container sind nur für den Snapshot angehalten.
+3. **Prüfen:** `prepare`. Anzeige je Share: gelöscht, geändert, neu, umbenannt, Größe; dazu der Zustand der Spiegel auf Groß. Meldet `check` an der Stelle eines Spiegels ein fremdes Dataset, endet der Lauf mit `target_refused` (Grund `target_exists`, E26). „Nur Probelauf“ endet hier mit `close`.
+4. **Löschschutz:** Mehr Löschungen als `max_deletions` (in `source-guard.conf`) oder `referenced` unter 50 % der Basis: Bei einem manuellen Lauf gibt der Nutzer die Löschungen mit `sync_confirm_deletions` frei (Wächter: `confirm`) oder lehnt mit `sync_cancel` ab (`close`); ohne Antwort schließt der Wächter den Job nach 30 min. Geplante Läufe (Phase 6) brechen ab.
+5. **Senden:** `send`, je Share inkrementell von der Basis, beim ersten Mal vollständig; die Container laufen dabei.
+6. **Abschluss:** neue Basis auf Klein, neuer Snapshot je Spiegel auf Groß; Ergebnis ins Aktionslog und in die Sync-Historie (5.3), Status sofort neu prüfen.
+7. **Optional (Phase 6):** Groß herunterfahren (Bedingungen siehe 4.2, einschließlich des Schutzes vor weiteren VMs).
+
+- **Abbruch:** `sync_cancel` schickt `close`. Auf Groß bleibt der alte Stand, der neue Snapshot auf Klein läuft nach `snapshot_keep_days` ab. Wiederaufnahme heißt: neuer Lauf, der das ganze Delta erneut sendet (kein Fortsetzen über ein Resume-Token).
+- **Sperren:** Der Sync belegt die Ressource „Sync“, beim Wecken zusätzlich Groß (4.2); guard.sh lehnt `poweroff` während eines Empfangs zusätzlich selbst ab.
+- **Sitzungen:** `job_running` (4.1) ist gesetzt, solange ein Job läuft (Probelauf, Warten auf Freigabe, Senden).
+- **Delta:** Folgeläufe senden nur die seit der Basis geänderten Blöcke, ohne alle Dateien zu durchsuchen. Der erste Lauf überträgt alles.
+- **Vorlagen:** `copy_templates` hat bis v0.5.4 keine Wirkung (4.7).
 
 ### 4.4 Fortschritt und Restzeit
 
-- Die Gesamtmenge stammt aus dem Dry-Run: tatsächlich zu übertragende Bytes und Dateien, nicht die Gesamtgröße der Shares.
-- Der Fortschritt kommt aus `rsync --info=progress2 --no-inc-recursive`, das zeilenweise ausgewertet wird.
+- Die Gesamtmenge stammt aus `zfs send -nvP` beim Prüfen: tatsächlich zu sendende Bytes je Share, nicht die Größe der Shares.
+- Den Fortschritt meldet der Wächter im Status: gesendete Bytes je Share aus der sekündlichen Ausgabe von `zfs send -v`; der Status wird alle 5 s neu geschrieben.
 - **Alle 15 Sekunden** wird die Restzeit neu berechnet: verbleibende Bytes geteilt durch den gleitenden Durchschnitt der Übertragungsrate der letzten 60 Sekunden.
-- Anzeige: aktuelle Phase, aktuelle Share, Prozent, GB übertragen / gesamt, MB/s, Restzeit, voraussichtliches Ende (Uhrzeit).
+- Anzeige: aktueller Schritt (Snapshot, Prüfen, Warten auf Freigabe, Senden), aktuelle Share, Prozent, GB übertragen / gesamt, MB/s, Restzeit, voraussichtliches Ende (Uhrzeit).
 
 ### 4.5 Schutzmechanismen beim Spiegeln
 
-- **Verbotene Shares:** `system` und `domains` können niemals als Sync-Share konfiguriert werden (Validierungsfehler beim Start). Grund: Ein Spiegel mit `--delete` würde auf Groß docker.img, libvirt.img und die Disk der Gaming-VM zerstören.
-- **Leere-Quelle-Schutz:** Ist eine Quell-Share leer oder nicht gemountet, wird der Sync abgebrochen. Sonst würde der Spiegel alles auf dem Ziel löschen.
-- **Löschgrenze:** `max_deletions` (siehe 4.3).
-- **Geschützte Zielpfade:** `protect_on_target` wird auf Groß nie gelöscht (rsync-Filter `protect`).
-- **Ausschlüsse:** `exclude` wird nicht kopiert (z. B. die eigene appdata von TwinRaid).
-- **Templates** werden **ohne** `--delete` kopiert. Eigene Templates auf Groß bleiben erhalten.
-- **Eigener Ordner von TwinRaid (ab Phase 5):** Der appdata-Ordner von TwinRaid mit Konfiguration, Secrets und CA-Schlüssel wird beim Sync **immer** ausgeschlossen, fest im Code und unabhängig von `exclude`. Grund: Der Worker kann diese Dateien dank `DAC_READ_SEARCH` lesen und würde sie sonst nach Groß kopieren. Den Ort auf dem Host ermittelt der Worker aus den Mounts von `/config` und `/data`; das genaue Verfahren wird in Phase 5 festgelegt. Liegt der Ordner in einer Share, die gesichert wird, warnt die Konfigurationsprüfung beim Start. Der Eintrag `appdata/twinraid` in `exclude` ist dann nicht mehr nötig.
-- **Eigener Container (ab Phase 5):** TwinRaid stoppt sich beim Konsistenzlauf nie selbst. Den eigenen Container erkennt der Worker automatisch (z. B. über die Container-ID in der Unraid-API); das Verfahren wird in Phase 5 festgelegt. `never_stop` gilt dann nur noch für andere Container, der Eintrag `twinraid` entfällt.
+- **Verbotene Shares:** `system` und `domains` können niemals gespiegelt werden. Konfiguration (Validierungsfehler beim Start), Wächter und `mirror.conf` lehnen sie unabhängig voneinander fest ab; gesendet wird nie rekursiv. Grund: Dort liegen docker.img, libvirt.img und die Disks der VMs. Auf Groß liegen VMs und `system` zudem auf einem anderen Pool, den guard.sh nie erreicht (3.7).
+- **Leere oder ersetzte Quelle:** Fällt `referenced` eines Datasets unter 50 % der Basis, braucht der Lauf eine Freigabe. Ein auf Klein gelöschtes und neu angelegtes Dataset kann den Spiegel nicht ersetzen, weil Groß einen vollständigen Strom nie in einen vorhandenen Spiegel annimmt.
+- **Löschgrenze:** `max_deletions` in `source-guard.conf`: Zeilen „-“ aus `zfs diff`, Summe über alle Datasets, durchgesetzt im Wächter; TwinRaid zeigt den Wert an. Freigegebene Löschungen bleiben in den Snapshots auf Groß erhalten.
+- **Versionen statt geschützter Zielpfade:** Jeder Empfang ist ein Snapshot. guard.sh löscht sie frühestens nach 30 Tagen und nie die drei neuesten; auf Klein bleiben die Basis und die Snapshots der letzten 7 Tage. Weder TwinRaid noch Klein haben einen Befehl zum Löschen. `protect_on_target` entfällt.
+- **Spiegel schreibgeschützt:** `readonly=on`, `exec=off`, `setuid=off`, `devices=off`, direkt am Spiegel bei jedem Empfang gesetzt (3.7). Ein verändertes Ziel lässt den nächsten Empfang scheitern, statt überschrieben zu werden.
+- **Ziel begrenzt:** nur `mainpool/twinraid-mirror/<Name aus mirror.conf>` mit fester Befehlszeile, kein `-F`; ein fremdes Dataset an dieser Stelle wird nie ersetzt oder gelöscht (E26).
+- **Ausschlüsse:** nur als eigenes Dataset unterhalb der Share; ein nicht rekursiver Strom enthält keine Kinder. `exclude` entfällt.
+- **Templates (ab v0.5.4):** werden ohne Löschen übernommen; eigene Templates auf Groß bleiben erhalten. Der Weg wird vor v0.5.4 festgelegt.
+- **Eigener Ordner von TwinRaid (Entscheidung E18):** Konfiguration, Secrets und CA-Schlüssel liegen auf Klein in einem eigenen Dataset `mainpool/appdata/twinraid`; ein nicht rekursiver Strom von appdata enthält es nie. Der Wächter prüft per `docker inspect`, dass `/config` und `/data` von TwinRaid darin liegen; sonst sendet er appdata nicht (`self_dataset_missing`). Der Eintrag `appdata/twinraid` in `exclude` ist nicht mehr nötig.
+- **Eigener Container:** TwinRaid wird nie angehalten. Der Wächter erkennt den Container an Image, Label und Einbindungen (3.6), und TwinRaid schickt für die eigene ID nie `stop`. `never_stop` gilt nur für andere Container; der Eintrag `twinraid` entfällt.
 
 ### 4.6 Notfall-Wiederherstellung
 
-Nach jedem erfolgreichen Sync schreibt der Worker nach `appdata/_twinraid/` auf Groß (geschützt):
+Die Anleitung für den Ernstfall steht als eigenes, kurzes Dokument in `docs/WIEDERHERSTELLUNG.md` (ab v0.5.3, ohne private Daten, nur „Klein“ und „Groß“); `docs/EINRICHTUNG.md` verweist darauf. TwinRaid hat dafür keine Funktion und schreibt außer den Spiegeln nichts nach Groß. Die frühere Notfall-Info auf Groß (`last-sync.json` und eine Kopie der Anleitung in `appdata/_twinraid/`) entfällt (Entscheidung E25d): Den letzten Stand zeigen die Snapshots selbst.
 
-- `last-sync.json`: Zeitpunkt, Shares, Datenmenge, Liste der Container mit Image-Tags,
-- `WIEDERHERSTELLUNG.md`: Schritt-für-Schritt-Anleitung, um Groß als Ersatz für Klein in Betrieb zu nehmen. Kurzform: booten → Docker-Dienst bzw. Container aktivieren → „Container hinzufügen“ → Benutzer-Vorlage wählen → Übernehmen. Die Anleitung enthält auch den Rückweg: Sobald Klein wieder läuft, werden die Container auf Groß wieder ausgeschaltet. Wurden auf Groß in der Zwischenzeit Daten verändert, müssen sie vor dem nächsten Sync manuell zurückgeholt werden, sonst überschreibt der Spiegel sie.
+Inhalt der Anleitung, mit fertigen Befehlen:
 
-Zusätzlich liegt die Anleitung im Repo unter `docs/WIEDERHERSTELLUNG.md`.
+- **Letzten Stand finden:** die Snapshots der Spiegel auf Groß mit `twinraid:received` auflisten.
+- **Einzelne Dateien zurückholen:** auf Klein aus `/mnt/mainpool/<Share>/.zfs/snapshot/…` (letzte 7 Tage), auf Groß aus dem Spiegel unter `/mnt/mainpool/twinraid-mirror/<Share>` und seinen Snapshots (30 Tage).
+- **Notbetrieb starten:** Docker-Dienst auf Groß einschalten (im Normalbetrieb aus). Fehlt dort das Docker-Abbild (`docker.img`), legt Unraid ein neues an; die Images werden dann beim Anlegen der Container neu geladen, dafür braucht Groß Internet. Je Share einen Klon des neuesten Spiegel-Snapshots als `mainpool/<Share>` anlegen, mit ausdrücklich gesetzten Eigenschaften (`readonly=off`, `exec=on`, `setuid=off`, `devices=off`, `primarycache=all`, `compression=lz4`, `atime=off`, `xattr=sa`, `acltype=posix`), weil ein Klon sonst von der obersten Ebene erbt, die Unraid verwaltet. Damit liegen die Daten unter denselben Pfaden `/mnt/mainpool/<Share>` wie auf Klein. Hat Unraid an dieser Stelle schon ein Dataset angelegt, wird es vorher geprüft und entfernt (E26, siehe 3.7). Danach die Shares in Unraid neu anlegen, mit Primärspeicher `mainpool` (im Normalbetrieb gibt es dafür keine Konfiguration, E26), und die Container aus den Vorlagen anlegen (Templates: ab v0.5.4). Der Spiegel selbst bleibt unverändert; solange Klone bestehen, lehnt guard.sh jeden Empfang ab (`clone-active`).
+- **setuid und Gerätedateien** bleiben im Klon aus: Images liegen nicht in appdata, und durchgereichte Geräte kommen aus `/dev` des Hosts. Vor dem ersten echten Spiegel von appdata prüft die Anleitung auf Klein mit `find`, ob es solche Dateien gibt; braucht ein Container es doch, wird `setuid` am Klon eingeschaltet.
+- **Rückweg nach Klein:** TwinRaid auf Klein stoppen (kein Sync während des Rückwegs), Container auf Groß stoppen, einen Snapshot des Klons anlegen und ihn mit dem eigenen Admin-Zugang (nicht mit den Keys von TwinRaid) inkrementell von der gemeinsamen Basis nach Klein senden; dort empfängt `zfs receive -F`. Das ist die einzige Stelle mit `-F`, und sie wird nur von Hand ausgeführt (`CLAUDE.md`, Regel 7). Was auf Klein nach der Basis geschrieben wurde, und Snapshots von Klein, die neuer sind als die Basis, gehen dabei verloren und müssen vorher gesichert werden. Danach Container auf Klein starten, TwinRaid starten, Docker-Dienst auf Groß ausschalten, Klone löschen (nie die Spiegel) und die Share-Konfigurationen auf Groß wieder löschen (E26). Der Sync läuft mit derselben Basis weiter.
+- Geübt wird das einmal mit der Test-Share (Test Z5 in `docs/EINRICHTUNG.md`).
 
-### 4.7 Vorabprüfung der Container-Templates
+### 4.7 Vorabprüfung der Container-Templates (ab v0.5.4)
 
-Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Templates auf Pfade wie `/mnt/<pool>/…`, die es auf Groß nicht gibt, und warnt. Empfehlung: In den Templates `/mnt/user/…` verwenden. Unraid-Shares im Modus „exklusiv“ vermeiden dabei den Performance-Nachteil von `/mnt/user`. Ebenso wird geprüft, ob benutzerdefinierte Docker-Netzwerke aus den Templates auf Groß existieren.
+Im Notbetrieb liegen die gespiegelten Shares auf Groß unter denselben Pfaden `/mnt/mainpool/<Share>` wie auf Klein (4.6). Geprüft wird deshalb, ob ein Template absolute Pfade außerhalb von `/mnt/user/…` verwendet, die nicht in einer gespiegelten Share liegen (etwa auf einem anderen Pool), und ob benutzerdefinierte Docker-Netzwerke aus den Templates auf Groß existieren. Das Ergebnis erscheint als Hinweis im Probelauf. Empfehlung bleibt `/mnt/user/…`; Unraid-Shares im Modus „exklusiv“ vermeiden dabei den Performance-Nachteil von `/mnt/user`.
+
+Die Templates liegen auf Klein auf dem Boot-Medium und enthalten Secrets anderer Container; TwinRaid bindet sie nicht ein. Wie sie nach Groß kommen und wer sie prüft (voraussichtlich der Wächter in ein eigenes Dataset unter appdata), wird vor v0.5.4 entschieden.
 
 ### 4.8 Zeitsteuerung
 
@@ -351,6 +577,7 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
 - Die Uhrzeit gilt als Ortszeit der angegebenen Zeitzone. Das Verhalten an den Tagen der Zeitumstellung wird in Phase 6 festgelegt.
 - Der manuelle Sync bleibt jederzeit möglich (außer während eines laufenden Syncs).
 - Der nächste geplante Lauf wird im Dashboard und im Startlog mit Wochentag und Uhrzeit angezeigt (ab Phase 6).
+- In Phase 5 wird der Zeitplan nicht ausgeführt: `schedule.enabled: true` ergibt nur eine Warnung im Startlog, die Kachel Sync zeigt „Zeitplan aus (ab Phase 6)“.
 - Fehler lösen optional eine Unraid-Benachrichtigung aus. Der Weg wird in Phase 6 festgelegt; einen API-Key für Groß gibt es seit v0.4.3 nicht mehr (E22), möglich wäre Unraids Skript `notify` über den Wächter auf Klein.
 
 ---
@@ -381,7 +608,7 @@ Da die Pools auf beiden Servern unterschiedlich sind, prüft der Worker alle Tem
   - Geprüft (lokal, Docker 29.9 rootless, Bridge- und internes macvlan-Netz): Ohne feste MAC wechselt sie bei Neuanlage und bei jedem Neustart. Mit fester MAC bleibt sie erhalten, sowohl mit `--network=name=…,ip=…,mac-address=…` als auch mit `--ip` und `--mac-address`. Das Verhalten von Unraid ist aus den Release Notes 7.3.0 und dem Quellcode recherchiert, nicht auf Unraid getestet. Bei der Installation wird die MAC vor und nach einem Update verglichen.
 - **Unraid Klein: „Host access to custom networks“ bleibt aus (ab v0.3.2).** Auf Klein läuft Docker mit macvlan auf der Bridge `br0`. Laut Unraid (Release Notes 6.12.4) ist macvlan mit einer Bridge als Parent-Schnittstelle unzuverlässig und führt zu Call Traces. Empfohlen werden ipvlan oder Bridging aus mit dem Netzwerk `eth0`; beides betrifft alle Container mit eigener IP auf Klein. Host access legt auf `br0` eine weitere macvlan-Schnittstelle (`shim-br0`) an und leitet den Verkehr des Hosts darüber (`rc.docker` in Unraid 7.3). Deshalb bleibt die Einstellung aus.
   - Folge: Container mit eigener IP auf `br0` und Klein selbst erreichen sich gegenseitig nicht (Trennung bei macvlan). Das betrifft auch Tests aus dem Unraid-Terminal von Klein, z. B. `ping` auf die IP von TwinRaid.
-  - Für den Status spielt das keine Rolle (siehe 4.1). Wie TwinRaid ab Phase 5 die Container auf Klein über die Unraid-API steuert, ist offen (E7).
+  - Für den Status spielt das keine Rolle (siehe 4.1). Container auf Klein steuert ab Phase 5 der Wächter auf dem Host (E7, siehe 3.6); TwinRaid braucht dafür keine Netzverbindung zu Klein.
 
 ### 5.2 HTTPS
 
@@ -511,6 +738,7 @@ Cross-Origin-Resource-Policy: same-origin
 - Von Phase 3 bis v0.4.2 zusätzlich die CLI-Befehle `set-api-key` und `trust-api-cert`. Seit v0.4.3 gibt es sie nicht mehr; alte Einträge bleiben lesbar.
 - Ab v0.3.1 zusätzlich die Bestätigung des Hinweises zum CA-Wechsel.
 - Ab Phase 4 zusätzlich jede Anforderung einer Aktion über die Oberfläche (`wake_target`, `shutdown_target`, `vm_start`, `vm_stop`, `vm_force_stop`, ab v0.4.1 `shutdown_target_force_vm`) mit dem Ergebnis `requested` (vom Worker angenommen) oder `rejected`, sowie die CLI-Befehle `init-ssh-keys` und `trust-host-key`. Wie die Aktion ausging, steht im Aktionslog des Workers.
+- Ab v0.5.1 zusätzlich die Anforderungen `sync_dry_run`, `sync_start`, `sync_cancel` und `sync_confirm_deletions` (`requested` oder `rejected`) und der CLI-Befehl `sync-check`.
 - **Nie gespeichert oder geloggt:** Passwörter, Session-IDs, CSRF-Tokens, Cookies, Request-Inhalte.
 - Aufbewahrung 180 Tage und höchstens 50.000 Einträge; aufgeräumt wird beim Start und stündlich.
 - Die Kachel „Verlauf“ zeigt die letzten 50 Einträge über eine geschützte Route.
@@ -519,10 +747,16 @@ Cross-Origin-Resource-Policy: same-origin
 **Aktionslog des Workers (ab Phase 4)**
 
 - Datei `/data/worker/actions.jsonl`, eine JSON-Zeile pro Eintrag. Ordner `0700` und Datei `0600`, beide root: Der Web-Prozess kann das Log weder lesen noch verändern.
-- Felder: `at` (UTC), `id` (vom Worker vergeben, verbindet Beginn und Ende), `action`, `trigger` (`dashboard` oder `automatic`; bei `automatic` zusätzlich `part_of` mit der auslösenden Aktion, z. B. das Wecken beim VM-Start), `result` (`started` oder das Ergebnis aus einer festen Liste).
-- Ergebnisse: `success`, `wol_failed`, `boot_timeout`, `vm_not_found`, `vm_not_configured`, `vm_service_unavailable`, `vm_start_timeout`, `vm_stop_timeout`, `ssh_key_missing`, `ssh_host_untrusted`, `ssh_host_key_mismatch`, `ssh_auth_failed`, `ssh_unreachable`, `ssh_denied`, `ssh_failed`, `guard_outdated`, `watch_interrupted` (der Stand der Sitzung `vm-watch` fehlte), `remote_failed`, `shutdown_timeout`, `vm_running` (guard.sh lehnte `poweroff` ab, weil die Gaming-VM lief), `other_vms_running` (ab v0.4.2: Groß wurde nicht ausgeschaltet, weil weitere VMs liefen), `interrupted` (Worker beendet), `internal_error`. Neu in v0.4.3 sind `vm_not_configured`, `vm_service_unavailable`, `guard_outdated`, `watch_interrupted` und `vm_running`; bis v0.4.2 gab es stattdessen die API-Ursachen (`api_unreachable`, `api_redirected`, `api_key_missing`, `api_key_invalid`, `api_forbidden`, `api_cert_untrusted`, `api_cert_changed`, `api_error`), alte Einträge bleiben lesbar. Kein Feld übernimmt Text aus fremden Antworten.
+- Felder: `at` (UTC), `id` (vom Worker vergeben, verbindet Beginn und Ende), `action`, `trigger` (`dashboard` oder `automatic`; bei `automatic` zusätzlich `part_of` mit der auslösenden Aktion, z. B. das Wecken beim VM-Start), `result` (`started` oder das Ergebnis aus einer festen Liste). Ab v0.5.1 kommen die Aktionen `sync_dry_run` und `sync_start` hinzu, darin automatisch `wake_target`, `source_guard_stop` (mit der Anzahl angehaltener Container, ohne Namen) und `source_guard_finish`; bei `target_refused` steht der Grund im Feld `reason` (feste Liste).
+- Ergebnisse: `success`, `wol_failed`, `boot_timeout`, `vm_not_found`, `vm_not_configured`, `vm_service_unavailable`, `vm_start_timeout`, `vm_stop_timeout`, `ssh_key_missing`, `ssh_host_untrusted`, `ssh_host_key_mismatch`, `ssh_auth_failed`, `ssh_unreachable`, `ssh_denied`, `ssh_failed`, `guard_outdated`, `watch_interrupted` (der Stand der Sitzung `vm-watch` fehlte), `remote_failed`, `shutdown_timeout`, `vm_running` (guard.sh lehnte `poweroff` ab, weil die Gaming-VM lief), `other_vms_running` (ab v0.4.2: Groß wurde nicht ausgeschaltet, weil weitere VMs liefen), `interrupted` (Worker beendet), `internal_error`. Neu in v0.4.3 sind `vm_not_configured`, `vm_service_unavailable`, `guard_outdated`, `watch_interrupted` und `vm_running`; bis v0.4.2 gab es stattdessen die API-Ursachen (`api_unreachable`, `api_redirected`, `api_key_missing`, `api_key_invalid`, `api_forbidden`, `api_cert_untrusted`, `api_cert_changed`, `api_error`), alte Einträge bleiben lesbar. Ab v0.5.1 kommen hinzu: `dry_run_success`, `cancelled`, `deletions_declined`, `confirmation_timeout`, `source_guard_inactive`, `source_guard_lost`, `container_restart_failed`, `snapshot_low_space`, `snapshot_limit`, `too_soon`, `base_missing`, `target_refused` (Grund `space_low`, `too_soon`, `clone_active`, `receive_busy`, `name_denied`, `target_exists` oder `mirror_root_missing`), `target_modified`, `send_failed`, `job_timeout` sowie für den VM-Start `vm_device_busy`, `vm_memory_low` und `vm_start_failed`. Kein Feld übernimmt Text aus fremden Antworten; Werte aus dem Status des Wächters übernimmt TwinRaid nur nach strengem Schema.
 - Jeder Eintrag steht zusätzlich im Container-Log. Ab 1 MiB wird die Datei nach `actions.jsonl.1` umbenannt (genau eine ältere Datei).
 - Anzeige mit `twinraid-admin show-action-log`.
+
+**Sync-Historie (ab v0.5.2)**
+
+- Datei `/data/worker/sync-history.jsonl`, eine JSON-Zeile je Lauf (Probelauf oder Sync): Beginn, Ende, Art, Ergebnis, je Share gesendete Bytes und Zählungen aus `zfs diff`. Rechte, Größengrenze und Umbenennen wie beim Aktionslog.
+- Die Kachel Sync zeigt die letzten 20 Läufe über `get_status`; `twinraid-admin show-sync-log [--lines N]` zeigt die Datei.
+- Container- und Snapshot-Namen stehen nur im Syslog von Klein (Kennung `twinraid-source-guard`), Vorgänge auf Groß im Syslog von Groß (`twinraid-guard`).
 
 ### 5.4 Container-Härtung
 
@@ -530,7 +764,7 @@ Cross-Origin-Resource-Policy: same-origin
 - `--cap-drop=ALL`. Nur die beim Start nötigen Capabilities werden hinzugefügt; danach behält der Worker nur `DAC_READ_SEARCH`.
 - `--security-opt=no-new-privileges`.
 - Nicht `--privileged`, kein Docker-Socket.
-- Datenmounts read-only unter `/srv/worker` (siehe 3.2).
+- Keine Datenmounts; ab v0.5.0 nur die Einbindungen des Wächters unter `/srv/worker/source-guard` (Auftragsdatei rw, Status ro, siehe 3.6 und 6.1).
 - Schlankes Basis-Image mit gepinnter Version, regelmäßige Neubauten, Dependabot, optional Image-Scan (Trivy) in der CI.
 
 #### Prozessverwaltung mit s6-overlay (Entscheidung E5)
@@ -552,7 +786,7 @@ Cross-Origin-Resource-Policy: same-origin
 | `SETGID` | Gruppen von Web-Prozess, Startprüfung und Worker setzen | nur s6 | Container startet nicht |
 | `SETPCAP` | Bounding-Set von Web-Prozess und Worker verkleinern | nur s6 | Container startet nicht |
 | `KILL` | s6 darf dem Web-Prozess (andere UID) beim Stoppen Signale senden | nur s6 | Start klappt, Stoppen nur noch per SIGKILL |
-| `DAC_READ_SEARCH` | Worker liest Shares und Templates trotz fremder Dateirechte | Worker | in Phase 1 ohne Wirkung, ab Phase 5 nötig |
+| `DAC_READ_SEARCH` | ursprünglich: Worker liest Shares und Templates trotz fremder Dateirechte; seit E25 bindet TwinRaid keine Shares mehr ein. `twinraid-init` liest damit einen eigenen Schlüssel unter `/config/tls` (5.2) | Worker | bisher ohne Wirkung; der Starttest in v0.5.1 prüft, ob der Worker sie abgeben kann |
 
 Bestätigt durch den Starttest `docker/smoke-test.sh` (Phase 1). Mit `CHECK_EACH_CAP=1` lässt er jede Capability einzeln weg. Nicht nötig sind insbesondere `CHOWN`, `FOWNER` und `DAC_OVERRIDE`.
 
@@ -576,27 +810,31 @@ Startoptionen für Docker, entsprechend später im Unraid-Template:
   - `twinraid-admin show-cert-fingerprint`, `twinraid-admin unlock` (Phase 2, siehe 5.2 und 5.3).
   - `twinraid-admin renew-cert` erneuert das Serverzertifikat (Geräte merken nichts); `renew-cert --new-ca` erzeugt eine neue CA, die auf allen Geräten neu installiert werden muss (Phase 3, siehe 5.2).
   - `twinraid-admin set-api-key target` und `twinraid-admin trust-api-cert target` (Phase 3 bis v0.4.2) entfallen ab v0.4.3 (E22): TwinRaid braucht für Groß keinen API-Key mehr.
-  - `twinraid-admin mock-job on|off` (Phase 3, nur im Simulationsmodus): schaltet das Feld `job_running` der Simulation, um die Sitzungsregel aus 5.3 auszuprobieren.
-  - `twinraid-admin init-ssh-keys [--key status|power] [--new]`: erzeugt ed25519-Keys und gibt die fertigen `authorized_keys`-Zeilen inklusive Einschränkungen aus. Ohne `--key` die Keys, die die Konfiguration braucht: „status“ immer (ab v0.4.3), „power“, wenn `actions.vm` oder `actions.shutdown` freigeschaltet ist (im Simulationsmodus beide). Ein Key wird nur angelegt, wenn er fehlt; sonst gibt der Befehl die Zeile zum vorhandenen Key erneut aus. `--new` ersetzt den mit `--key` genannten Key (die Zeile auf Groß muss dann ebenfalls ersetzt werden) und ist nur zusammen mit `--key` erlaubt. Die Zeile enthält `from=` mit der verwendeten Adresse des Containers (siehe 5.1). Der Key „sync“ folgt in Phase 5.
+  - `twinraid-admin mock-job on|off` (Phase 3, nur im Simulationsmodus): schaltet das Feld `job_running` der Simulation, um die Sitzungsregel aus 5.3 auszuprobieren. Entfällt ab v0.5.1; dann setzt der simulierte Sync das Feld.
+  - `twinraid-admin init-ssh-keys [--key status|power] [--new]`: erzeugt ed25519-Keys und gibt die fertigen `authorized_keys`-Zeilen inklusive Einschränkungen aus. Ohne `--key` die Keys, die die Konfiguration braucht: „status“ immer (ab v0.4.3), „power“, wenn `actions.vm` oder `actions.shutdown` freigeschaltet ist (im Simulationsmodus beide). Ein Key wird nur angelegt, wenn er fehlt; sonst gibt der Befehl die Zeile zum vorhandenen Key erneut aus. `--new` ersetzt den mit `--key` genannten Key (die Zeile auf Groß muss dann ebenfalls ersetzt werden) und ist nur zusammen mit `--key` erlaubt. Die Zeile enthält `from=` mit der verwendeten Adresse des Containers (siehe 5.1). Den Key „sync“ erzeugt nicht TwinRaid, sondern der Wächter auf dem Host von Klein (`source-guard.sh init-key`, ab v0.5.1); er liegt nie im Container.
   - `twinraid-admin trust-host-key target`: holt den ed25519-Hostkey von Groß (`ssh-keyscan`), zeigt seinen SHA-256-Fingerabdruck zum Vergleich mit `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` auf Groß und speichert ihn nach Bestätigung mit `yes`. Für Skripte kann der erwartete Fingerabdruck mit `--fingerprint` übergeben werden. Danach gilt strikte Hostkey-Prüfung. Für jeden vorhandenen Key („status“, „power“) folgt ein Verbindungstest mit `check`, der nichts verändert und die Version von guard.sh prüft. Besteht der Test mit dem Key „status“, beendet der Befehl eine Wartezeit der Sitzung `vm-watch` sofort (ab v0.4.4, siehe 3.5); das gilt auch, wenn der Hostkey schon bestätigt war. Nur im Modus `real`.
   - `twinraid-admin show-action-log [--lines N]` (Phase 4): zeigt die letzten Einträge des Aktionslogs (siehe 5.3).
   - `twinraid-admin mock-tour on|off` und `twinraid-admin mock-fault <Name> on|off` (Phase 4, nur im Simulationsmodus, Namen siehe 6.4).
+  - `twinraid-admin sync-check` (ab v0.5.1, nur Modus `real`, ändert nichts): zeigt die drei Ebenen (4.3), den Wächter, das eigene Dataset von TwinRaid, den Zustand der Spiegel auf Groß sowie `zfs_arc_max` und `c_max` von Groß als Tabelle.
+  - `twinraid-admin show-sync-log [--lines N]` (ab v0.5.2): zeigt die letzten Einträge der Sync-Historie (5.3).
 - Secrets stehen niemals in der YAML-Datei, in Git, in Logs oder im Frontend.
-- Die Befehle für den SSH-Key „power“ kommen in Phase 4, der Key „status“ in v0.4.3, der Key „sync“ in Phase 5.
+- Die Befehle für den SSH-Key „power“ kommen in Phase 4, der Key „status“ in v0.4.3, der Key „sync“ in v0.5.1 auf dem Host von Klein (3.6).
 - Der Worker liest SSH-Keys und den bestätigten Hostkey bei jedem Verbindungsaufbau neu; nach `init-ssh-keys` oder `trust-host-key` ist kein Neustart nötig. Eine geänderte Datei beendet auch die Pause nach einem dauerhaften Fehler der Sitzung `vm-watch` (3.5).
+- **Secrets auf Klein (ab v0.5.1):** Der Key „sync“ (`/boot/config/twinraid/ssh-sync`, root, `0600`) und der bestätigte Hostkey von Groß (`target-known-hosts`) liegen nur auf dem Boot-Medium von Klein. Die Freigabe „flash“ hat den Export „No“; ist Unraid Connect installiert, warnt die Kachel Klein (3.5).
 - Die CLI läuft als root. Zugriffe auf die Datenbank des Web-Prozesses erledigt sie in einem Kindprozess als Web-Benutzer, weil root ohne `DAC_OVERRIDE` dort nicht schreiben darf. Der Container braucht dafür keine zusätzliche Capability.
 
 ### 5.6 Rechte auf den Unraid-Servern (Least Privilege)
 
-- **API-Key Klein:** nur Docker-Steuerung (Container stoppen/starten, lesen).
+- **API-Key Klein:** entfällt (Entscheidung E13). Der Wächter ruft auf dem Host die Docker-CLI mit fester Argumentliste auf (`docker inspect`, `docker stop --time`, `docker start`, nur mit selbst ermittelten IDs). Der Container bekommt nie den Docker-Socket und nie einen Key mit Docker-Rechten.
 - **API-Key Groß:** entfällt ab v0.4.3 (Entscheidung E22, siehe 3.4 und 3.5). Von Phase 3 bis v0.4.2 war es ein Key **ohne Rolle** mit `VMS:READ_ANY`, ab Phase 4 zusätzlich `VMS:UPDATE_ANY`; in Phase 4 wurde real geprüft, dass ein Key ohne diese Rechte abgewiesen wird (Fehler unraid/api #1723 behoben). Nach der Umstellung wird der Key in Unraid gelöscht (*Settings → Management Access → API Keys*).
 - **SSH-Key „status“ auf Groß (ab v0.4.3):**
   `restrict,from="<Container-IP>",command="/bin/bash /boot/config/twinraid/guard.sh status" ssh-ed25519 … twinraid-status`
   - `guard.sh status` erlaubt genau zwei Anfragen: `check` (gibt `twinraid-guard <Version> status ok` aus) und `vm-watch` (Statuszeilen, siehe 3.5). Beide verändern nichts.
   - Mit diesem Key läuft die dauerhafte Sitzung für den Status. Auch eine Installation ohne freigeschaltete Aktionen („Nur Statusanzeige“) braucht damit keinen Key, der etwas verändern kann. Ein Fehler in `vm-watch` kann über diese Verbindung nichts auslösen.
-- **SSH-Key „sync“ auf Groß (Phase 5):**
-  `restrict,from="<Container-IP>",command="/bin/bash /boot/config/twinraid/guard.sh sync" ssh-ed25519 …`
-  `guard.sh` erlaubt ausschließlich rsync im Server-Modus mit Ziel in den konfigurierten Shares bzw. im Template-Ordner. Bis dahin lehnt der Modus `sync` alles ab.
+- **SSH-Key „sync“ auf Groß (ab v0.5.1):**
+  `restrict,from="<IP des Hosts Klein>",command="/bin/bash /boot/config/twinraid/guard.sh sync" ssh-ed25519 … twinraid-sync`
+  - Der Key liegt auf dem Host von Klein, nicht im Container; `from=` nennt deshalb die Adresse des Hosts Klein, nicht die von TwinRaid. `source-guard.sh init-key` erzeugt ihn und gibt die fertige Zeile aus.
+  - `guard.sh sync` erlaubt genau zwei Anfragen: `check` (verändert nichts) und `receive <Name>` mit fester Befehlszeile nach `mainpool/twinraid-mirror/<Name>` (3.7). Bis v0.5.1 lehnt der Modus `sync` alles ab.
 - **SSH-Key „power“ auf Groß (ab Phase 4):**
   `restrict,from="<Container-IP>",command="/bin/bash /boot/config/twinraid/guard.sh power" ssh-ed25519 … twinraid-power`
   - `restrict` schaltet Terminal, Port-, Agent- und X11-Weiterleitung sowie `~/.ssh/rc` ab, auch Funktionen, die künftige OpenSSH-Versionen hinzufügen. Es ersetzt die vier einzelnen `no-…`-Optionen (Entscheidung E12).
@@ -605,8 +843,10 @@ Startoptionen für Docker, entsprechend später im Unraid-Template:
   - Der Key „power“ wird nur für Aktionen benutzt und ist nur nötig, wenn `actions.vm` oder `actions.shutdown` freigeschaltet ist. Er darf die eingetragene VM starten, herunterfahren und erzwingen; das ist weniger, als der frühere API-Key durfte (alle VMs). Groß darf er nur ausschalten, wenn keine VM läuft.
 - **Dauerhaft gespeichert** wird die Zeile in `/boot/config/ssh/root/authorized_keys`; seit Unraid 6.9 ist `/root/.ssh` ein Link dorthin. Bearbeitet wird sie in der WebGUI unter *Users → root → SSH authorized keys*.
 - **SSH-Client im Worker:** feste Argumentliste mit `-F /dev/null`, `BatchMode=yes`, `IdentitiesOnly=yes`, `StrictHostKeyChecking=yes`, eigener `UserKnownHostsFile` in `/data/secrets`, `GlobalKnownHostsFile=/dev/null`, `HostKeyAlgorithms=ssh-ed25519`, `ConnectTimeout=5`, ohne Passwort-Anmeldung. Fehler werden anhand von Exit-Code und festen Meldungen von OpenSSH einer Ursache zugeordnet; die Ausgabe selbst wird nicht geloggt.
-- Die Wrapper-Skripte liegen im Repo unter `host-scripts/` und werden auf Groß nach `/boot/config/twinraid/` kopiert; dort liegt auch `power.conf`. `/boot` ist FAT32, Dateien dort sind nicht ausführbar; deshalb der Aufruf über `/bin/bash`. Bootet Groß intern (ab Unraid 7.3, Boot-Pool mit ZFS), liegt `/boot` nicht auf einem Stick; der Aufruf über `/bin/bash` funktioniert dort ebenso.
-- **Test ohne echte Server:** Die CI startet einen Wegwerf-Container als nachgebautes Groß (Image per Digest gepinnt, `openssh-server` in derselben gepinnten Version wie der Client, nur im Test) mit `guard.sh`, einem nachgebauten `virsh` mit allen Zuständen, weiteren VMs und Hängern und einem Platzhalter für `poweroff`. Geprüft werden `from=`, `restrict`, die erzwungenen Befehlszeilen beider Keys, die strikte Hostkey-Prüfung, die Sitzung `vm-watch` (Zustände, Lebenszeichen, Ende ohne übrig bleibende Prozesse, Neuverbindung), die Prüfung vor `poweroff`, die Merkmale von Unraid Connect und alle Abläufe aus 4.2 (`docker/ssh-test.sh`).
+- Die Host-Skripte liegen im Repo unter `host-scripts/` und werden nach `/boot/config/twinraid/` kopiert: `guard.sh` auf Groß (dort liegen auch `power.conf` und ab v0.5.1 `mirror.conf`), `source-guard.sh` auf Klein (3.6). `/boot` ist FAT32, Dateien dort sind nicht ausführbar; deshalb der Aufruf über `/bin/bash`. Bootet Groß intern (ab Unraid 7.3, Boot-Pool mit ZFS), liegt `/boot` nicht auf einem Stick; der Aufruf über `/bin/bash` funktioniert dort ebenso.
+- **Test ohne echte Server:** Die CI startet einen Wegwerf-Container als nachgebautes Groß (Image per Digest gepinnt, `openssh-server` in derselben gepinnten Version wie der Client, nur im Test) mit `guard.sh`, einem nachgebauten `virsh` mit allen Zuständen, weiteren VMs und Hängern und einem Platzhalter für `poweroff`. Geprüft werden `from=`, `restrict`, die erzwungenen Befehlszeilen beider Keys, die strikte Hostkey-Prüfung, die Sitzung `vm-watch` (Zustände, Lebenszeichen, Ende ohne übrig bleibende Prozesse, Neuverbindung), die Prüfung vor `poweroff`, die Merkmale von Unraid Connect und alle Abläufe aus 4.2 (`docker/ssh-test.sh`). Ab v0.5.1 kommen die Werte des ARC, `memory-low`, `device-busy` und der Modus `sync` mit einem nachgebauten `zfs` hinzu.
+- **Test des Wächters (ab v0.5.0):** `docker/source-guard-test.sh` startet den Wächter in der CI auf dem Runner mit echtem Docker und einem Testcontainer und prüft Abläufe, Angriffe aus dem Container (Symlink, rename, unlink, übergroße Datei, falsche Prüfsumme, Shell-Zeichen, nicht freigegebene Container, TwinRaid nach Name, Image, Label und Einbindung, alte Auftragsnummer, Schreiben in `state/`), Totmannschalter, Neustarts und Merkmale von Unraid Connect. Ab v0.5.1 kommen echte ZFS-Pools in Dateien hinzu (`zfsutils-linux`, nur in der CI): Empfang ohne `-F`, Eigenschaften mit Quelle `local`, fremdes Dataset (`target-exists`), Aufbewahrung beider Seiten, Klon-Sperre.
+- **Machbarkeitstest Z1 (ab v0.5.0):** `host-scripts/zfs-check.sh` prüft dieselben Fälle auf den echten Servern. Auf Groß arbeitet es im echten `mainpool`, aber nur in einem eigenen Test-Dataset `mainpool/twinraid-mirror/zfs-check` (Eigenschaft `twinraid:zfs-check` mit Laufkennung); es bricht ab, wenn das Dataset schon besteht, und löscht am Ende nur, was es selbst angelegt hat, einzeln und ohne `-r`. Auf Klein legt es einen Pool in einer Datei unter `/tmp` an (1 GiB, nur im Arbeitsspeicher) und zerstört ihn am Ende; die echten Pools auf Klein berührt es nicht. Auf Groß misst es außerdem, ob `MemAvailable` den ARC schon teilweise enthält (Grundlage für die Speicherprüfung in 3.5).
 
 ### 5.7 Regeln für den Code
 
@@ -616,7 +856,7 @@ Siehe `CLAUDE.md`, Abschnitt „Unverhandelbare Sicherheitsregeln“.
 
 Das Repo ist öffentlich auf GitHub, das Container-Image wird öffentlich über die GitHub Container Registry (`ghcr.io`) verteilt. Deshalb gilt:
 
-- Im Repo stehen nur Beispielwerte (`config.example.yaml`), nie echte IPs, MAC-Adressen, Hostnamen oder Secrets.
+- Im Repo stehen nur Beispielwerte (`config.example.yaml`), nie echte IPs, MAC-Adressen, Hostnamen oder Secrets. Ebenso wenig Fingerabdrücke, UUIDs, Namen echter VMs, Container, Shares und Pools (erlaubt sind `mainpool`, die Unraid-Standardnamen wie `appdata`, `domains`, `isos` und `system` sowie die Testnamen `twinraidtest` und `twinraid-testcontainer`) oder Größen der echten Server. In Commits, PRs, Issues und Testprotokollen heißen die Server nur „Klein“ und „Groß“.
 - `.gitignore` schließt `twinraid.yaml`, `*.key`, `*.pem`, `.env` und `data/` aus.
 - In GitHub aktiviert: Secret Scanning mit Push Protection, Dependabot-Warnungen und -Updates.
 - Commits über die anonymisierte GitHub-E-Mail-Adresse (`…@users.noreply.github.com`).
@@ -653,9 +893,10 @@ Das Repo ist öffentlich auf GitHub, das Container-Image wird öffentlich über 
 | `/data/secrets` | root | 0700 | Passwort-Hash; ab Phase 4 SSH-Key „power“ (`ssh-power`, `ssh-power.pub`) und bestätigter Hostkey von Groß (`target-ssh-known-hosts`); ab v0.4.3 SSH-Key „status“ (`ssh-status`, `ssh-status.pub`); alle Dateien `0600`. Von Phase 3 bis v0.4.2 lagen hier API-Key und Fingerabdruck von Groß (`target-api-key`, `target-api-cert.sha256`); `twinraid-init` löscht sie ab v0.4.3 einmal mit Hinweis im Log |
 | `/data/tls` | root | 0700 | CA (`ca.pem`, `ca-key.pem`), Serverzertifikat (`server.pem`, `server-key.pem`), Vermerk des letzten CA-Wechsels (`ca-change.json`) |
 | `/data/web` | root, Gruppe 10001 | 0770 | SQLite des Web-Prozesses (Datei `0600`, Besitzer 10001); Vermerk der letzten Erneuerungsanfrage `tls-renewal.json` |
-| `/data/worker` (ab Phase 4) | root | 0700 | Aktionslog des Workers (`actions.jsonl`, `actions.jsonl.1`, Dateien `0600`); der Web-Prozess kann es weder lesen noch verändern |
+| `/data/worker` (ab Phase 4) | root | 0700 | Aktionslog des Workers (`actions.jsonl`, `actions.jsonl.1`), ab v0.5.2 Sync-Historie (`sync-history.jsonl`, `sync-history.jsonl.1`), Dateien `0600`; der Web-Prozess kann sie weder lesen noch verändern |
 | `/run/twinraid-tls` | root, Gruppe 10001 | 0750 | Zertifikatskette, Serverschlüssel, CA-Zertifikat und `info.json` für den Web-Prozess, nur im RAM |
-| `/run/twinraid` | root, Gruppe 10001 | 0750 | Worker-Socket, Herzschlag; im Simulationsmodus die Schalter `mock-job-running`, `mock-tour` und `mock-fault-<Name>` (nur root kann sie anlegen) |
+| `/run/twinraid` | root, Gruppe 10001 | 0750 | Worker-Socket, Herzschlag; im Simulationsmodus die Schalter `mock-job-running` (bis v0.5.0), `mock-tour` und `mock-fault-<Name>` (nur root kann sie anlegen) |
+| `/srv/worker/source-guard` (ab v0.5.0) | root | `/srv/worker` 0700 | vom Host eingebunden: Auftragsdatei `request` (rw) und `state/` mit `status.json` (ro) des Wächters (3.6); liegt nicht in `/data` |
 
 ## 6. Konfiguration
 
@@ -665,16 +906,16 @@ Das Repo ist öffentlich auf GitHub, das Container-Image wird öffentlich über 
 |---|---|---|---|
 | `/mnt/user/appdata/twinraid/config` | `/config` | ro | `twinraid.yaml`, optional `tls/` |
 | `/mnt/user/appdata/twinraid/data` | `/data` | rw | SQLite, Secrets, generiertes Zertifikat |
-| `/mnt/user` | `/srv/worker/source` | ro | Quell-Shares (erst ab Phase 5) |
-| `/boot/config/plugins/dockerMan/templates-user` | `/srv/worker/templates` | ro | Container-Templates (erst ab Phase 5) |
+| `/run/twinraid-source-guard/in/request` | `/srv/worker/source-guard/request` | rw, einzelne Datei | Auftragsdatei des Wächters (ab v0.5.0, siehe 3.6) |
+| `/run/twinraid-source-guard/state` | `/srv/worker/source-guard/state` | ro | Status des Wächters (ab v0.5.0) |
 
-Shares und Templates werden erst gemountet, wenn der Sync sie braucht. Vorher hat TwinRaid keinen Zugriff darauf.
+TwinRaid bindet keine Shares, kein `/boot` und keinen Templates-Ordner ein (E25); die früher geplanten Einbindungen `/srv/worker/source` und `/srv/worker/templates` entfallen. Die beiden Pfade des Wächters legt der Wächter beim Start an. Deshalb wird er vor den Pfaden im Template eingerichtet (`docs/EINRICHTUNG.md`); sonst legt Docker einen Ordner statt der Datei an (`request_not_a_file`). Ab Test Z4 (v0.5.0) liegen `/config` und `/data` in einem eigenen Dataset `mainpool/appdata/twinraid` (E18); die Pfade im Template bleiben gleich.
 
 ### 6.2 Beispiel `twinraid.yaml`
 
 ```yaml
 # TwinRaid-Konfiguration – wird read-only nach /config/twinraid.yaml gemountet.
-# Secrets (Passwort, API-Keys, SSH-Keys) gehören NICHT hierher (siehe 5.5).
+# Secrets (Passwort, SSH-Keys) gehören NICHT hierher (siehe 5.5).
 
 web:
   # port: 8443                 # optional, Standard 8443; nicht ändern
@@ -715,23 +956,19 @@ actions:                       # optional; nur im Modus real, Standard: alles au
   wake: false                  # Groß wecken
   vm: false                    # VM starten, herunterfahren, erzwingen
   shutdown: false              # Groß herunterfahren
+  sync_dry_run: false          # „Nur Probelauf“, schreibt nie nach Groß (ab v0.5.1)
+  sync: false                  # echter Sync, erlaubt auch den Probelauf (ab v0.5.2)
 
 sync:
-  shares:                      # identische Namen auf beiden Servern
-    - appdata
-    - dokumente
-    - medien
-  appdata_share: appdata
-  exclude:                     # wird nicht kopiert (relativ zu /mnt/user)
-    - appdata/twinraid
-  protect_on_target:           # wird auf Groß nie gelöscht
-    - appdata/_twinraid
-  max_deletions: 1000
-  stop_containers: true
-  never_stop:                  # werden für den Konsistenzlauf nie gestoppt
-    - twinraid
-  copy_templates: true
-  schedule:
+  shares:                      # Datasets mainpool/<Share> auf Klein, Spiegel
+    - appdata                  #   mainpool/twinraid-mirror/<Share> auf Groß;
+    - dokumente                #   dieselben Namen in source-guard.conf (Klein)
+    - medien                   #   und mirror.conf (Groß), siehe 4.3
+  stop_containers: true        # Container der Erlaubnisliste des Wächters für den Snapshot anhalten
+  never_stop: []               # zusätzlich nie anhalten; TwinRaid selbst ist immer ausgenommen
+  copy_templates: false        # ohne Wirkung bis v0.5.4
+  # Die Löschgrenze (max_deletions) steht in source-guard.conf auf Klein.
+  schedule:                    # wird erst ab Phase 6 ausgeführt
     enabled: true
     timezone: "Europe/Berlin"  # IANA-Zeitzone
     days: [sun]                # mon, tue, wed, thu, fri, sat, sun
@@ -742,34 +979,34 @@ sync:
 
 ### 6.3 Validierung
 
-Die Konfiguration wird beim Start mit Pydantic vollständig validiert: Pflichtfelder, IP- und MAC-Formate, Zeitplan, verbotene Shares (`system`, `domains`), Überschneidungen von `exclude` und `shares`. Ist die Konfiguration ungültig, startet der Container **nicht** und meldet im Log genau, was falsch ist. Die Weboberfläche zeigt die aktive Konfiguration nur lesend an.
+Die Konfiguration wird beim Start mit Pydantic vollständig validiert: Pflichtfelder, IP- und MAC-Formate, Zeitplan, verbotene Shares (`system`, `domains`). Ist die Konfiguration ungültig, startet der Container **nicht** und meldet im Log genau, was falsch ist. Die Weboberfläche zeigt die aktive Konfiguration nur lesend an.
 
 Ergänzende Regeln:
 
 - **Laden:** YAML wird ausschließlich mit `yaml.safe_load` gelesen. Unbekannte Schlüssel sind ein Fehler, damit Tippfehler auffallen.
-- **Share-Namen** (`shares`, `appdata_share`): Prüfung über eine Positivliste erlaubter Zeichen. Erlaubt sind die Buchstaben `A–Z` und `a–z`, Ziffern, Punkt, Unterstrich und Bindestrich. Das erste Zeichen muss ein Buchstabe oder eine Ziffer sein, höchstens 64 Zeichen. Damit sind Schrägstrich, `..`, führendes Minus, Leerzeichen und Steuerzeichen ausgeschlossen. `system` und `domains` sind unabhängig von Groß- und Kleinschreibung verboten. Doppelte Einträge sind ein Fehler. `appdata_share` muss in `shares` enthalten sein.
-- **Pfade** (`exclude`, `protect_on_target`): relativ zu `/mnt/user`, also ohne führenden Schrägstrich. Nicht erlaubt sind `..`, `.` und leere Bestandteile, Bestandteile mit führendem Minus sowie Steuer- und unsichtbare Formatzeichen. Zusätzlich verboten sind die Platzhalterzeichen `*`, `?`, `[`, `]` und der Backslash, weil rsync sie in Filterregeln als Muster auswertet. Der erste Bestandteil muss eine konfigurierte Share sein. Eine ganze Share darf nicht ausgeschlossen werden; dafür wird sie aus `shares` entfernt.
+- **Share-Namen** (`shares`): Prüfung über eine Positivliste erlaubter Zeichen. Erlaubt sind die Buchstaben `A–Z` und `a–z`, Ziffern, Punkt, Unterstrich und Bindestrich. Das erste Zeichen muss ein Buchstabe oder eine Ziffer sein, höchstens 64 Zeichen. Damit sind Schrägstrich, `..`, führendes Minus, Leerzeichen und Steuerzeichen ausgeschlossen. `system` und `domains` sind unabhängig von Groß- und Kleinschreibung verboten. Doppelte Einträge sind ein Fehler. Die Namen sind zugleich die Namen der Datasets `mainpool/<Share>` auf Klein und der Spiegel auf Groß; die erlaubten Zeichen sind auch in ZFS gültig. Wächter und guard.sh prüfen ihre Listen nach denselben Regeln.
+- **Entfallene Schlüssel (ab v0.5.1, E25):** `appdata_share` (kein zweiter Lauf über appdata), `exclude` und `protect_on_target` (Ausschlüsse nur als eigenes Dataset, Schutz durch Snapshots, siehe 4.5) und `max_deletions` (steht in `source-guard.conf`). Damit eine ältere Konfiguration den Container nicht stoppt, werden `appdata_share`, `max_deletions` und leere Listen bis Version 1.0 mit einer Warnung im Startlog ignoriert. Nicht leere `exclude` oder `protect_on_target` sind ein Fehler mit Hinweis, weil sie einen Schutz vortäuschen würden, den es nicht mehr gibt.
 - **Container-Namen** in `never_stop`: nur die von Docker erlaubten Zeichen.
 - **WebGUI** (`servers.<server>.webgui`, ab Phase 3): `scheme` ist `http` oder `https`; `port` ist optional (1 bis 65535, Standard 80 bzw. 443). Ab v0.4.3 bestimmt es nur den Port der Online-Prüfung von Groß; bei Klein hat es keine Wirkung.
 - **Gaming-VM** (`gaming_vm`): `unraid_vm_name` ist ab v0.4.3 optional (Abgleich mit dem Namen der VM aus `power.conf`, siehe 3.5); ist es gesetzt, gelten dieselben Zeichenregeln wie bisher.
 - **Groß** (ab Phase 4): `wol_broadcast` ist optional (IPv4-Adresse, siehe 4.2); `ssh_port` ist optional (1 bis 65535, Standard 22).
-- **Aktionen** (`actions`, ab Phase 4): optional; `wake`, `vm` und `shutdown` sind jeweils `true` oder `false`, Standard `false`.
+- **Aktionen** (`actions`, ab Phase 4): optional; `wake`, `vm`, `shutdown` und ab v0.5.1 `sync_dry_run` und `sync` sind jeweils `true` oder `false`, Standard `false`.
 - **Erlaubte Netze** (`web.allowed_networks`): mindestens ein Eintrag. Erlaubt sind Netze in CIDR-Schreibweise und einzelne Adressen (`/32` bzw. `/128` oder ohne Maske), gemischt. Gesetzte Host-Bits wie `192.168.10.50/24` sind ein Fehler, damit ein vermeintlich einzelnes Gerät nicht still das ganze Netz freigibt.
 - **Sitzung:** `web.session_idle_minutes` ist optional (1 bis 720, Standard 10).
 - **Port** (`web.port`): optional, Standard 8443.
 - **TLS** (`web.tls`): `ip_addresses` ist optional (ohne Angabe gilt die erkannte Adresse, siehe 5.1). Ist es gesetzt, enthält es mindestens eine IP-Adresse, keine Multicast- oder unspezifizierte Adresse, ohne Duplikate. `hostnames` ist optional; erlaubt sind DNS-Namen nach RFC 1123 ohne Platzhalter, in Kleinbuchstaben gespeichert, ohne Duplikate. Die verwendeten Adressen und die Hostnamen bilden zusammen die erlaubten `Host`-Header und gehören zu den Werten, die nie öffentlich ausgeliefert werden.
-- **Zeitplan** (`sync.schedule`): `days` enthält nur die Kürzel `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`, ohne Duplikate und mindestens einen Tag. `time` hat das Format `HH:MM` (`00:00` bis `23:59`) und steht in Anführungszeichen. Ohne Anführungszeichen liest YAML manche Uhrzeiten wie `13:30` als Zahl; das wird mit einem klaren Hinweis abgelehnt. `timezone` ist eine gültige IANA-Zeitzone, die im Container vorhanden ist (z. B. `Europe/Berlin`); Sondereinträge wie `localtime` sind nicht erlaubt.
+- **Zeitplan** (`sync.schedule`): `days` enthält nur die Kürzel `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`, ohne Duplikate und mindestens einen Tag. `time` hat das Format `HH:MM` (`00:00` bis `23:59`) und steht in Anführungszeichen. Ohne Anführungszeichen liest YAML manche Uhrzeiten wie `13:30` als Zahl; das wird mit einem klaren Hinweis abgelehnt. `timezone` ist eine gültige IANA-Zeitzone, die im Container vorhanden ist (z. B. `Europe/Berlin`); Sondereinträge wie `localtime` sind nicht erlaubt. In Phase 5 ergibt `enabled: true` nur eine Warnung (4.8).
 
 ### 6.4 Betriebsmodus (`TWINRAID_MODE`)
 
 - Pflichtangabe als Umgebungsvariable des Containers: `mock` oder `real`. Es gibt **keinen Standardwert**.
 - Fehlt der Wert oder ist er ungültig, startet der Container nicht und meldet im Log klar, was fehlt und welche Werte erlaubt sind.
 - Entwicklungs-Skripte, Tests und CI setzen `mock` ausdrücklich.
-- **Mock-Modus:** Alle Integrationen mit Außenwirkung sind durch Simulationen ersetzt. Das Log warnt beim Start deutlich. Die Oberfläche zeigt dauerhaft ein auffälliges Banner „Simulationsmodus“. `job_running` wird mit `twinraid-admin mock-job on|off` geschaltet.
-  - **Interaktive Simulation (ab Phase 4, Entscheidung E11):** Groß und die VM starten ausgeschaltet, Klein ist online („TwinRaid läuft auf diesem Server“). Aktionen wirken mit festen Wartezeiten: Groß bootet 20 s, danach braucht der VM-Dienst weitere 10 s; die VM startet in 3 s und fährt in 8 s herunter; Groß fährt in 15 s herunter.
+- **Mock-Modus:** Alle Integrationen mit Außenwirkung sind durch Simulationen ersetzt. Das Log warnt beim Start deutlich. Die Oberfläche zeigt dauerhaft ein auffälliges Banner „Simulationsmodus“. `job_running` wird bis v0.5.0 mit `twinraid-admin mock-job on|off` geschaltet, ab v0.5.1 setzt es der simulierte Sync.
+  - **Interaktive Simulation (ab Phase 4, Entscheidung E11):** Groß und die VM starten ausgeschaltet, Klein ist online („TwinRaid läuft auf diesem Server“). Aktionen wirken mit festen Wartezeiten: Groß bootet 20 s, danach braucht der VM-Dienst weitere 10 s; die VM startet in 3 s und fährt in 8 s herunter; Groß fährt in 15 s herunter. Ab v0.5.0 ist der Wächter simuliert (aktiv, ein freigegebener Container), ab v0.5.1 auch Probelauf und Sync mit festen Wartezeiten und Zahlen, die mit v0.5.1 festgelegt werden.
   - **Fester Rundlauf:** Die bisherige Statussimulation durchläuft einen festen Ablauf, der jeden Zustand und jede Ursache mindestens einmal zeigt, ab v0.3.2 auch „TwinRaid läuft auf diesem Server“, ab v0.4.4 bei Fehlern der Statusverbindung auch den nächsten Versuch (ein Test prüft die Vollständigkeit). Ab Phase 4 wird sie mit `twinraid-admin mock-tour on|off` eingeschaltet; währenddessen sind Aktionen mit dem Grund `tour` gesperrt.
-  - **Fehler simulieren:** `twinraid-admin mock-fault <Name> on|off` mit `vm-hang` (VM reagiert nicht auf Herunterfahren), `ssh-denied` (`guard.sh` lehnt ab), `no-boot` (Groß reagiert nicht auf Wake-on-LAN), ab v0.4.2 `other-vm` (auf Groß läuft eine weitere VM) und ab v0.4.3 `vm-not-configured` (`power.conf` fehlt), `libvirt-down` (VM-Dienst nicht bereit), `guard-outdated` (guard.sh zu alt) und `connect-plugin` (Unraid Connect mit Flash Backup auf Groß), ab v0.4.4 `status-key-rejected` (Groß lehnt den Key „status“ ab). Bei `guard-outdated` und `status-key-rejected` zeigt die Simulation die Pause wie im Modus `real` mit dem nächsten Versuch nach 30 Minuten; das Ausschalten des Fehlers wirkt wie ein erfolgreiches `trust-host-key`. `api-forbidden` entfällt mit v0.4.3.
-- **Modus `real` (ab Phase 3 nur lesend, ab Phase 4 mit freigeschalteten Aktionen):** Status-Abfragen sind immer erlaubt, also der TCP-Check von Groß und der VM-Status über die Sitzung `vm-watch` mit dem Key „status“ (ab v0.4.3; bis v0.4.2 über die Unraid-API). Die Aktionen `wake_target`, `shutdown_target`, `shutdown_target_force_vm`, `vm_start`, `vm_stop` und `vm_force_stop` sind nur verfügbar, wenn sie in `actions` freigeschaltet sind (siehe 4.2); sonst lehnt der Worker sie vor jeder Verarbeitung mit dem Fehlercode `not_available` ab. Die Sync-Befehle (`sync_start`, `sync_cancel`, `sync_confirm_deletions`) bleiben bis Phase 5 mit `not_available` gesperrt. Ist keine Aktion freigeschaltet, zeigt die Oberfläche das Banner „Nur Statusanzeige“.
+  - **Fehler simulieren:** `twinraid-admin mock-fault <Name> on|off` mit `vm-hang` (VM reagiert nicht auf Herunterfahren), `ssh-denied` (`guard.sh` lehnt ab), `no-boot` (Groß reagiert nicht auf Wake-on-LAN), ab v0.4.2 `other-vm` (auf Groß läuft eine weitere VM) und ab v0.4.3 `vm-not-configured` (`power.conf` fehlt), `libvirt-down` (VM-Dienst nicht bereit), `guard-outdated` (guard.sh zu alt) und `connect-plugin` (Unraid Connect mit Flash Backup auf Groß), ab v0.4.4 `status-key-rejected` (Groß lehnt den Key „status“ ab), ab v0.5.0 `source-guard-inactive` (Wächter läuft nicht), `source-guard-lost` (Wächter hat seinen Zustand verloren) und `source-guard-start-failed` (ein angehaltener Container startet nicht wieder), ab v0.5.1 `sync-deletions` (viele Löschungen), `sync-empty-source` (Quelle fast leer), `sync-target-refused` (guard.sh lehnt den Empfang ab), `target-exists` (fremdes Dataset an der Stelle eines Spiegels), `target-clone` (Klon auf Groß), `sync-send-error`, `sync-slow`, `vm-device-busy`, `vm-memory-low` und `arc-unlimited` (keine ARC-Grenze auf Groß). Bei `guard-outdated` und `status-key-rejected` zeigt die Simulation die Pause wie im Modus `real` mit dem nächsten Versuch nach 30 Minuten; das Ausschalten des Fehlers wirkt wie ein erfolgreiches `trust-host-key`. `api-forbidden` entfällt mit v0.4.3.
+- **Modus `real` (ab Phase 3 nur lesend, ab Phase 4 mit freigeschalteten Aktionen):** Status-Abfragen sind immer erlaubt, also der TCP-Check von Groß und der VM-Status über die Sitzung `vm-watch` mit dem Key „status“ (ab v0.4.3; bis v0.4.2 über die Unraid-API), ab v0.5.0 auch das Lesen des Status des Wächters. Die Aktionen `wake_target`, `shutdown_target`, `shutdown_target_force_vm`, `vm_start`, `vm_stop` und `vm_force_stop` sind nur verfügbar, wenn sie in `actions` freigeschaltet sind (siehe 4.2); sonst lehnt der Worker sie vor jeder Verarbeitung mit dem Fehlercode `not_available` ab. `sync_dry_run` ist ab v0.5.1 mit `actions.sync_dry_run` oder `actions.sync` verfügbar, `sync_start` ab v0.5.2 mit `actions.sync`; `sync_cancel` und `sync_confirm_deletions` gelten nur für einen laufenden Job. Vorher lehnt der Worker sie mit `not_available` ab. Ist keine Aktion freigeschaltet, zeigt die Oberfläche das Banner „Nur Statusanzeige“.
 
 ---
 
@@ -782,16 +1019,16 @@ twinraid/
 ├── docs/
 │   ├── KONZEPT.md             # dieses Dokument
 │   ├── EINRICHTUNG.md         # Installation auf Unraid und CA auf Windows/Linux/Android (ab Phase 3)
-│   └── WIEDERHERSTELLUNG.md   # Notfall-Anleitung (Phase 6)
+│   └── WIEDERHERSTELLUNG.md   # Notfall-Anleitung (ab v0.5.3)
 ├── backend/
 │   ├── pyproject.toml
 │   ├── src/twinraid/
 │   │   ├── config/            # YAML laden und validieren (Pydantic)
 │   │   ├── web/               # FastAPI: Routen, Auth, Sessions, CSRF, Netzfilter, SSE
 │   │   ├── worker/            # Befehlsannahme, Sperrlogik, Zeitsteuerung
-│   │   ├── integrations/      # Unraid-API, SSH, WoL, Netzwerk-Checks
+│   │   ├── integrations/      # Wächter (Aufträge, Status), SSH, WoL, Netzwerk-Checks
 │   │   │   └── mocks/         # Simulationen für Entwicklung und Tests
-│   │   ├── sync/              # rsync-Steuerung, Fortschritt, Restzeit, Schutzmechanismen
+│   │   ├── sync/              # Sync über den Wächter: Ablauf, Fortschritt, Restzeit, Schutzprüfungen
 │   │   ├── shared/            # gemeinsame Modelle (Befehle, Status, Ereignisse)
 │   │   └── admin_cli.py       # twinraid-admin
 │   └── tests/
@@ -807,9 +1044,15 @@ twinraid/
 │   ├── rootfs/                # Init-/Prozess-Konfiguration
 │   ├── fake-target/           # nachgebautes Unraid Groß, nur für den SSH-Test (ab Phase 4)
 │   ├── ssh-test.sh            # SSH-Test gegen fake-target (ab Phase 4)
+│   ├── source-guard-test.sh   # Test des Wächters mit echtem Docker (ab v0.5.0)
 │   └── unraid-template.xml    # Unraid-Template (ab Phase 3)
 ├── host-scripts/
-│   └── guard.sh               # SSH-Wrapper für Unraid Groß
+│   ├── guard.sh               # SSH-Wrapper für Unraid Groß
+│   ├── source-guard.sh        # Wächter für Unraid Klein (ab v0.5.0)
+│   ├── source-guard.conf.example
+│   ├── twinraid-testcontainer.xml  # Vorlage für den Testcontainer (ab v0.5.0)
+│   ├── zfs-check.sh           # Machbarkeitstest Z1 (ab v0.5.0)
+│   └── testdata.sh            # Testdaten für die Test-Share (ab v0.5.1)
 ├── config.example.yaml
 └── .github/
     ├── workflows/             # CI: Tests, Lint, Image-Build, Veröffentlichung auf ghcr.io
@@ -829,8 +1072,8 @@ Jede Phase endet mit lauffähigem, getestetem Stand und einem Commit auf GitHub.
 | 2 | Sicherheit: HTTPS, Admin-CLI, Login, Sessions, CSRF, Netzfilter, Rate-Limit, Security-Header, Audit-Log | Ohne Login ist nichts erreichbar; jede Schutzmaßnahme hat einen Test |
 | 3 | Status: Server-Checks, VM-Status, Live-Updates per SSE; eigene CA mit automatischer Erneuerung des Serverzertifikats; Image-Veröffentlichung auf ghcr.io mit Herkunftsnachweis (aus Phase 7 vorgezogen); Modus `real` nur lesend mit `set-api-key target` und `trust-api-cert target`; erste Fassung von `docs/EINRICHTUNG.md` und Unraid-Template | Dashboard zeigt Status im Mock-Modus korrekt und live; Release v0.3.0 ist ohne Login von ghcr.io abrufbar und sein Herkunftsnachweis prüfbar |
 | 4 | Aktionen: WoL, VM Start/Stop/Force, Shutdown Groß, Sperrlogik, Auto-Wecken, eigenes Aktionslog des Workers (siehe 5.3); erste Aktionen gegen echte Server | Alle Buttons funktionieren auf den echten Servern; Rechte der API-Keys sind geprüft; jede Aktion steht im Aktionslog des Workers |
-| 5 | Sync: Dry-Run, rsync, Fortschritt/Restzeit, Container stoppen/starten, Templates, Schutzmechanismen, Historie | Erst Sync einer Test-Share, danach vollständiger Sync erfolgreich |
-| 6 | Zeitsteuerung, Auto-Wecken/-Herunterfahren, Benachrichtigungen, Notfall-Info auf Groß | Ein geplanter Lauf läuft unbeaufsichtigt durch |
+| 5 | Sync über den Wächter auf Klein und ZFS (E25): v0.5.0 Konzept 0.13 und Wächter (Container-Teil, TwinRaid zeigt nur an); v0.5.1 ZFS-Teil, guard.sh Version 3, „Nur Probelauf“; v0.5.2 echter Sync der Test-Share mit Löschschutz, Fortschritt, Abbruch und Historie; v0.5.3 Snapshots anzeigen und `docs/WIEDERHERSTELLUNG.md`; v0.5.4 Templates (bleibt bis zur Freigabe aus) | Erst Sync einer Test-Share, danach vollständiger Sync aller Shares erfolgreich (Merkliste 10.2) |
+| 6 | Zeitsteuerung, Auto-Wecken/-Herunterfahren, Benachrichtigungen | Ein geplanter Lauf läuft unbeaufsichtigt durch |
 | 7 | Unraid-Template und Einrichtungsanleitung fertigstellen, unabhängiges Security-Review | Installation auf Unraid nach Anleitung möglich; Review-Befunde behoben |
 
 ---
@@ -842,11 +1085,15 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 - [ ] Groß: Wake-on-LAN im BIOS aktivieren („Wake on LAN“ bzw. „Power On by PCI-E“ an, „ErP/EuP“ aus) und `ethtool -s eth0 wol g` in `/boot/config/go` eintragen
 - [ ] Groß: Array startet automatisch (*Settings → Disk Settings → Enable auto start*), sonst sind VMs nach dem Wecken nicht verfügbar
 - [ ] Gaming-VM (Windows): Energieoptionen → „Beim Drücken des Netzschalters: Herunterfahren“, sonst reagiert sie nicht auf das ACPI-Signal
-- [ ] Groß: SSH aktivieren; `guard.sh` (Version 2) nach `/boot/config/twinraid/` kopieren; `power.conf` mit der UUID der Gaming-VM anlegen; die Zeilen aus `twinraid-admin init-ssh-keys` (Key „status“, für freigeschaltete Aktionen auch „power“) unter *Users → root → SSH authorized keys* eintragen; Hostkey mit `twinraid-admin trust-host-key target` bestätigen
+- [ ] Groß: SSH aktivieren; `guard.sh` (Version 2, ab v0.5.1 Version 3) nach `/boot/config/twinraid/` kopieren; `power.conf` mit der UUID der Gaming-VM anlegen; die Zeilen aus `twinraid-admin init-ssh-keys` (Key „status“, für freigeschaltete Aktionen auch „power“) unter *Users → root → SSH authorized keys* eintragen; Hostkey mit `twinraid-admin trust-host-key target` bestätigen
 - [ ] Groß: einen API-Key von TwinRaid aus v0.4.2 oder früher in Unraid löschen (ab v0.4.3 nicht mehr nötig)
 - [ ] Aktionen einzeln in `actions` freischalten und nach dem Testprotokoll in `docs/EINRICHTUNG.md` prüfen
+- [ ] Klein (ab v0.5.0): gesicherte Shares als Datasets in `mainpool`, Kompression in den Pool-Einstellungen an; eigenes Dataset `mainpool/appdata/twinraid` für TwinRaid (E18, Test Z4)
+- [ ] Klein (ab v0.5.0): Wächter `source-guard.sh` und `source-guard.conf` nach `/boot/config/twinraid/`, Zeile in `/boot/config/go`, einmal starten; erst danach die zwei Pfade im Template von TwinRaid ergänzen
+- [ ] Groß (ab v0.5.0): Pool `mainpool` (ZFS) nur für die Spiegel, VMs und `system` auf einem anderen Pool; Share `twinraid-mirror` (Primärspeicher `mainpool`, Export „No“); keine Share-Konfigurationen mit den Namen der gespiegelten Shares und kein Pfad des VM-Managers dorthin (E26); Docker-Dienst aus; `zfs_arc_max` in Unraid eingetragen (*Settings → Disk Settings*)
+- [ ] Groß (ab v0.5.1): `guard.sh` Version 3, `mirror.conf` und die Zeile für den Key „sync“ aus `source-guard.sh init-key`; Hostkey von Groß auf Klein mit `source-guard.sh trust-target` bestätigen
 - [ ] Klein: „Host access to custom networks“ in den Docker-Einstellungen **nicht** aktivieren (siehe 5.1)
-- [ ] Klein: Container-Templates auf Pool-Pfade prüfen und auf `/mnt/user/…` umstellen
+- [ ] Klein: Container-Templates prüfen: absolute Pfade nur unter `/mnt/user/…` oder in gespiegelten Shares (4.7)
 - [ ] UniFi: feste IP für den Container, Firewall-Regel Client-Netz → Container-IP:8443
 - [ ] Klein: `/mnt/user/appdata/twinraid/data` gehört root und ist nur für root beschreibbar (siehe 5.9)
 - [ ] Feste IP nur im Template („Fixed IP address“); das Startlog zeigt `TLS address … (detected on …)` mit dieser IP
@@ -861,25 +1108,44 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 
 | Nr. | Frage | Stand |
 |---|---|---|
-| E1 | Laufen auf Groß eigene Container mit Daten in `appdata` oder mit eigenen Templates? | **entschieden:** nein, Container auf Groß sind aus; geschützt wird nur `appdata/_twinraid` |
+| E1 | Laufen auf Groß eigene Container mit Daten in `appdata` oder mit eigenen Templates? | **entschieden:** nein; der Docker-Dienst auf Groß ist im Normalbetrieb aus. Der früher auf Groß geschützte Ordner `appdata/_twinraid` entfällt mit E25 (4.6) |
 | E2 | GitHub-Repo öffentlich oder privat? | **entschieden:** öffentlich, Image über `ghcr.io` (siehe 5.8) |
 | E3 | HTTPS-Variante | **entschieden:** eigene kleine CA mit Namensbeschränkung und separatem Serverzertifikat (ab Phase 3, vorher selbstsigniert), eigenes Zertifikat optional mountbar (siehe 5.2) |
 | E4 | Projektname (Arbeitstitel „TwinRaid“) | offen |
 | E5 | Prozessverwaltung im Container (s6-overlay oder supervisord) | **entschieden:** s6-overlay mit read-only Root und minimalen Capabilities (siehe 5.4) |
 | E6 | Versionen und Image-Tags | **entschieden:** SemVer, `latest` nur für Releases, `edge` für `main` (siehe 5.8) |
-| E7 | Wie steuert TwinRaid in Phase 5 die Container auf Klein, ohne dass „Host access to custom networks“ eingeschaltet wird? | **offen**, Optionen und Empfehlung (Option I) in 10.1, überarbeitet in v0.4.2; Entscheidung vor Beginn von Phase 5 |
-| E8 | Wie wird die Gaming-VM heruntergefahren? | **entschieden:** per SSH mit dem Key „power“ (`virsh shutdown`, nur ACPI); Starten und Erzwingen über die API, weil `vm.stop` der API nach 10 s selbst erzwingt (siehe 3.4) |
+| E7 | Wie steuert TwinRaid in Phase 5 die Container auf Klein, ohne dass „Host access to custom networks“ eingeschaltet wird? | **entschieden am 16.10.2026:** Option I, ein Wächter auf dem Host von Klein mit Auftragsdatei; TwinRaid kann nur anfordern. Umgesetzt als `source-guard.sh` (3.6), Abwägung in 10.1 |
+| E8 | Wie wird die Gaming-VM heruntergefahren? | **entschieden:** per SSH mit dem Key „power“ (`virsh shutdown`, nur ACPI); Starten und Erzwingen über die API, weil `vm.stop` der API nach 10 s selbst erzwingt (siehe 3.4); seit v0.4.3 laufen auch Starten und Erzwingen per SSH über guard.sh (E22) |
 | E9 | Wie werden Aktionen im Echtbetrieb schrittweise freigeschaltet? | **entschieden:** Abschnitt `actions` in `twinraid.yaml` mit `wake`, `vm`, `shutdown`, Standard aus (siehe 4.2) |
 | E10 | Groß herunterfahren bei laufender VM | **entschieden:** Dialog „VM zuerst herunterfahren?“, dann VM und danach Server; weiterhin kein sofortiges Herunterfahren an der laufenden VM vorbei. **Ergänzt in v0.4.1:** Nur nach einem gescheiterten sauberen Versuch und ausdrücklicher Bestätigung bietet TwinRaid zeitlich begrenzt „Erzwingen und danach Server herunterfahren“ an (siehe 4.2). **Ergänzt in v0.4.2:** Laufen außer der Gaming-VM weitere VMs auf Groß, schaltet TwinRaid den Server gar nicht aus, weder manuell noch erzwungen noch automatisch nach einem Sync (siehe 4.2) |
 | E11 | Simulationsmodus mit Aktionen | **entschieden:** interaktive Simulation als Standard, fester Rundlauf mit `mock-tour`, Fehler mit `mock-fault` (siehe 6.4) |
 | E12 | Kleinere Punkte aus Phase 4 | **entschieden:** `wol_broadcast` optional (Startabbruch nur bei freigeschaltetem Wecken), `ssh_port` optional, 60 s für API-Aktionen, `restrict` in `authorized_keys` |
+| E13 | Wie steuert der Wächter Docker? | **entschieden:** Docker-CLI auf dem Host (`docker inspect`, `docker stop --time`, `docker start`), feste Argumente, nur selbst ermittelte IDs; kein API-Key. Regel 1 in `CLAUDE.md` ist entsprechend gefasst |
+| E14 | Wie wird der Wächter gestartet und überwacht? | **entschieden:** Zeile in `/boot/config/go` vor `emhttp`, eigene Überwachungsschleife, `flock` gegen eine zweite Instanz (3.6) |
+| E15 | Datenweg für den Sync (rsync-Daemon über SSH mit chroot) | **ersetzt** durch E25 |
+| E16 | Zeiten des Totmannschalters | **entschieden:** Höchstzeit eines Laufs 20 min (einstellbar 5–120), Herzschlag 120 s (30–600), `docker stop` 60 s (10–600) |
+| E17 | Was gilt, wenn der Wächter nicht aktiv ist? | **entschieden:** Sync und Probelauf sind vor dem Start gesperrt (`source_guard_inactive`); seit E25 braucht jeder Sync den Wächter, weil nur er sendet |
+| E18 | Wie bleibt der eigene appdata-Ordner von TwinRaid aus dem Spiegel? | **entschieden:** eigenes Dataset `mainpool/appdata/twinraid`; der Wächter prüft per `docker inspect`, dass `/config` und `/data` darin liegen, sonst sendet er appdata nicht (`self_dataset_missing`, siehe 4.5) |
+| E19 | Freischaltung des Syncs und neuer Worker-Befehl | **entschieden:** Schalter `actions.sync_dry_run` und `actions.sync`; Worker-Befehl `sync_dry_run` ohne Parameter |
+| E20 | Quell-Mounts je Share für rsync | **ersetzt** durch E25: TwinRaid bindet keine Shares ein |
+| E21 | ACLs und xattrs mit rsync erst nach einem Test | **ersetzt** durch E25: `zfs send` überträgt sie unverändert; Test 3 prüft das |
 | E22 | Kein Secret von TwinRaid auf einem USB-Stick: VM-Status, VM-Start und Erzwingen weiter über die API oder über SSH? | **entschieden:** über SSH und guard.sh, als v0.4.3 vor Phase 5. Eigener Key „status“ für die dauerhafte Statussitzung, Key „power“ nur für Aktionen, die VM steht nur in `power.conf` auf Groß, guard.sh prüft vor `poweroff` selbst; kein API-Key mehr, HTTPS von Groß spielt keine Rolle mehr (siehe 3.5) |
-| E23 | Snapshots auf Groß, damit der Spiegel Löschungen, Fehler oder Verschlüsselung auf Klein nicht unwiderruflich überträgt | **offen**; vorläufige Empfehlung: Btrfs-Snapshot der ganzen Disk bzw. des Pools, wo dort nur gespiegelte Shares liegen, sonst Shares als Subvolumes. guard.sh legt sie vor dem ersten Schreiben eines Syncs selbst an (höchstens alle 12 Stunden) und löscht sie frühestens nach 30 Tagen; TwinRaid hat dafür keinen Befehl. Entscheidung vor der ersten echten Share, Umsetzung als v0.5.5 |
-| E24 | Sync aus einem ZFS-Snapshot auf Klein statt Konsistenzlauf (Phase B)? | **offen**; Empfehlung: ja, wenn ein Machbarkeitstest auf Klein klappt (Datasets, Sichtbarkeit im Container, Array stoppen, doppelte Dateien). Container wären nur für den Snapshot angehalten, alle Shares kämen aus einem Zeitpunkt. Entscheidung spätestens vor v0.5.3 |
+| E23 | Snapshots auf Groß, damit der Spiegel Löschungen, Fehler oder Verschlüsselung auf Klein nicht unwiderruflich überträgt | **erledigt** durch E25: Jeder Empfang ist ein Snapshot; guard.sh bewahrt sie 30 Tage auf und löscht sie selbst (3.7) |
+| E24 | Sync aus einem ZFS-Snapshot auf Klein statt Konsistenzlauf (Phase B)? | **aufgegangen** in E25: Der Wächter legt den Snapshot an und sendet ihn selbst, ohne ihn einzuhängen |
+| E25 | Sync mit ZFS auf beiden Seiten (`zfs send` und `zfs receive`) statt rsync? | **entschieden am 17.10.2026:** ja. Der Wächter auf Klein sendet selbst (Key „sync“ nur auf dem Host von Klein), guard.sh empfängt ohne `-F` in schreibgeschützte Spiegel `mainpool/twinraid-mirror/<Share>` (3.6, 3.7). Ersetzt E15, E20, E21 und E23; E24 geht darin auf |
+| E25a | Eigenschaften und ARC auf Groß | **entschieden:** Spiegel mit `readonly=on`, `exec=off`, `setuid=off`, `devices=off`, `primarycache=metadata`, `compression=lz4`, `atime=off`, `xattr=sa` und `acltype=posix`, **direkt am Spiegel** bei jedem Empfang gesetzt (ergänzt am 18.10.2026, weil Unraid die oberste Ebene eines Pools beim Start zurücksetzt). Die Grenze des ARC steht nur in Unraid (`zfs_arc_max`), nicht in `twinraid.yaml`; TwinRaid zeigt nur einen Hinweis, wenn sie 0 ist (geändert am 18.10.2026; vorher fest 2 GiB) |
+| E25b | Snapshots auf Klein | **entschieden:** Basis immer (Hold und Lesezeichen), dazu 7 Tage; gelöscht nur vom Wächter nach Regel, nie auf Auftrag von TwinRaid |
+| E25c | Kompression auf Klein | **entschieden:** über die Pool-Einstellung „Compression on“ in Unraid, alle Datasets erben sie; `on` und `lz4` gelten als gleichwertig (geändert am 18.10.2026; vorher `zfs set compression=lz4`) |
+| E25d | Notbetrieb | **entschieden:** nur als Anleitung in `docs/WIEDERHERSTELLUNG.md` mit einmaligem Test; Klone mit ausdrücklich gesetzten Eigenschaften; keine Notfall-Info auf Groß (4.6) |
+| E25e | VM-Start auf Groß | **entschieden:** guard.sh Version 3 prüft vor `vm-start` den freien Speicher (`memory-low`) und erkennt belegte Geräte (`device-busy`), ab v0.5.1 (3.5) |
+| E25f | Flash Backup beim Senden | **entschieden:** kein Warten und keine Sperre; die Hinweise zu Unraid Connect zeigen eine Installation auf beiden Servern an |
+| E26 | Wie geht der erste Empfang mit Datasets um, die Unraid selbst für Shares anlegt? | **entschieden am 18.10.2026:** A + D. guard.sh nimmt einen Empfang in ein vorhandenes Dataset nur an, wenn es ein eigener Spiegel ist (`twinraid:mirror`), sonst `target-exists`; es löscht oder ersetzt nie etwas. Auf Groß gibt es im Normalbetrieb keine Share-Konfigurationen mit den Namen der gespiegelten Shares, weil Unraid sonst auch auf anderen Pools Datasets anlegt; die Anleitung zum Notbetrieb legt die Shares neu mit Primärspeicher `mainpool` an und prüft und entfernt vorher ein von Unraid angelegtes Dataset (3.7, 4.6) |
 
-E13 bis E21 (Container-Wächter auf Klein und Sync, Phase 5) sind entschieden und werden mit Konzept 0.13 (v0.5.0) hier eingetragen.
+Bewusst später entschieden werden: der Weg der Templates (vor v0.5.4), das Verhalten an den Tagen der Zeitumstellung und der Weg der Benachrichtigungen (Phase 6) sowie ein Fortsetzen abgebrochener Übertragungen über ein Resume-Token (nur bei Bedarf).
 
 ### 10.1 E7: Container auf Klein stoppen und starten
+
+**Entschieden am 16.10.2026: Option I.** Die endgültige Form steht in 3.6: Der Wächter heißt `source-guard.sh`, steuert Docker über die CLI statt über die API (E13), tauscht Aufträge über eine einzelne Datei auf einem eigenen tmpfs unter `/run` aus statt über einen Ordner in `/data/worker` und sendet seit E25 auch die Snapshots. Der folgende Text ist die Abwägung vor der Entscheidung (Stand 16.10.2026) und bleibt zur Nachvollziehbarkeit stehen.
 
 **Ausgangslage:** TwinRaid hat eine eigene IP auf `br0` (macvlan mit Bridging). Ohne Host access erreichen sich Klein und der Container nicht (siehe 5.1). Der Konsistenzlauf beim Sync muss aber Container auf Klein stoppen und wieder starten (siehe 3.4 und 4.3). Überarbeitet am 16.10.2026 anhand des Quellcodes von Unraid-API v4.37.5 und Unraid-WebGUI 7.3; nichts davon ist umgesetzt oder auf Unraid getestet.
 
@@ -976,7 +1242,19 @@ Die Rechte der API bestehen nur aus Ressource und Aktion (Casbin-Regel `obj` und
 
 **Verworfen:** Host access trotz macvlan mit Bridging (Risiko laut 5.1); Netzwerk `host` für TwinRaid; Docker-Socket-Proxy (gibt TwinRaid über einen zweiten Container Zugriff auf `docker.sock`, widerspricht Regel 1; Freigaben nur je API-Bereich, nicht je Befehl); Weg über Groß (Groß müsste die API von Klein aufrufen).
 
-**Empfehlung (Entscheidung steht aus):** **Option I**. Sie ist die einzige, die alle drei Anforderungen erfüllt: kein Eingriff ins Netzwerk, keine Auswirkung auf andere Container, und TwinRaid selbst kann nur Start und Stopp anfordern. Alle Optionen, bei denen TwinRaid die API von Klein selbst aufruft (A bis G), brauchen `DOCKER:UPDATE_ANY` und erlauben damit auch Image-Updates und Pausieren. Als einfachere Rückfallebene bleibt **G** (keine Netzänderung, aber der breite Key liegt in TwinRaid), bis zur Umsetzung von I oder als Übergang **H**.
+**Entscheidung:** **Option I**. Sie ist die einzige, die alle drei Anforderungen erfüllt: kein Eingriff ins Netzwerk, keine Auswirkung auf andere Container, und TwinRaid selbst kann nur Start und Stopp anfordern. Alle Optionen, bei denen TwinRaid die API von Klein selbst aufruft (A bis G), brauchen `DOCKER:UPDATE_ANY` und erlauben damit auch Image-Updates und Pausieren. Als einfachere Rückfallebene bleibt **G** (keine Netzänderung, aber der breite Key liegt in TwinRaid), bis zur Umsetzung von I oder als Übergang **H**.
+
+### 10.2 Merkliste vor der ersten echten Share
+
+Bevor eine echte Share gespiegelt wird (nach v0.5.2), gilt:
+
+- Die Machbarkeitstests Z1, Z3 und Z4 und die Tests 0 bis 8 aus `docs/EINRICHTUNG.md` sind bestanden und in den PRs festgehalten (nur „Klein“ und „Groß“).
+- Auf Groß ist `zfs_arc_max` eingetragen (kein Hinweis `target_arc_unlimited`); die gleichzeitig laufenden VMs, der ARC und Unraid passen in den Arbeitsspeicher.
+- In `mainpool` auf Groß liegen nur `twinraid-mirror` und die Spiegel; vorübergehende Datasets (etwa aus einem Umzug) sind gelöscht. Es gibt keine Share-Konfigurationen mit den Namen der gespiegelten Shares, kein Pool hat Datasets mit diesen Namen, und der ISO-Ordner des VM-Managers zeigt nicht auf eine solche Share (E26).
+- Platz auf Groß: die Menge laut Probelauf plus Reserve; nach dem ersten Lauf ist `mainpool` höchstens zu 80 % belegt.
+- Für appdata: eigenes Dataset von TwinRaid gefunden; Erlaubnisliste des Wächters mit den echten Containern; `never_stop` geprüft; das Ergebnis der Suche nach setuid- und Gerätedateien (4.6) angesehen.
+- Templates: Bis v0.5.4 ist der Notbetrieb ohne Vorlagen nur eingeschränkt möglich; das ist bewusst so, bis der Weg entschieden ist.
+- Je Share alle drei Ebenen ergänzen (4.3), eine Share nach der anderen, appdata erst mit der echten Erlaubnisliste des Wächters. Danach ist Phase 5 fertig.
 
 ---
 
@@ -990,3 +1268,4 @@ Die Rechte der API bestehen nur aus Ressource und Aktion (Casbin-Regel `obj` und
   - Capabilities gelten nur innerhalb des User-Namespace des Rootless-Daemons. Der Starttest mit `--cap-drop=ALL` prüft trotzdem dieselbe Liste wie auf Unraid. Die CI führt denselben Test zusätzlich mit normalem Docker (rootful) aus.
   - Ports werden lokal nur an `127.0.0.1` gebunden.
 - Lokale Container-Tests laufen immer mit `TWINRAID_MODE=mock`.
+- Der Test des Wächters (`docker/source-guard-test.sh`) und die Tests mit echten ZFS-Pools in Dateien (`zfsutils-linux`) laufen in der CI auf dem Runner mit root; lokal laufen sie nur, soweit das ohne root und ohne ZFS geht.
