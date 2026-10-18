@@ -72,6 +72,7 @@ CREATED_ROOT=0
 CREATED_POOL=0
 XATTR_SET=0
 ACL_SET=0
+FINISHED=0
 
 ok() { printf 'ok     %s\n' "$1"; }
 bad() {
@@ -317,7 +318,7 @@ cleanup() {
   local rc=$?
   trap - EXIT
   set +e
-  if ((rc != 0 && failures == 0)); then
+  if ((!FINISHED)); then
     printf 'zfs-check: abgebrochen (Code %d); räume auf\n' "${rc}" >&2
   fi
   # Auf Klein liegt alles im eigenen Pool; er wird als Ganzes entfernt.
@@ -937,6 +938,7 @@ case "${MODE}" in
     if [[ "${MODE}" == target ]]; then
       measure_memory
     fi
+    FINISHED=1
     echo "== Ergebnis"
     if ((failures > 0)); then
       printf '%d FEHLER\n' "${failures}"

@@ -138,7 +138,10 @@ kill -TERM "${pid}"
 rc=0
 wait "${pid}" || rc=$?
 expect_equal "terminated run ends with code 130" "${rc}" 130
-expect_contains "abort reported" "$(cat "${WORK}/term.log")" "abgebrochen"
+if grep -q "abgebrochen" "${WORK}/term.log"; then pass "abort reported"; else
+  fail "abort reported"
+  cat "${WORK}/term.log" >&2
+fi
 expect_equal "nothing left after SIGTERM" "$(state)" "${before}"
 
 echo "== kill -9 lässt Reste; cleanup entfernt nur sie"
