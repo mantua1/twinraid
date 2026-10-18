@@ -310,6 +310,14 @@ TRSG1 <Nr> close <Prüfsumme>
 - **Start nur für selbst Angehaltenes:** Es gibt keinen Start-Auftrag. Ein inzwischen neu angelegter Container (andere ID) wird nicht gestartet und als `changed` gemeldet.
 - **Selbstschutz:** Nie angehalten wird ein Container, der Pfade unter `/run/twinraid-source-guard` einbindet, dessen Image `ghcr.io/mantua1/twinraid` oder lokal `twinraid` heißt oder der das Label `org.opencontainers.image.source=https://github.com/mantua1/twinraid` trägt; steht so einer in `allow`, ist das ein Konfigurationsfehler. TwinRaid schickt für die eigene ID (aus `/proc/self/mountinfo`, siehe 10.1) zusätzlich nie `stop`.
 - **Nie gesendet:** `system` und `domains` lehnt der Wächter fest ab, auch wenn sie in der Liste stehen; gesendet wird nie rekursiv (`-R`) und nie mit Eigenschaften (`-p`).
+- **Docker nur mit fester Argumentliste:** `docker inspect` immer mit `--type container` und festem `--format`, `docker stop -t <stop_timeout>` und `docker start` nur mit der selbst ermittelten ID, jeweils mit `--` vor dem Namen bzw. der ID. Liefert Docker zu einem Namen einen Container mit anderem Namen (etwa über einen ID-Präfix), gilt er als nicht gefunden.
+
+**Ergebnisse** (Feld `last.result`, feste Liste):
+
+- für jeden Auftrag: `rejected_format` (Format, Länge oder Prüfsumme falsch; `last_seq` bleibt), `not_supported` (Auftrag erst ab v0.5.1), `seq_exhausted`, `config_invalid`, `misconfigured`, `docker_unavailable`;
+- `begin`: `opened`, `run_open`; `ping`: `extended`, `no_run`; `finish`: `finished`, `no_run`;
+- `stop`: `stopped`, `not_running`, `not_allowed` (nicht in `allow` oder in `deny`), `denied_self`, `not_found`, `stop_failed`, `no_run`;
+- je Container beim Ende eines Laufs (`last_run`): `started`, `already_running`, `changed`, `gone`, `start_failed`; Grund des Endes: `finish`, `deadman_heartbeat`, `deadman_max`, `stop_command`. Ist Docker beim Ende nicht erreichbar, bleibt der Lauf offen, und der Wächter versucht es weiter.
 
 **Snapshots auf Klein (ab v0.5.1, Entscheidung E25b)**
 
@@ -349,7 +357,7 @@ Unbekannte oder fehlerhafte Zeilen: Der Wächter startet nicht, nennt den Grund 
 - **Ziel (ab v0.5.1):** Ergebnis des letzten `guard.sh sync check` (3.7): je Spiegel Zustand, letzter Snapshot (Zeit, GUID), Anzahl, ältester, Eigenschaften in Ordnung; freier Platz, Empfang läuft, Klon vorhanden.
 - Container-Namen sind Text von Klein. TwinRaid bereinigt sie wie die VM-Namen (3.5), liefert sie nur über geschützte Routen aus und loggt sie nie.
 
-**Aktiv** heißt: Herzschlag höchstens 30 Sekunden alt, Protokoll 1, kein `error`. Die Kachel Klein zeigt „Wächter: aktiv · Herzschlag vor 4 s · 1 Container freigegeben“, sonst „nicht aktiv seit …“ oder den Fehler (`config_invalid`, `docker_unavailable`, `zfs_unavailable`, `request_not_a_file`, `misconfigured`, `state_lost`).
+**Aktiv** heißt: Herzschlag höchstens 30 Sekunden alt, Protokoll 1, kein `error`. `error` ist `config_invalid`, `misconfigured`, `request_not_a_file`, `state_lost` oder `docker_unavailable`, dazu `error_detail` aus einer festen Liste (etwa `request_is_directory` oder `allow_contains_twinraid`). `zfs_unavailable` steht im ZFS-Teil (`zfs.state`) und sperrt nur Snapshot und Senden (ab v0.5.1). Bei `config_invalid`, `misconfigured` und `request_not_a_file` führt der Wächter keinen Auftrag aus. Die Kachel Klein zeigt „Wächter: aktiv · Herzschlag vor 4 s · 1 Container freigegeben“, sonst „nicht aktiv seit …“ oder den Fehler, auch `zfs_unavailable`.
 
 **Auftragsnummer und Neustarts**
 
@@ -367,8 +375,12 @@ Unbekannte oder fehlerhafte Zeilen: Der Wächter startet nicht, nennt den Grund 
 **Start und Überwachung (Entscheidung E14)**
 
 - Eine Zeile in `/boot/config/go` vor `emhttp`: `/bin/bash /boot/config/twinraid/source-guard.sh start`. `start` legt `/run/twinraid-source-guard` und das tmpfs an, nur wenn sie fehlen, und startet mit `setsid` eine Überwachungsschleife (Neustart nach 5 s, höchstens 10-mal in 10 min). `flock` verhindert eine zweite Instanz.
+- Das tmpfs für `in/` hängt der Wächter mit `size=64k,mode=0700,nosuid,nodev,noexec` ein. Die Auftragsdatei legt er nur an, wenn sie fehlt, und ersetzt sie nie, weil TwinRaid genau diese Datei eingebunden hat.
+- **Ordner statt Datei:** Startet TwinRaid, bevor der Wächter lief, legt Docker an der Stelle von `in/request` ein Verzeichnis an. Der Wächter erkennt das beim Start, legt kein tmpfs darüber und meldet `request_not_a_file` (`error_detail` `request_is_directory`); er nimmt dann keine Aufträge an. TwinRaid erkennt das Verzeichnis ebenfalls und meldet: „Wächter starten, dann TwinRaid neu starten.“ Behoben wird es von Hand: TwinRaid stoppen, Verzeichnis entfernen, Wächter neu starten, TwinRaid starten (`docs/EINRICHTUNG.md`).
+- **Docker noch nicht bereit** (Start aus der go-Datei vor Docker): Der Wächter meldet `docker_unavailable`, schreibt weiter seinen Status und versucht es alle 5 Sekunden erneut, ohne abzubrechen.
 - Der Wächter wartet auf `mainpool`, bevor er ZFS-Aufträge annimmt; bis dahin meldet er `zfs_unavailable`.
-- Weitere Befehle: `stop` (vorher `finish`, falls ein Lauf offen ist; eine Übertragung wird abgebrochen), `restart`, `status`, `check-config`, `init-key`, `trust-target`, `selftest <Container>`, `selftest-deadman <Container>`.
+- Weitere Befehle: `stop` (vorher `finish`, falls ein Lauf offen ist; eine Übertragung wird abgebrochen), `restart`, `status`, `check-config`, `init-key`, `trust-target`, `selftest <Container>`, `selftest-deadman <Container>`. Ein Signal von außen, etwa beim Herunterfahren von Klein, beendet den Wächter ohne `finish`; angehaltene Container startet Unraid dann beim nächsten Start mit Autostart.
+- `status.json` schreibt der Wächter atomar (temporäre Datei im selben Ordner, dann `mv`). Er erzeugt JSON nur aus geprüften Werten: Zahlen, Codes aus festen Listen und Namen, die er unmittelbar vor der Ausgabe noch einmal gegen die Zeichenregel von Docker bzw. von Share-Namen prüft.
 - Syslog mit der Kennung `twinraid-source-guard`: Start, Stopp, jeder angenommene Auftrag (bei `stop` mit Container-Name), Snapshots, Senden, Löschen, Totmann-Fälle, Fehler; nie Inhalte der Auftragsdatei.
 - **SSH-Client im Wächter (ab v0.5.1):** feste Argumentliste wie im Worker (5.6) mit eigenem `UserKnownHostsFile=/boot/config/twinraid/target-known-hosts` und dem Key „sync“.
 
