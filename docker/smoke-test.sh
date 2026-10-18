@@ -243,6 +243,7 @@ check twinraid-web NoNewPrivs 1
 perm() { docker exec "${main}" stat -c '%a %u' "$1"; }
 perm_group() { docker exec "${main}" stat -c '%a %u:%g' "$1"; }
 expect_equal "/srv/worker is 0700 root" "$(perm /srv/worker)" "700 0"
+expect_equal "/srv/worker/source-guard is 0700 root" "$(perm /srv/worker/source-guard)" "700 0"
 expect_equal "/data/secrets is 0700 root" "$(perm /data/secrets)" "700 0"
 expect_equal "/data/tls is 0700 root" "$(perm /data/tls)" "700 0"
 expect_equal "/data/web is 0770 root:10001" "$(perm_group /data/web)" "770 0:10001"
@@ -257,7 +258,7 @@ print(any(key in p.read_bytes() for p in pathlib.Path("/run/twinraid-tls").iterd
 expect_equal "web process gets no copy of the CA key" "$(docker exec "${main}" "${PY}" -c "${ca_key_scan}")" "False"
 expect_equal "socket dir is 0750 root:10001" "$(perm_group /run/twinraid)" "750 0:10001"
 expect_equal "socket is 0660 root:10001" "$(perm_group /run/twinraid/worker.sock)" "660 0:10001"
-for dir in /srv/worker /data/secrets /data/tls /data/worker; do
+for dir in /srv/worker /srv/worker/source-guard /data/secrets /data/tls /data/worker; do
   if docker exec -u 10001:10001 "${main}" ls "${dir}" >/dev/null 2>&1; then
     fail "web user can read ${dir}"
   else
@@ -347,6 +348,8 @@ expect_contains "API delivers config values after login" "$(https_get -b "${JAR}
   "$(json_str source_name <<<"${content}")"
 expect_contains "audit log lists the login" "$(https_get -b "${JAR}" "${BASE}/api/audit")" '"action":"login","result":"success"'
 expect_contains "status carries reasons and the job flag" "$(https_get -b "${JAR}" "${BASE}/api/status")" '"job_running":false'
+expect_contains "status carries the simulated source guard" \
+  "$(https_get -b "${JAR}" "${BASE}/api/status")" '"source_guard":{"state":"active"'
 ca_download="${WORKDIR}/twinraid-ca.crt"
 expect_equal "CA certificate download" \
   "$(curl -s -o "${ca_download}" -w '%{http_code} %{content_type}' --cacert "${CERT}" -b "${JAR}" "${BASE}/api/tls/ca-certificate")" \
@@ -753,6 +756,8 @@ for name in ("target-api-key", "target-api-cert.sha256"):
   done
   expect_contains "unreachable target is reported as offline" "${real_status}" '"target":{"state":"offline","reason":"unreachable"}'
   expect_contains "VM is off because the target is offline" "${real_status}" '"vm":{"state":"offline","reason":"target_offline"}'
+  # Ohne die Pfade des Wächters ist er nur nicht eingerichtet, kein Fehler (Konzept 3.6).
+  expect_contains "source guard without mounts is not set up" "${real_status}" '"source_guard":{"state":"not_mounted"'
   expect_contains "info reports read-only mode" \
     "$(curl -s --cacert "${real_cert}" -b "${real_jar}" "${REAL_BASE}/api/info")" '"read_only":true'
   for command in wake_target shutdown_target shutdown_target_force_vm vm_start vm_stop vm_force_stop sync_start; do
@@ -779,6 +784,102 @@ chmod 0644 "${wake_config}"
 refuse "wake enabled without a usable broadcast address" \
   "[worker] twinraid.worker: cannot derive the Wake-on-LAN broadcast address" \
   "${wake_config}" -e TWINRAID_MODE=real
+
+# --- 16b. Wächter auf Klein im Modus real (Konzept 3.6, ab v0.5.0) -----------------------------
+# Drei Container mit den Pfaden des Wächters wie im Template: richtig eingebunden (status.json
+# mit frischem Herzschlag), Status beschreibbar, und ein Verzeichnis statt der Auftragsdatei,
+# wie es Docker anlegt, wenn TwinRaid vor dem Wächter startet.
+guard_root="${WORKDIR}/guard"
+mkdir -p "${guard_root}/ok/state" "${guard_root}/rw/state" "${guard_root}/dir/state" \
+  "${guard_root}/dir/request"
+: >"${guard_root}/ok/request"
+: >"${guard_root}/rw/request"
+# Rootless: Dateien müssen für die Hilfs-UIDs lesbar sein (Konzept 11).
+chmod -R a+rX "${guard_root}"
+write_guard_status() {
+  python3 - "$1/state/status.json" <<'PY'
+import json, os, sys, time
+
+now = int(time.time())
+status = {
+    "protocol": 1, "version": 1, "heartbeat_at": now, "started_at": now - 60,
+    "instance": "0123456789abcdef", "error": None, "error_detail": None, "config_line": None,
+    "last_seq": 0, "last": None, "rejected": {"count": 0, "last_at": None},
+    "host": {"connect": "absent", "flash_backup": "inactive"},
+    "limits": {"max_stop_minutes": 20, "heartbeat_timeout_seconds": 120,
+               "stop_timeout_seconds": 60, "min_run_interval_minutes": 30,
+               "max_deletions": 1000, "snapshot_keep_days": 7, "snapshot_reserve_percent": 15},
+    "target": {"configured": False, "port": 22},
+    "allowed": [{"name": "twinraid-testcontainer", "id": None, "state": "missing"}],
+    "run": None, "run_allowed_at": None, "last_run": None,
+    "zfs": {"state": "unavailable", "pool": None,
+            "datasets": [{"name": "twinraidtest", "present": None, "referenced": None,
+                          "compression": None}],
+            "self_dataset": "unknown"},
+    "seq_exhausted": False,
+}
+tmp = sys.argv[1] + ".tmp"
+with open(tmp, "w", encoding="ascii") as handle:
+    json.dump(status, handle, separators=(",", ":"))
+os.chmod(tmp, 0o644)
+os.replace(tmp, sys.argv[1])
+PY
+}
+# get_status über den Worker-Socket als Web-Benutzer; gibt Zustand, Problem und Container aus.
+guard_probe='import json,socket
+s=socket.socket(socket.AF_UNIX);s.connect("/run/twinraid/worker.sock")
+s.sendall(b"{\"command\":\"get_status\"}\n")
+data=b""
+while not data.endswith(b"\n"):
+    chunk=s.recv(65536)
+    if not chunk:
+        break
+    data+=chunk
+g=json.loads(data)["result"]["source_guard"]
+names=[c["name"] for c in (g["details"] or {}).get("allowed",[])]
+print(g["state"], g["setup_problem"] or "-", ",".join(names) or "-")'
+guard_state() {
+  local name="$1" expected="$2" dir="${3:-}" out=""
+  for _ in $(seq 1 40); do
+    [[ -n "${dir}" ]] && write_guard_status "${dir}"
+    out="$(docker exec -u 10001:10001 "${name}" "${PY}" -c "${guard_probe}" 2>/dev/null || true)"
+    [[ "${out}" == "${expected}" ]] && break
+    running "${name}" || break
+    sleep 1
+  done
+  printf '%s' "${out}"
+}
+for case in ok rw dir; do
+  state_mode=ro
+  [[ "${case}" == rw ]] && state_mode=rw
+  start "${PREFIX}-guard-${case}" "" "${real_config}" -e TWINRAID_MODE=real \
+    -v "${guard_root}/${case}/request:/srv/worker/source-guard/request:rw" \
+    -v "${guard_root}/${case}/state:/srv/worker/source-guard/state:${state_mode}"
+done
+expect_equal "source guard mounted as in the template is active" \
+  "$(guard_state "${PREFIX}-guard-ok" "active - twinraid-testcontainer" "${guard_root}/ok")" \
+  "active - twinraid-testcontainer"
+expect_equal "writable status mount is reported" \
+  "$(guard_state "${PREFIX}-guard-rw" "misconfigured state_writable -" "${guard_root}/rw")" \
+  "misconfigured state_writable -"
+expect_equal "directory in place of the order file is reported" \
+  "$(guard_state "${PREFIX}-guard-dir" "misconfigured request_is_directory -")" \
+  "misconfigured request_is_directory -"
+expect_contains "guard state change is logged with codes only" \
+  "$(docker logs "${PREFIX}-guard-dir" 2>&1)" "source guard: misconfigured request_is_directory"
+expect_not_contains "container names never reach the log" \
+  "$(docker logs "${PREFIX}-guard-ok" 2>&1)" "twinraid-testcontainer"
+expect_equal "web user cannot read the guard status" \
+  "$(docker exec -u 10001:10001 "${PREFIX}-guard-ok" cat /srv/worker/source-guard/state/status.json >/dev/null 2>&1 && echo readable || echo denied)" \
+  "denied"
+if docker exec "${PREFIX}-guard-ok" sh -c 'echo x >/srv/worker/source-guard/state/probe' 2>/dev/null; then
+  fail "status of the guard is writable from the container"
+else
+  pass "status of the guard is read-only in the container"
+fi
+for case in ok rw dir; do
+  docker rm -f "${PREFIX}-guard-${case}" >/dev/null
+done
 
 # --- 17. Optional: Jede Capability ist nötig ------------------------------------------------------
 if [[ "${CHECK_EACH_CAP:-0}" == "1" ]]; then
