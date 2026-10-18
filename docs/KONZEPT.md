@@ -294,7 +294,7 @@ TRSG1 <Nr> close <Prüfsumme>
 
 | Auftrag | nur, wenn … | Wirkung |
 |---|---|---|
-| `begin` | kein Lauf und kein Job offen | öffnet einen Lauf (Fenster für angehaltene Container) mit Höchstzeit und Herzschlag-Frist |
+| `begin` | kein Lauf und kein Job offen; seit dem Ende des letzten Laufs mindestens `min_run_interval_minutes` (Standard 30, 10–1440), sonst `too_soon` | öffnet einen Lauf (Fenster für angehaltene Container) mit Höchstzeit und Herzschlag-Frist |
 | `stop X` | Lauf offen; X steht in `allow`, nicht in `deny` und ist nicht TwinRaid selbst; der Container existiert | läuft X: ID merken, `docker stop --time <stop_timeout> -- <ID>`, Ergebnis prüfen; läuft X nicht: `not_running`, nicht gemerkt |
 | `ping` | Lauf offen | verlängert die Herzschlag-Frist, nie die Höchstzeit |
 | `snapshot` | kein Job offen; seit dem letzten Snapshot mindestens 30 min; Platzreserve auf `mainpool` und höchstens 50 eigene Snapshots je Dataset | ein Aufruf `zfs snapshot` für alle Datasets der Liste (ein Pool, also atomar), Name `twinraid-<UTC-Zeit>`, Eigenschaft `twinraid:created-by=source-guard`; öffnet einen Job. Sonst `snapshot_low_space`, `snapshot_limit` bzw. `too_soon` |
@@ -307,15 +307,17 @@ TRSG1 <Nr> close <Prüfsumme>
 | Job-Frist | Job ohne `send` oder `close` nach 30 min (Warten auf Freigabe), Übertragung länger als 12 h | Wächter schließt den Job selbst (`job_timeout`) |
 
 - **Ablauf eines Syncs:** `begin`, `stop` je Container, `snapshot`, `finish`; danach `prepare`, falls nötig `confirm`, dann `send` bei laufenden Containern. Mit `stop_containers: false` entfallen `begin`, `stop` und `finish`; der Snapshot ist dann absturzkonsistent. „Nur Probelauf“ ist `snapshot`, `prepare`, `close`.
+- **Pause zwischen zwei Läufen:** Ohne sie könnte ein übernommener TwinRaid die freigegebenen Container mit aufeinanderfolgenden Läufen fast dauerhaft unten halten (je Lauf höchstens `max_stop_minutes`). Die Pause gilt nach jedem Lauf, gleich wie er endete. Der Status nennt den frühesten nächsten Lauf (`run_allowed_at`). Root auf Klein kann die Pause mit `source-guard.sh reset-run-interval` aufheben, etwa für die Tests in `docs/EINRICHTUNG.md`; TwinRaid kann das nicht.
+- **Fristen nach Laufzeit:** Höchstzeit, Herzschlag-Frist und Pause zwischen Läufen misst der Wächter mit der Laufzeit des Systems (`/proc/uptime`), nicht mit der Uhrzeit; ein Sprung der Uhr, etwa durch NTP, verschiebt sie nicht. `private/` übersteht einen Neustart von Klein ohnehin nicht. Zeitpunkte im Status sind Uhrzeiten.
 - **Start nur für selbst Angehaltenes:** Es gibt keinen Start-Auftrag. Ein inzwischen neu angelegter Container (andere ID) wird nicht gestartet und als `changed` gemeldet.
-- **Selbstschutz:** Nie angehalten wird ein Container, der Pfade unter `/run/twinraid-source-guard` einbindet, dessen Image `ghcr.io/mantua1/twinraid` oder lokal `twinraid` heißt oder der das Label `org.opencontainers.image.source=https://github.com/mantua1/twinraid` trägt; steht so einer in `allow`, ist das ein Konfigurationsfehler. TwinRaid schickt für die eigene ID (aus `/proc/self/mountinfo`, siehe 10.1) zusätzlich nie `stop`.
+- **Selbstschutz:** Nie angehalten wird ein Container, der Pfade unter `/run/twinraid-source-guard` einbindet (auch in der Schreibweise `/var/run/twinraid-source-guard`, auf Unraid ein Link auf `/run`), dessen Image `ghcr.io/mantua1/twinraid` oder lokal `twinraid` heißt oder der das Label `org.opencontainers.image.source=https://github.com/mantua1/twinraid` trägt; steht so einer in `allow`, ist das ein Konfigurationsfehler. TwinRaid schickt für die eigene ID (aus `/proc/self/mountinfo`, siehe 10.1) zusätzlich nie `stop`.
 - **Nie gesendet:** `system` und `domains` lehnt der Wächter fest ab, auch wenn sie in der Liste stehen; gesendet wird nie rekursiv (`-R`) und nie mit Eigenschaften (`-p`).
 - **Docker nur mit fester Argumentliste:** `docker inspect` immer mit `--type container` und festem `--format`, `docker stop -t <stop_timeout>` und `docker start` nur mit der selbst ermittelten ID, jeweils mit `--` vor dem Namen bzw. der ID. Liefert Docker zu einem Namen einen Container mit anderem Namen (etwa über einen ID-Präfix), gilt er als nicht gefunden.
 
 **Ergebnisse** (Feld `last.result`, feste Liste):
 
 - für jeden Auftrag: `rejected_format` (Format, Länge oder Prüfsumme falsch; `last_seq` bleibt), `not_supported` (Auftrag erst ab v0.5.1), `seq_exhausted`, `config_invalid`, `misconfigured`, `docker_unavailable`;
-- `begin`: `opened`, `run_open`; `ping`: `extended`, `no_run`; `finish`: `finished`, `no_run`;
+- `begin`: `opened`, `run_open`, `too_soon`; `ping`: `extended`, `no_run`; `finish`: `finished`, `no_run`;
 - `stop`: `stopped`, `not_running`, `not_allowed` (nicht in `allow` oder in `deny`), `denied_self`, `not_found`, `stop_failed`, `no_run`;
 - je Container beim Ende eines Laufs (`last_run`): `started`, `already_running`, `changed`, `gone`, `start_failed`; Grund des Endes: `finish`, `deadman_heartbeat`, `deadman_max`, `stop_command`. Ist Docker beim Ende nicht erreichbar, bleibt der Lauf offen, und der Wächter versucht es weiter.
 
@@ -336,6 +338,7 @@ allow twinraid-testcontainer       # Container, die angehalten werden dürfen
 max_stop_minutes 20                # Höchstzeit eines Laufs (5–120), E16
 heartbeat_timeout_seconds 120      # Frist ohne ping (30–600), E16
 stop_timeout_seconds 60            # docker stop vor SIGKILL (10–600), E16
+min_run_interval_minutes 30        # Pause zwischen zwei Läufen (10–1440), E16
 dataset twinraidtest               # mainpool/<Name> wird gespiegelt (ab v0.5.1)
 max_deletions 1000                 # Löschgrenze je Job (Summe über die Datasets)
 target_host 192.168.10.11          # Unraid Groß (Beispielwert)
@@ -374,12 +377,12 @@ Unbekannte oder fehlerhafte Zeilen: Der Wächter startet nicht, nennt den Grund 
 
 **Start und Überwachung (Entscheidung E14)**
 
-- Eine Zeile in `/boot/config/go` vor `emhttp`: `/bin/bash /boot/config/twinraid/source-guard.sh start`. `start` legt `/run/twinraid-source-guard` und das tmpfs an, nur wenn sie fehlen, und startet mit `setsid` eine Überwachungsschleife (Neustart nach 5 s, höchstens 10-mal in 10 min). `flock` verhindert eine zweite Instanz.
+- Eine Zeile in `/boot/config/go` vor `emhttp`: `/bin/bash /boot/config/twinraid/source-guard.sh start`. `start` legt `/run/twinraid-source-guard` und das tmpfs an, nur wenn sie fehlen, und startet mit `setsid` eine Überwachungsschleife (Neustart nach 5 s, höchstens 10-mal in 10 min). `flock` verhindert eine zweite Instanz. Die Sperre hält nur die Überwachungsschleife; der Wächter selbst beendet sich, sobald seine Überwachungsschleife fehlt, und eine zweite Sperre verhindert, dass zwei Wächter gleichzeitig Aufträge lesen.
 - Das tmpfs für `in/` hängt der Wächter mit `size=64k,mode=0700,nosuid,nodev,noexec` ein. Die Auftragsdatei legt er nur an, wenn sie fehlt, und ersetzt sie nie, weil TwinRaid genau diese Datei eingebunden hat.
 - **Ordner statt Datei:** Startet TwinRaid, bevor der Wächter lief, legt Docker an der Stelle von `in/request` ein Verzeichnis an. Der Wächter erkennt das beim Start, legt kein tmpfs darüber und meldet `request_not_a_file` (`error_detail` `request_is_directory`); er nimmt dann keine Aufträge an. TwinRaid erkennt das Verzeichnis ebenfalls und meldet: „Wächter starten, dann TwinRaid neu starten.“ Behoben wird es von Hand: TwinRaid stoppen, Verzeichnis entfernen, Wächter neu starten, TwinRaid starten (`docs/EINRICHTUNG.md`).
 - **Docker noch nicht bereit** (Start aus der go-Datei vor Docker): Der Wächter meldet `docker_unavailable`, schreibt weiter seinen Status und versucht es alle 5 Sekunden erneut, ohne abzubrechen.
 - Der Wächter wartet auf `mainpool`, bevor er ZFS-Aufträge annimmt; bis dahin meldet er `zfs_unavailable`.
-- Weitere Befehle: `stop` (vorher `finish`, falls ein Lauf offen ist; eine Übertragung wird abgebrochen), `restart`, `status`, `check-config`, `init-key`, `trust-target`, `selftest <Container>`, `selftest-deadman <Container>`. Ein Signal von außen, etwa beim Herunterfahren von Klein, beendet den Wächter ohne `finish`; angehaltene Container startet Unraid dann beim nächsten Start mit Autostart.
+- Weitere Befehle: `stop` (vorher `finish`, falls ein Lauf offen ist; eine Übertragung wird abgebrochen), `restart`, `status`, `check-config`, `init-key`, `trust-target`, `selftest <Container>`, `selftest-deadman <Container>`, `reset-run-interval`. Ein Signal von außen, etwa beim Herunterfahren von Klein, beendet den Wächter ohne `finish`; angehaltene Container startet Unraid dann beim nächsten Start mit Autostart.
 - `status.json` schreibt der Wächter atomar (temporäre Datei im selben Ordner, dann `mv`). Er erzeugt JSON nur aus geprüften Werten: Zahlen, Codes aus festen Listen und Namen, die er unmittelbar vor der Ausgabe noch einmal gegen die Zeichenregel von Docker bzw. von Share-Namen prüft.
 - Syslog mit der Kennung `twinraid-source-guard`: Start, Stopp, jeder angenommene Auftrag (bei `stop` mit Container-Name), Snapshots, Senden, Löschen, Totmann-Fälle, Fehler; nie Inhalte der Auftragsdatei.
 - **SSH-Client im Wächter (ab v0.5.1):** feste Argumentliste wie im Worker (5.6) mit eigenem `UserKnownHostsFile=/boot/config/twinraid/target-known-hosts` und dem Key „sync“.
@@ -437,7 +440,7 @@ Ein Dataset, das auf Klein gelöscht und neu angelegt wurde, kann den Spiegel de
 
 **Grenzen bei einem Angriff**
 
-- **Übernommener TwinRaid-Container:** kann Läufe auslösen (einer zur Zeit, Abstand 30 min im Wächter, je Spiegel ein Empfang je 10 min), Löschungen freigeben wie der Button (ältere Stände bleiben in den Snapshots) und freigegebene Container auf Klein bis zu 20 min anhalten. Er kann nicht: gespiegelte Daten lesen, nach Groß schreiben, Datasets, Ziel oder Optionen wählen, Snapshots auf Klein oder Groß löschen, andere Container anhalten oder starten, Container aktualisieren, pausieren oder ihre Logs lesen.
+- **Übernommener TwinRaid-Container:** kann Läufe auslösen (einer zur Zeit, Abstand 30 min im Wächter, je Spiegel ein Empfang je 10 min), Löschungen freigeben wie der Button (ältere Stände bleiben in den Snapshots) und freigegebene Container auf Klein je Lauf bis zu 20 min anhalten, danach frühestens nach 30 min wieder. Er kann nicht: gespiegelte Daten lesen, nach Groß schreiben, Datasets, Ziel oder Optionen wählen, Snapshots auf Klein oder Groß löschen, andere Container anhalten oder starten, Container aktualisieren, pausieren oder ihre Logs lesen.
 - **Übernommenes Klein (root):** hat Key und Daten und kann selbst gebaute Ströme an den Empfänger im Kernel schicken. Ältere Snapshots auf Groß kann es nicht löschen (kein `-F`, kein Befehl dafür). Gegen ein übernommenes Klein schützen nur diese Snapshots.
 
 ---
@@ -921,7 +924,7 @@ Das Repo ist öffentlich auf GitHub, das Container-Image wird öffentlich über 
 | `/run/twinraid-source-guard/in/request` | `/srv/worker/source-guard/request` | rw, einzelne Datei | Auftragsdatei des Wächters (ab v0.5.0, siehe 3.6) |
 | `/run/twinraid-source-guard/state` | `/srv/worker/source-guard/state` | ro | Status des Wächters (ab v0.5.0) |
 
-TwinRaid bindet keine Shares, kein `/boot` und keinen Templates-Ordner ein (E25); die früher geplanten Einbindungen `/srv/worker/source` und `/srv/worker/templates` entfallen. Die beiden Pfade des Wächters legt der Wächter beim Start an. Deshalb wird er vor den Pfaden im Template eingerichtet (`docs/EINRICHTUNG.md`); sonst legt Docker einen Ordner statt der Datei an (`request_not_a_file`). Ab Test Z4 (v0.5.0) liegen `/config` und `/data` in einem eigenen Dataset `mainpool/appdata/twinraid` (E18); die Pfade im Template bleiben gleich.
+Im Template stehen beide Pfade fest mit `/run/…`, nicht mit `/var/run/…`. TwinRaid bindet keine Shares, kein `/boot` und keinen Templates-Ordner ein (E25); die früher geplanten Einbindungen `/srv/worker/source` und `/srv/worker/templates` entfallen. Die beiden Pfade des Wächters legt der Wächter beim Start an. Deshalb wird er vor den Pfaden im Template eingerichtet (`docs/EINRICHTUNG.md`); sonst legt Docker einen Ordner statt der Datei an (`request_not_a_file`). Ab Test Z4 (v0.5.0) liegen `/config` und `/data` in einem eigenen Dataset `mainpool/appdata/twinraid` (E18); die Pfade im Template bleiben gleich.
 
 ### 6.2 Beispiel `twinraid.yaml`
 
@@ -1135,7 +1138,7 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 | E13 | Wie steuert der Wächter Docker? | **entschieden:** Docker-CLI auf dem Host (`docker inspect`, `docker stop --time`, `docker start`), feste Argumente, nur selbst ermittelte IDs; kein API-Key. Regel 1 in `CLAUDE.md` ist entsprechend gefasst |
 | E14 | Wie wird der Wächter gestartet und überwacht? | **entschieden:** Zeile in `/boot/config/go` vor `emhttp`, eigene Überwachungsschleife, `flock` gegen eine zweite Instanz (3.6) |
 | E15 | Datenweg für den Sync (rsync-Daemon über SSH mit chroot) | **ersetzt** durch E25 |
-| E16 | Zeiten des Totmannschalters | **entschieden:** Höchstzeit eines Laufs 20 min (einstellbar 5–120), Herzschlag 120 s (30–600), `docker stop` 60 s (10–600) |
+| E16 | Zeiten des Totmannschalters | **entschieden:** Höchstzeit eines Laufs 20 min (einstellbar 5–120), Herzschlag 120 s (30–600), `docker stop` 60 s (10–600); ergänzt am 18.10.2026: zwischen zwei Läufen mindestens 30 min (10–1440), Fristen nach Laufzeit des Systems |
 | E17 | Was gilt, wenn der Wächter nicht aktiv ist? | **entschieden:** Sync und Probelauf sind vor dem Start gesperrt (`source_guard_inactive`); seit E25 braucht jeder Sync den Wächter, weil nur er sendet |
 | E18 | Wie bleibt der eigene appdata-Ordner von TwinRaid aus dem Spiegel? | **entschieden:** eigenes Dataset `mainpool/appdata/twinraid`; der Wächter prüft per `docker inspect`, dass `/config` und `/data` darin liegen, sonst sendet er appdata nicht (`self_dataset_missing`, siehe 4.5) |
 | E19 | Freischaltung des Syncs und neuer Worker-Befehl | **entschieden:** Schalter `actions.sync_dry_run` und `actions.sync`; Worker-Befehl `sync_dry_run` ohne Parameter |
