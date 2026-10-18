@@ -55,6 +55,44 @@ def test_old_receive_line_only_for_the_finding() -> None:
     assert total == finding.count('"${X_RECEIVE_OPTIONS[@]}"') == 2
 
 
+def _function(name: str) -> str:
+    text = SCRIPT.read_text()
+    start = text.index(f"\n{name}() {{")
+    return text[start : text.index("\n}\n", start)]
+
+
+def test_lock_after_properties_from_the_stream() -> None:
+    """Eigenschaften aus dem Strom: aushängen, dann canmount=noauto, dann Ablehnung."""
+    function = _function("verify_and_mount")
+    lock = function.index('zfs set -- canmount=noauto "${target}"')
+    assert function.index("zfs unmount --") < lock < function.index("return 2")
+    assert function.index("return 2") < function.index("zfs mount --")
+
+
+def test_no_samba_share_on_unraid_target() -> None:
+    """Auf Groß (Unraid, Modus target) setzt der böse Strom kein sharesmb=on."""
+    lines = [
+        line.strip()
+        for line in SCRIPT.read_text().splitlines()
+        if "sharesmb=on" in line and not line.lstrip().startswith("#")
+    ]
+    assert lines == ['elif ! zfs set -- sharesmb=on "${evil}" >/dev/null 2>&1; then']
+    function = _function("check_hostile_stream")
+    guard = 'if [[ "${MODE}" == target && -e /etc/unraid-version ]]; then'
+    assert function.index(guard) < function.index("sharesmb=on")
+
+
+def test_reset_as_in_the_concept() -> None:
+    """Das Zurücksetzen in der Prüfung folgt Konzept 3.7: einzeln löschen, Rollback ohne -r."""
+    concept = CONCEPT.read_text()
+    assert "zfs set canmount=on mainpool/twinraid-mirror/<Name>" in concept
+    function = _function("check_reset")
+    assert 'zfs rollback -- "${mirror}@basis"' in function
+    assert 'zfs destroy -- "${mirror}@${snap}"' in function
+    assert 'zfs set -- canmount=on "${mirror}"' in function
+    assert function.index("zfs inherit") < function.index("canmount=on")
+
+
 def test_clone_options_match_the_concept() -> None:
     concept = CONCEPT.read_text()
     match = re.search(r"mit ausdrücklich gesetzten Eigenschaften \(([^)]*)\)", concept)

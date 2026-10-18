@@ -143,16 +143,19 @@ received_properties() {
 
 # Wie guard.sh nach dem Empfang (Konzept 3.7): erst prüfen, dann einhängen, dann den Ort
 # prüfen. Rückgabe: 0 eingehängt am festen Ort, 2 Eigenschaften aus dem Strom (bleibt
-# ausgehängt), 3 Einhängen gescheitert oder falscher Ort (wieder ausgehängt).
+# ausgehängt, gesperrt mit canmount=noauto), 3 Einhängen gescheitert oder falscher Ort
+# (wieder ausgehängt).
 verify_and_mount() {
   local target="$1" where
   mirror_mountpoint "${target}"
   RECEIVED_FOUND="$(received_properties "${target}")"
   if [[ -n "${RECEIVED_FOUND}" ]]; then
-    # Ein schon eingehängter Spiegel (inkrementeller Empfang) wird ausgehängt.
+    # Ein schon eingehängter Spiegel (inkrementeller Empfang) wird ausgehängt; canmount=noauto
+    # hält ihn auch nach einem Neustart ausgehängt, bis er von Hand zurückgesetzt ist.
     if [[ "$(value_of mounted "${target}")" == yes ]]; then
       zfs unmount -- "${target}" >/dev/null 2>&1 || true
     fi
+    zfs set -- canmount=noauto "${target}" >/dev/null 2>&1 || true
     return 2
   fi
   if [[ "$(value_of mounted "${target}")" != yes ]]; then
@@ -210,8 +213,9 @@ same_content() {
 snapshots_of() { zfs list -H -t snapshot -o name -s createtxg -- "$1" 2>/dev/null || true; }
 
 # Alle mit -o gesetzten Werte und der feste Ort müssen am Spiegel stehen, Quelle local.
+# Mit "gesperrt" wird canmount=noauto statt on erwartet.
 check_mirror_properties() {
-  local dataset="$1" label="$2" i pair name value bad_list=""
+  local dataset="$1" label="$2" locked="${3:-}" i pair name value bad_list=""
   mirror_mountpoint "${dataset}"
   for ((i = 0; i < ${#RECEIVE_OPTIONS[@]}; i++)); do
     if [[ "${RECEIVE_OPTIONS[i]}" != -o ]]; then
@@ -220,6 +224,9 @@ check_mirror_properties() {
     pair="${RECEIVE_OPTIONS[i + 1]}"
     name="${pair%%=*}"
     value="${pair#*=}"
+    if [[ "${name}" == canmount && -n "${locked}" ]]; then
+      value=noauto
+    fi
     if [[ "$(value_of "${name}" "${dataset}")" != "${value}" ||
       "$(prop_source "${name}" "${dataset}")" != local ]]; then
       bad_list+=" ${name}"
@@ -685,8 +692,11 @@ check_hostile_stream() {
   zfs unmount -- "${evil}"
   zfs set -- "mountpoint=${elsewhere#"${ALTROOT}"}" quota=1G refquota=1G reservation=1M \
     twinraid:mirror=0 "${evil}"
-  # Ausgehängt wird nichts freigegeben; scheitert es trotzdem, fehlt nur dieser Wert im Strom.
-  if ! zfs set -- sharesmb=on "${evil}" >/dev/null 2>&1; then
+  # Auf Groß (Unraid, Modus target) kein sharesmb: ZFS würde sonst an Unraid vorbei eine
+  # Samba-Freigabe versuchen. In der CI und auf Klein (eigener Datei-Pool) bleibt es.
+  if [[ "${MODE}" == target && -e /etc/unraid-version ]]; then
+    info "sharesmb auf Groß nicht im bösen Strom (keine Samba-Freigabe an Unraid vorbei)"
+  elif ! zfs set -- sharesmb=on "${evil}" >/dev/null 2>&1; then
     info "sharesmb ließ sich an der Quelle nicht setzen; nicht im bösen Strom"
   fi
   zfs snapshot -- "${evil}@boese"
@@ -703,7 +713,8 @@ check_hostile_stream() {
   if [[ -z "$(findmnt -n -M "${elsewhere}" 2>/dev/null)" ]]; then ok "-p -I: nichts hängt am Ort aus dem Strom"; else
     bad "-p -I: etwas hängt am Ort aus dem Strom"
   fi
-  check_mirror_properties "${mirror}" "-p -I: feste Werte wirken, keiner aus dem Strom"
+  check_mirror_properties "${mirror}" "-p -I: feste Werte wirken, keiner aus dem Strom" gesperrt
+  check_lock "${mirror}" "-p -I"
   if [[ "$(prop_source twinraid:received "${mirror}@mitte")" == received ]]; then
     ok "-p -I: altes twinraid:received am Zwischen-Snapshot hat Quelle received"
   else
@@ -721,9 +732,52 @@ check_hostile_stream() {
   else
     bad "-p vollständig: Code ${rc}, eingehängt: $(value_of mounted "${full}" 2>/dev/null)"
   fi
-  check_mirror_properties "${full}" "-p vollständig: feste Werte wirken, keiner aus dem Strom"
+  check_mirror_properties "${full}" "-p vollständig: feste Werte wirken, keiner aus dem Strom" gesperrt
+  check_lock "${full}" "-p vollständig"
   if [[ -z "$(findmnt -n -M "${elsewhere}" 2>/dev/null)" ]]; then ok "-p vollständig: nichts hängt am Ort aus dem Strom"; else
     bad "-p vollständig: etwas hängt am Ort aus dem Strom"
+  fi
+  check_reset "${evil}" "${mirror}"
+}
+
+# Sperre nach Eigenschaften aus dem Strom: canmount=noauto mit Quelle local.
+check_lock() {
+  if [[ "$(value_of canmount "$1")" == noauto && "$(prop_source canmount "$1")" == local ]]; then
+    ok "$2: gesperrt mit canmount=noauto (bleibt auch nach einem Neustart ausgehängt)"
+  else
+    bad "$2: nicht gesperrt (canmount $(value_of canmount "$1"))"
+  fi
+}
+
+# Zurücksetzen nach props-mismatch wie in Konzept 3.7: verdächtige Snapshots einzeln löschen,
+# zurück zum letzten guten, Eigenschaften mit Quelle received zurücksetzen, Werte prüfen,
+# canmount=on; danach geht es inkrementell von der Basis weiter.
+check_reset() {
+  local evil="$1" mirror="$2" snap name property rc
+  echo "== Zurücksetzen nach props-mismatch"
+  for snap in boese x2 x1 mitte; do
+    zfs destroy -- "${mirror}@${snap}" >/dev/null 2>&1 || bad "Zurücksetzen: ${snap} nicht gelöscht"
+  done
+  expect_success "Zurücksetzen: Rollback auf den letzten guten Snapshot" zfs rollback -- "${mirror}@basis"
+  while IFS=$'\t' read -r name property; do
+    if [[ -n "${property}" ]]; then
+      zfs inherit -- "${property}" "${name}" >/dev/null 2>&1 || bad "Zurücksetzen: ${property} nicht zurückgesetzt"
+    fi
+  done < <(received_properties "${mirror}")
+  if [[ -z "$(received_properties "${mirror}")" ]]; then
+    ok "Zurücksetzen: keine Eigenschaft mehr mit Quelle received"
+  else
+    bad "Zurücksetzen: noch mit Quelle received: $(received_properties "${mirror}" | cut -f2 | tr '\n' ' ')"
+  fi
+  zfs set -- canmount=on "${mirror}"
+  check_mirror_properties "${mirror}" "Zurücksetzen: feste Werte"
+  zfs snapshot -- "${evil}@gut"
+  rc=0
+  send_receive "${mirror}" -i "${evil}@basis" "${evil}@gut" >/dev/null 2>&1 || rc=$?
+  if ((rc == 0)); then
+    ok "Zurücksetzen: Empfang von der Basis klappt, Spiegel hängt am festen Ort"
+  else
+    bad "Zurücksetzen: Empfang von der Basis scheitert (Code ${rc})"
   fi
 }
 
