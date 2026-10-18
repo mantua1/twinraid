@@ -139,7 +139,7 @@ echo "== kill -9 lässt Reste; cleanup entfernt nur sie"
 setsid /bin/bash "${CHECK}" target >"${WORK}/kill.log" 2>&1 &
 pid=$!
 sleep 2
-kill -9 -- "-${pid}"
+kill -9 -- "-${pid}" 2>/dev/null || true
 wait "${pid}" 2>/dev/null || true
 sleep 1
 if zfs list -H -o name mainpool/twinraid-mirror/zfs-check >/dev/null 2>&1; then
@@ -162,15 +162,18 @@ expect_not_contains "no memory measurement on Klein" "${out}" "Messung: ARC"
 expect_equal "pools unchanged after source run" "$(state)" "${before}"
 expect_equal "no files left in /tmp" "$(own_files)" ""
 
-echo "== kill -9 auf Klein; cleanup source"
-setsid /bin/bash "${CHECK}" source >"${WORK}/kill-source.log" 2>&1 &
-pid=$!
-sleep 2
-kill -9 -- "-${pid}"
-wait "${pid}" 2>/dev/null || true
-sleep 1
-if zpool list -H -o name | grep -q '^twinraid-check-'; then pass "leftover pool after kill -9"; else
-  fail "no leftover pool after kill -9"
+echo "== Rest nach einem Abbruch auf Klein; cleanup source"
+# Der Lauf auf Klein ist in Sekunden fertig; den Rest eines abgebrochenen Laufs legt der
+# Test deshalb so an, wie zfs-check.sh ihn hinterlassen würde.
+mkdir -m 0700 /tmp/twinraid-check-0badc0de
+truncate -s 1G /tmp/twinraid-check-0badc0de.img
+zpool create -o cachefile=none -R /tmp/twinraid-check-0badc0de twinraid-check-0badc0de \
+  /tmp/twinraid-check-0badc0de.img
+zfs create twinraid-check-0badc0de/zfs-check
+# Und eine Datei ohne importierten Pool, wie nach einem Neustart.
+truncate -s 1G /tmp/twinraid-check-0ddba11d.img
+if zpool list -H -o name | grep -q '^twinraid-check-'; then pass "leftover pool present"; else
+  fail "no leftover pool"
 fi
 rc=0
 out="$(check source 2>&1)" || rc=$?
