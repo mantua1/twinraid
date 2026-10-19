@@ -71,6 +71,7 @@ readonly CLONE_OPTIONS=(
 
 failures=0
 RECV_ERROR=""
+PROPS_OFF=""
 ROOT=""
 RUN_ID=""
 FILE_POOL=""
@@ -222,6 +223,51 @@ same_content() {
 }
 
 snapshots_of() { zfs list -H -t snapshot -o name -s createtxg -- "$1" 2>/dev/null || true; }
+
+# Wie check_mirror_properties, aber ohne Ausgabe: 0, wenn alle festen Werte und der feste
+# Ort am Spiegel stehen, Quelle local. Abweichende Namen in PROPS_OFF.
+mirror_properties_ok() {
+  local dataset="$1" i pair name value
+  PROPS_OFF=""
+  mirror_mountpoint "${dataset}"
+  for ((i = 0; i < ${#RECEIVE_OPTIONS[@]}; i++)); do
+    if [[ "${RECEIVE_OPTIONS[i]}" != -o ]]; then
+      continue
+    fi
+    pair="${RECEIVE_OPTIONS[i + 1]}"
+    name="${pair%%=*}"
+    value="${pair#*=}"
+    if [[ "$(value_of "${name}" "${dataset}")" != "${value}" ||
+      "$(prop_source "${name}" "${dataset}")" != local ]]; then
+      PROPS_OFF+=" ${name}"
+    fi
+  done
+  if [[ "$(value_of mountpoint "${dataset}")" != "${MOUNT_SHOWN}" ||
+    "$(prop_source mountpoint "${dataset}")" != local ]]; then
+    PROPS_OFF+=" mountpoint"
+  fi
+  [[ -z "${PROPS_OFF}" ]]
+}
+
+# Verstellt alle festen Eigenschaften als root, damit ein folgender Empfang zeigen muss, ob
+# seine -o wirken: vererbbare werden zurückgesetzt (nicht mehr local), die übrigen bekommen
+# einen abweichenden Wert.
+reset_fixed_properties() {
+  local i name
+  for ((i = 0; i < ${#RECEIVE_OPTIONS[@]}; i++)); do
+    if [[ "${RECEIVE_OPTIONS[i]}" != -o ]]; then
+      continue
+    fi
+    name="${RECEIVE_OPTIONS[i + 1]%%=*}"
+    case "${name}" in
+      canmount) zfs set -- canmount=noauto "$1" >/dev/null 2>&1 || true ;;
+      quota | refquota) zfs set -- "${name}=10G" "$1" >/dev/null 2>&1 || true ;;
+      reservation | refreservation) zfs set -- "${name}=1M" "$1" >/dev/null 2>&1 || true ;;
+      *) zfs inherit -- "${name}" "$1" >/dev/null 2>&1 || true ;;
+    esac
+  done
+  zfs inherit -- mountpoint "$1" >/dev/null 2>&1 || true
+}
 
 # Alle mit -o gesetzten Werte und der feste Ort müssen am Spiegel stehen, Quelle local.
 # Mit "gesperrt" wird canmount=noauto statt on erwartet.
@@ -964,8 +1010,12 @@ receive_property_perms() {
 }
 
 # Ein Versuch mit diesen Rechten: vollständig in ein neues Dataset und inkrementell in einen
-# Spiegel, den root vollständig empfangen und eingehängt hat (wie bei guard.sh).
+# Spiegel, den root vollständig empfangen und eingehängt hat (wie bei guard.sh). Gelungen nur,
+# wenn danach alle festen Werte mit Quelle local am Spiegel stehen: zfs receive übergeht ein
+# -o ohne das passende Recht mit Exit-Code 0. Vor dem inkrementellen Empfang setzt root die
+# Werte zurück, damit sich zeigt, ob die -o auch dort wirken.
 Z1B_TRIAL=0
+Z1B_STEP=""
 z1b_trial() {
   local parent="$1" perms="$2" src="$3" n full incr ok=0
   grant_receiver "${parent}" "${perms}" || return 1
@@ -973,10 +1023,15 @@ z1b_trial() {
   n="${Z1B_TRIAL}"
   full="${parent}/v${n}"
   incr="${parent}/i${n}"
-  if receive_as_receiver "${full}" "${src}@a" &&
-    send_receive "${incr}" "${src}@a" >/dev/null 2>&1 &&
-    receive_as_receiver "${incr}" -i "${src}@a" "${src}@b"; then
-    ok=1
+  Z1B_STEP=vollständig
+  if receive_as_receiver "${full}" "${src}@a" && mirror_properties_ok "${full}"; then
+    Z1B_STEP=inkrementell
+    if send_receive "${incr}" "${src}@a" >/dev/null 2>&1; then
+      reset_fixed_properties "${incr}"
+      if receive_as_receiver "${incr}" -i "${src}@a" "${src}@b" && mirror_properties_ok "${incr}"; then
+        ok=1
+      fi
+    fi
   fi
   drop_dataset "${full}"
   drop_dataset "${incr}"
@@ -1005,10 +1060,15 @@ check_receive_unprivileged() {
   fi
   ok "Z1b: zfs allow nimmt die numerische UID ${RECV_UID} an"
   mirror="${parent}/basis"
-  if receive_as_receiver "${mirror}" "${src}@a"; then
-    info "Z1b: nur ${RECV_BASE_PERMS}: Empfang klappt"
-  else
+  if ! receive_as_receiver "${mirror}" "${src}@a"; then
     info "Z1b: nur ${RECV_BASE_PERMS}: Empfang scheitert (${RECV_ERROR})"
+  elif mirror_properties_ok "${mirror}"; then
+    info "Z1b: nur ${RECV_BASE_PERMS}: Empfang klappt mit allen festen Werten"
+  else
+    info "Z1b: nur ${RECV_BASE_PERMS}: Exit-Code 0, aber diese festen Werte fehlen:${PROPS_OFF}"
+    if [[ -n "${RECV_ERROR}" ]]; then
+      info "Z1b: erste Meldung von zfs receive: ${RECV_ERROR}"
+    fi
   fi
   drop_dataset "${mirror}"
   mapfile -t all < <(receive_property_perms)
@@ -1017,7 +1077,7 @@ check_receive_unprivileged() {
     perms+=",${p}"
   done
   if ! z1b_trial "${parent}" "${perms}" "${src}"; then
-    bad "Z1b: Empfang ohne root scheitert auch mit allen Rechten (${RECV_ERROR})"
+    bad "Z1b: Empfang ohne root (${Z1B_STEP}) scheitert auch mit allen Rechten (${RECV_ERROR}; fehlend:${PROPS_OFF})"
     zfs unallow -u "${RECV_UID}" -- "${parent}" >/dev/null 2>&1 || true
     return 0
   fi
