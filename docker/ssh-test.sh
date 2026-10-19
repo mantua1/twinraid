@@ -16,6 +16,10 @@
 # dass Abläufe sich nur für den Befehl selbst anmelden, und alle Abläufe aus Phase 4:
 # VM starten, herunterfahren und erzwingen, Groß herunterfahren (VM zuerst) und wecken,
 # „Erzwingen und danach Server herunterfahren“ und der Schutz vor weiteren VMs.
+# Ab guard.sh Version 3 (v0.5.1): die Zeile watch 3, die Speicherprüfung und das belegte
+# Gerät beim Start der VM, kein poweroff während eines Empfangs und der Modus sync mit
+# einem Key „sync“ (check, Empfang wirklich als UID 64000 über das echte setpriv, mit dem
+# nachgebauten zfs).
 #
 # Aufruf aus dem Repo-Hauptordner:   docker/ssh-test.sh [IMAGE]   (Standard: twinraid:dev)
 set -euo pipefail
@@ -83,6 +87,14 @@ for vm in vms:
         if len(sys.argv)>3: vm["name"]=sys.argv[3]
 json.dump(vms,open(path,"w"))'
 set_vm() { fake python3 -c "${VM_SCRIPT}" "$@"; }
+# „Max memory“ einer VM für virsh dominfo in KiB, z. B. set_vm_memory <UUID> 524288.
+MEMORY_SCRIPT='import json,sys
+path="/state/vms.json"
+vms=json.load(open(path))
+for vm in vms:
+    if vm["uuid"]==sys.argv[1]: vm["memory_kib"]=int(sys.argv[2])
+json.dump(vms,open(path,"w"))'
+set_vm_memory() { fake python3 -c "${MEMORY_SCRIPT}" "$@"; }
 set_flag() { fake touch "/state/$1"; }
 clear_flag() { fake rm -f "/state/$1"; }
 virsh_actions() { state virsh.log | grep -E '^(start|shutdown|destroy) ' || true; }
@@ -183,6 +195,14 @@ ssh_with() {
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/data/secrets/target-ssh-known-hosts \
     -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=5 "$@"
 }
+# SSH mit dem Key „sync“. Er liegt sonst nur auf dem Host von Klein (Konzept 3.6); hier
+# erzeugt ihn der Test in /tmp des TwinRaid-Containers, damit from= und der Weg über ssh
+# genauso geprüft werden.
+ssh_sync() {
+  docker exec -i "${APP}" ssh -F /dev/null -i /tmp/ssh-sync -o BatchMode=yes \
+    -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/data/secrets/target-ssh-known-hosts \
+    -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=5 "$@"
+}
 # vm-watch von Hand mit dem Key „status“; timeout beendet ssh im Container.
 watch_by_hand() {
   local seconds="$1"
@@ -278,8 +298,8 @@ expect_contains "the status names the next attempt of the pause" "$(worker get_s
 printf '%s\n%s\n' "${status_line}" "${power_line}" | docker exec -i "${TARGET}" tee -a /boot/config/ssh/root/authorized_keys >/dev/null
 trust_out="$(admin trust-host-key target --fingerprint "${host_fp}" || true)"
 expect_contains "the host key stays confirmed" "${trust_out}" "This host key was already confirmed."
-expect_contains "connection test with the key status" "${trust_out}" "OK: guard.sh answers (twinraid-guard 2 status ok)"
-expect_contains "connection test with the key power" "${trust_out}" "OK: guard.sh answers (twinraid-guard 2 power ok)"
+expect_contains "connection test with the key status" "${trust_out}" "OK: guard.sh answers (twinraid-guard 3 status ok)"
+expect_contains "connection test with the key power" "${trust_out}" "OK: guard.sh answers (twinraid-guard 3 power ok)"
 expect_contains "trust-host-key ends the wait (v0.4.4)" "${trust_out}" \
   "TwinRaid connects with the key 'status' right away."
 # Ohne das Signal bliebe die Pause 30 Minuten; ohne power.conf meldet guard.sh nun den Stand.
@@ -363,10 +383,11 @@ expect_contains "a third vm-watch loop is refused" "${busy}" "twinraid-guard: re
 wait "${by_hand}" || true
 watch_out="$(cat "${WORKDIR}/watch.out")"
 vm_hex="$(printf '%s' "${VM_NAME}" | od -An -v -tx1 | tr -d ' \n')"
+# arc_max und c_max kommen vom Kernel des Rechners, auf dem der Test läuft.
 expect_contains "vm-watch starts with a full line" "${watch_out}" \
-  "watch 2 vm=SHUTOFF name=${vm_hex} others=0 names=- connect=absent flash_backup=inactive"
+  "watch 3 vm=SHUTOFF name=${vm_hex} others=0 names=- connect=absent flash_backup=inactive arc_max="
 expect_equal "without changes a keepalive follows after 15 s" \
-  "$(grep -c '^watch 2 ' <<<"${watch_out}" || true)" "2"
+  "$(grep -c '^watch 3 ' <<<"${watch_out}" || true)" "2"
 wait_for_loops "the loop ends when its connection closes" 1
 
 # --- 7. Neuverbindung und Merkmale von Unraid Connect ---------------------------------------
@@ -461,6 +482,60 @@ set_vm "${OTHER_UUID}" "shut off"
 wait_for_status "no other VM runs any more" '"other_vms_running":[]' 20
 expect_not_contains "VM names never appear in the container log" "$(docker logs "${APP}" 2>&1)" "Second VM"
 
+# Start der VM ab guard.sh Version 3: Speicherprüfung und belegtes Gerät (Konzept 3.5, E25e).
+starts="$(virsh_actions | grep -c '^start ' || true)"
+set_vm_memory "${VM_UUID}" 68719476736
+run_action vm_start vm_memory_low
+expect_equal "guard.sh did not start a VM without enough memory" \
+  "$(virsh_actions | grep -c '^start ' || true)" "${starts}"
+set_vm_memory "${VM_UUID}" 524288
+set_vm "${OTHER_UUID}" running
+wait_for_status "another VM holds the graphics card" '"other_vms_running":["Second VM"]' 20
+set_flag device-busy
+run_action vm_start vm_device_busy
+clear_flag device-busy
+set_vm "${OTHER_UUID}" "shut off"
+wait_for_status "the other VM is off again" '"other_vms_running":[]' 20
+expect_not_contains "the message of virsh stays out of the syslog" "$(state syslog.log)" "in use by"
+expect_contains "the refusals are in the syslog" "$(state syslog.log)" "refused: device-busy"
+wait_for_status "the VM is still off" "${OFF}" 20
+
+# --- 8b. Modus sync mit dem Key „sync“ (guard.sh Version 3, Konzept 3.7) ----------------------
+docker exec "${APP}" ssh-keygen -q -t ed25519 -N '' -C twinraid-sync -f /tmp/ssh-sync
+sync_pub="$(docker exec "${APP}" cat /tmp/ssh-sync.pub)"
+printf 'restrict,from="%s",command="/bin/bash /boot/config/twinraid/guard.sh sync" %s\n' \
+  "${app_ip}" "${sync_pub}" | docker exec -i "${TARGET}" tee -a /boot/config/ssh/root/authorized_keys >/dev/null
+sync_check="$(ssh_sync "root@${target_ip}" check </dev/null 2>&1 || true)"
+expect_contains "without mirror.conf check says so" "${sync_check}" \
+  "summary root=ok conf=missing deleg=ok receive=idle clones=0 "
+printf 'mirror twinraidtest\n' | fake_write /boot/config/twinraid/mirror.conf
+sync_check="$(ssh_sync "root@${target_ip}" check </dev/null 2>&1 || true)"
+expect_contains "check answers with version 3" "${sync_check}" "twinraid-guard 3 sync ok"
+expect_contains "check lists the absent mirror" "${sync_check}" "mirror twinraidtest state=absent props=- count=0 "
+expect_contains "check ends with the summary" "${sync_check}" \
+  "summary root=ok conf=ok deleg=ok receive=idle clones=0 "
+FIRST_STREAM='{"full": true, "snapshots": [{"name": "twinraid-20261019T120000Z", "guid": 11, "creation": 1760875200}]}'
+rc=0
+received="$(printf '%s' "${FIRST_STREAM}" | ssh_sync "root@${target_ip}" "receive twinraidtest" 2>&1)" || rc=$?
+expect_equal "the first receive over SSH succeeds" "${rc}:${received}" "0:"
+expect_contains "zfs receive ran as UID 64000 with the fixed line" "$(state zfs.log)" \
+  '{"uid": 64000, "args": ["receive", "-u", "-o", "readonly=on", "-o", "exec=off"'
+expect_contains "guard.sh mounted the mirror as root" "$(state zfs.log)" \
+  '{"uid": 0, "args": ["mount", "--", "mainpool/twinraid-mirror/twinraidtest"]}'
+sync_check="$(ssh_sync "root@${target_ip}" check </dev/null 2>&1 || true)"
+expect_contains "check reports the new mirror" "${sync_check}" \
+  "mirror twinraidtest state=mirror props=ok count=1 newest_guid=11 newest_created=1760875200 "
+rc=0
+NEXT_STREAM='{"full": false, "from_guid": 11, "snapshots": [{"name": "b", "guid": 12, "creation": 1760875300}]}'
+refused="$(printf '%s' "${NEXT_STREAM}" | ssh_sync "root@${target_ip}" "receive twinraidtest" 2>&1)" || rc=$?
+expect_equal "a second receive within 10 minutes is refused" "${rc}:${refused}" "3:twinraid-guard: refused too-soon"
+for request in vm-start poweroff vm-watch check2 "receive ../etc" "receive twinraidtest now"; do
+  denied="$(ssh_sync "root@${target_ip}" "${request}" </dev/null 2>&1 || true)"
+  expect_contains "key sync cannot run '${request}'" "${denied}" "twinraid-guard: denied"
+done
+refused="$(ssh_sync "root@${target_ip}" "receive isos" </dev/null 2>&1 || true)"
+expect_contains "a name outside mirror.conf is refused" "${refused}" "twinraid-guard: refused name-denied"
+
 # --- 9. guard.sh prüft vor poweroff selbst (Konzept 3.5) --------------------------------------
 set_vm "${VM_UUID}" running
 refused="$(ssh_with power "root@${target_ip}" poweroff 2>&1 || true)"
@@ -477,8 +552,26 @@ clear_flag libvirt-down
 expect_equal "guard.sh never switched off with running VMs" "$(state poweroff.log | wc -l | tr -d ' ')" "2"
 expect_equal "the refusals are in the syslog" "$(syslog_count "refused: vm-running")" "1"
 wait_for_status "the VM is reported as off" "${OFF}" 20
+# Während eines Empfangs schaltet guard.sh Groß nicht aus (ab Version 3, sync-running).
+docker exec -d "${TARGET}" sh -c 'exec flock /var/run/twinraid-guard-receive.lock sh -c \
+  "touch /state/lock-held; while [ ! -e /state/release-lock ]; do sleep 0.2; done"'
+for _ in $(seq 1 50); do
+  fake test -e /state/lock-held && break
+  sleep 0.2
+done
+refused="$(ssh_with power "root@${target_ip}" poweroff 2>&1 || true)"
+expect_contains "poweroff is refused while a receive runs" "${refused}" "twinraid-guard: refused sync-running"
+expect_contains "check sees the running receive" "$(ssh_sync "root@${target_ip}" check </dev/null 2>&1 || true)" \
+  " receive=busy "
+run_action shutdown_target sync_running
+fake touch /state/release-lock
+expect_equal "Groß stayed on during the receive" "$(state poweroff.log | wc -l | tr -d ' ')" "2"
 
 # --- 10. Einschränkungen der authorized_keys-Zeilen -------------------------------------------
+denied="$(ssh_sync "root@${target_ip}" id </dev/null 2>&1 || true)"
+expect_contains "key sync: guard.sh rejects other commands" "${denied}" "twinraid-guard: denied"
+pty="$(ssh_sync -tt "root@${target_ip}" check </dev/null 2>&1 || true)"
+expect_contains "key sync: restrict, no terminal" "${pty}" "PTY allocation request failed"
 for key in status power; do
   denied="$(ssh_with "${key}" "root@${target_ip}" id 2>&1 || true)"
   expect_contains "key ${key}: guard.sh rejects other commands" "${denied}" "twinraid-guard: denied"

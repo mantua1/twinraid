@@ -16,9 +16,14 @@ COPY sshd-test.conf /etc/ssh/sshd_config.d/twinraid-test.conf
 # guard.sh setzt PATH=/usr/sbin:/usr/bin:/sbin:/bin; die Platzhalter brauchen dort python3.
 RUN ln -s /usr/local/bin/python3 /usr/bin/python3
 
-COPY fake_target.py start.sh /opt/fake/
+COPY fake_target.py start.sh zfs-state.json /opt/fake/
 # Platzhalter: virsh bildet VMs mit allen Zuständen nach, poweroff schreibt nur mit.
 COPY --chmod=0755 poweroff /sbin/poweroff
 COPY --chmod=0755 virsh /usr/bin/virsh
+# zfs und findmnt für den Modus sync (ab v0.5.1). guard.sh findet beide über
+# PATH=/usr/sbin:…; /usr/sbin/findmnt verdeckt das echte findmnt in /usr/bin. setpriv
+# bleibt echt: zfs receive läuft wirklich als UID 64000.
+COPY --chmod=0755 zfs /usr/sbin/zfs
+COPY --chmod=0755 findmnt /usr/sbin/findmnt
 
 ENTRYPOINT ["/bin/sh", "/opt/fake/start.sh"]
