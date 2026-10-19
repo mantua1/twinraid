@@ -50,9 +50,9 @@
       "ssh_host_key_mismatch": "SSH host key of the server has changed – check it and confirm it again",
       "ssh_auth_failed": "The server rejects the SSH key “status” (check Users → root → SSH authorized keys)",
       "ssh_unreachable": "SSH on the server not reachable (is Use SSH enabled?)",
-      "ssh_denied": "guard.sh rejects – copy guard.sh version 2 to /boot/config/twinraid/ and check the line for the key “status”",
+      "ssh_denied": "guard.sh rejects – copy guard.sh version 3 to /boot/config/twinraid/ and check the line for the key “status”",
       "ssh_failed": "SSH connection failed",
-      "guard_outdated": "guard.sh on the server is outdated – copy version 2 to /boot/config/twinraid/",
+      "guard_outdated": "guard.sh on the server is outdated – copy version 3 to /boot/config/twinraid/",
       "vm_not_configured": "VM not set up on the server (/boot/config/twinraid/power.conf)",
       "vm_service_unavailable": "VM service not ready"
     },
@@ -296,7 +296,7 @@
       "ssh_host_key_mismatch": "The SSH host key of the server has changed. Check it and confirm it again.",
       "ssh_auth_failed": "The server rejects the SSH key (check Users → root → SSH authorized keys).",
       "ssh_unreachable": "SSH on the server is not reachable (is Use SSH enabled?).",
-      "ssh_denied": "guard.sh on the server rejected the command (guard.sh version 2 copied, authorized_keys lines correct?).",
+      "ssh_denied": "guard.sh on the server rejected the command (guard.sh version 3 copied, authorized_keys lines correct?).",
       "ssh_failed": "The SSH connection failed.",
       "remote_failed": "The command failed on the server.",
       "shutdown_timeout": "The server was still reachable after 15 minutes.",
@@ -305,9 +305,13 @@
       "other_vms_running": "The server was not switched off because other VMs were still running.",
       "vm_not_configured": "The VM is not set up on the server (/boot/config/twinraid/power.conf).",
       "vm_service_unavailable": "The VM service on the server does not answer.",
-      "guard_outdated": "guard.sh on the server is outdated; copy version 2 to /boot/config/twinraid/.",
+      "guard_outdated": "guard.sh on the server is outdated; copy version 3 to /boot/config/twinraid/.",
       "watch_interrupted": "The status session to the server was interrupted.",
-      "vm_running": "The server was not switched off because the VM was still running."
+      "vm_running": "The server was not switched off because the VM was still running.",
+      "vm_memory_low": "There is not enough free memory on the server to start the VM.",
+      "vm_device_busy": "A passed-through device of the VM, such as the graphics card, is in use by another VM.",
+      "vm_start_failed": "Unraid could not start the VM; the libvirt log names the reason.",
+      "sync_running": "The server was not switched off because a sync is being received."
     },
     "last": "Last: {{action}} – {{outcome}} ({{time}})",
     "hint": "{{actions}}: {{reason}}",
@@ -349,7 +353,8 @@
       "forceAndShutdownUntil": "“Force off, then shut down server” is possible until {{time}}.",
       "inVmTile": "In the tile {{vm}}: {{hint}}",
       "checkWake": "Check Wake-on-LAN in the BIOS and with ethtool, as well as the array auto start.",
-      "checkShutdown": "Please look at the web interface of the server."
+      "checkShutdown": "Please look at the web interface of the server.",
+      "deviceBusyVms": "Other running VMs: {{vms}}"
     },
     "validUntil": "valid until {{time}}"
   },

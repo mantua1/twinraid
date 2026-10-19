@@ -39,13 +39,14 @@ def line(
     names: list[str] | None = None,
     connect: str = "absent",
     flash: str = "inactive",
-    version: int = 2,
+    arc: str = "arc_max=0 c_max=4294967296",
+    version: int = 3,
 ) -> str:
     encoded = ",".join(hex_of(item) for item in names) if names else "-"
     own = hex_of(name) if name is not None else "-"
     return (
         f"watch {version} vm={vm} name={own} others={others} names={encoded} "
-        f"connect={connect} flash_backup={flash}"
+        f"connect={connect} flash_backup={flash} {arc}"
     )
 
 
@@ -60,6 +61,8 @@ def test_parse_a_line() -> None:
         others=("A VM", "B-VM"),
         connect_plugin=False,
         flash_backup="inactive",
+        arc_max=0,
+        c_max=4294967296,
     )
 
 
@@ -119,9 +122,14 @@ def test_broken_utf8_is_replaced() -> None:
         line(others="21", names=[f"VM {index}" for index in range(21)]),
         line(connect="maybe"),
         line(flash="yes"),
-        line().replace("watch 2", "watch x"),
+        line().replace("watch 3", "watch x"),
         line().replace("watch", "status"),
-        line() + "\nwatch 2",
+        line() + "\nwatch 3",
+        line(arc="arc_max=0"),
+        line(arc="arc_max=-1 c_max=0"),
+        line(arc="arc_max=0 c_max=123456789012345678901"),
+        line(arc="arc_max=0x10 c_max=0"),
+        line(arc="c_max=0 arc_max=0"),
     ],
 )
 def test_malformed_lines_are_rejected(text: str) -> None:
@@ -135,7 +143,13 @@ def test_non_ascii_is_rejected() -> None:
         parse_line(line().replace("absent", "ábsent").encode())
 
 
-@pytest.mark.parametrize("text", [line(version=1), "watch 1 vm=RUNNING old format"])
+# Version 2 (v0.4.3 bis v0.5.0) kennt arc_max und c_max nicht (Konzept 3.5, D7).
+VERSION_2 = line(version=2).removesuffix(" arc_max=0 c_max=4294967296")
+
+
+@pytest.mark.parametrize(
+    "text", [VERSION_2, line(version=2), line(version=1), "watch 1 vm=RUNNING old format"]
+)
 def test_old_guard_versions_are_outdated(text: str) -> None:
     with pytest.raises(WatchLineError) as excinfo:
         parse_line(text.encode())
@@ -143,7 +157,22 @@ def test_old_guard_versions_are_outdated(text: str) -> None:
 
 
 def test_newer_guard_with_the_same_line_is_accepted() -> None:
-    assert parse_line(line(version=3).encode()).vm == "SHUTOFF"
+    assert parse_line(line(version=4).encode()).vm == "SHUTOFF"
+
+
+@pytest.mark.parametrize(
+    ("arc", "arc_max", "c_max"),
+    [
+        ("arc_max=0 c_max=16777216000", 0, 16777216000),
+        ("arc_max=3435973836 c_max=3435973836", 3435973836, 3435973836),
+        ("arc_max=- c_max=-", None, None),
+        ("arc_max=? c_max=?", None, None),
+        ("arc_max=0 c_max=?", 0, None),
+    ],
+)
+def test_arc_values(arc: str, arc_max: int | None, c_max: int | None) -> None:
+    report = parse_line(line(arc=arc).encode())
+    assert (report.arc_max, report.c_max) == (arc_max, c_max)
 
 
 @pytest.mark.parametrize(

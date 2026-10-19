@@ -333,7 +333,7 @@ _SSH_DIAGNOSIS: dict[ActionOutcome, str] = {
         "SSH does not answer. Enable it on the server: Settings → Management Access → Use SSH."
     ),
     ActionOutcome.SSH_DENIED: (
-        "guard.sh rejected the test. Copy host-scripts/guard.sh (version 2) to the server "
+        "guard.sh rejected the test. Copy host-scripts/guard.sh (version 3) to the server "
         "again; version 1 does not know the mode 'status'."
     ),
     ActionOutcome.REMOTE_FAILED: (
@@ -391,7 +391,7 @@ def cmd_init_ssh_keys(context: Context, args: argparse.Namespace) -> int:
     say("")
     if args.key is None and GuardKey.POWER not in keys:
         say("The key 'power' is only needed when actions.vm or actions.shutdown is enabled.")
-    say("Then store host-scripts/guard.sh (version 2) as /boot/config/twinraid/guard.sh,")
+    say("Then store host-scripts/guard.sh (version 3) as /boot/config/twinraid/guard.sh,")
     say("write the UUID of the gaming VM to /boot/config/twinraid/power.conf as 'vm <UUID>'")
     say("and confirm the host key: twinraid-admin trust-host-key target")
     return 0

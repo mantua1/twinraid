@@ -355,7 +355,7 @@ class FakeGuard:
         monkeypatch.setattr(admin_cli, "scan_host_key", scan)
         monkeypatch.setattr(admin_cli, "guard_client", client)
 
-    def answer(self, status: str = "2 status", power: str = "2 power") -> None:
+    def answer(self, status: str = "3 status", power: str = "3 power") -> None:
         """Antwort von guard.sh auf "check" je Key."""
         self.ssh.behave(
             by_key={
@@ -390,7 +390,7 @@ def test_trust_host_key_and_test_the_guard(
     assert guard.scanned == [("192.168.10.11", 22)]
     out = capsys.readouterr().out
     assert guard.fingerprint in out
-    assert "OK: guard.sh answers (twinraid-guard 2 status ok)" in out
+    assert "OK: guard.sh answers (twinraid-guard 3 status ok)" in out
     # Nur der Key „status“ existiert (Nur Statusanzeige); der Test schickt nur "check".
     assert guard.keys_used() == ["ssh-status"]
     assert [call[-1] for call in guard.ssh.calls()] == ["check"]
@@ -403,8 +403,8 @@ def test_trust_host_key_tests_both_keys(
     assert admin_cli.main(["init-ssh-keys", "--key", "power"]) == 0
     assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 0
     out = capsys.readouterr().out
-    assert "OK: guard.sh answers (twinraid-guard 2 status ok)" in out
-    assert "OK: guard.sh answers (twinraid-guard 2 power ok)" in out
+    assert "OK: guard.sh answers (twinraid-guard 3 status ok)" in out
+    assert "OK: guard.sh answers (twinraid-guard 3 power ok)" in out
     assert sorted(guard.keys_used()) == ["ssh-power", "ssh-status"]
 
 
@@ -464,9 +464,9 @@ def test_guard_test_finds_an_outdated_guard(
     env: Path, guard: FakeGuard, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert admin_cli.main(["init-ssh-keys", "--key", "power"]) == 0
-    guard.answer(power="1 power")
+    guard.answer(power="2 power")
     assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 1
-    assert "guard.sh on Unraid Groß is version 1; TwinRaid needs version 2" in (
+    assert "guard.sh on Unraid Groß is version 2; TwinRaid needs version 3" in (
         capsys.readouterr().err
     )
 
@@ -475,7 +475,7 @@ def test_guard_test_finds_swapped_lines(
     env: Path, guard: FakeGuard, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert admin_cli.main(["init-ssh-keys"]) == 0
-    guard.answer(status="2 power")
+    guard.answer(status="3 power")
     assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 1
     assert "The line for the key 'status' runs guard.sh in mode 'power'" in (
         capsys.readouterr().err

@@ -1,6 +1,6 @@
 """Die festen Listen in frontend/src/api/types.ts stimmen mit dem Backend überein.
 
-Geprüft werden die Hinweise und die Codes des Wächters (Konzept 3.6, ab v0.5.0): Fehlt
+Geprüft werden Hinweise, Ursachen, Aktionen und die Codes des Wächters (Konzept 3.6): Fehlt
 ein Code im Frontend, gibt es dort keinen Text; ein Code nur im Frontend wäre toter Text.
 """
 
@@ -10,6 +10,7 @@ from enum import StrEnum
 import pytest
 
 from tests.conftest import REPO_ROOT
+from twinraid.shared.actions import ActionBlocker, ActionName, ActionOutcome, ActionStep
 from twinraid.shared.source_guard import (
     GuardContainerState,
     GuardError,
@@ -21,7 +22,7 @@ from twinraid.shared.source_guard import (
     GuardState,
     GuardStatusProblem,
 )
-from twinraid.shared.status import StatusNotice
+from twinraid.shared.status import StatusNotice, StatusReason
 
 TYPES = REPO_ROOT / "frontend" / "src" / "api" / "types.ts"
 
@@ -38,6 +39,11 @@ def _frontend_list(name: str) -> list[str]:
     ("name", "enum"),
     [
         ("STATUS_NOTICES", StatusNotice),
+        ("STATUS_REASONS", StatusReason),
+        ("ACTION_NAMES", ActionName),
+        ("ACTION_BLOCKERS", ActionBlocker),
+        ("ACTION_STEPS", ActionStep),
+        ("ACTION_OUTCOMES", ActionOutcome),
         ("GUARD_STATES", GuardState),
         ("GUARD_SETUP_PROBLEMS", GuardSetupProblem),
         ("GUARD_STATUS_PROBLEMS", GuardStatusProblem),

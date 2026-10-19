@@ -284,6 +284,10 @@ export const ACTION_OUTCOMES = [
   "shutdown_timeout",
   "vm_running",
   "other_vms_running",
+  "vm_memory_low",
+  "vm_device_busy",
+  "vm_start_failed",
+  "sync_running",
   "interrupted",
   "internal_error",
 ] as const;
