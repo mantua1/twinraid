@@ -55,6 +55,20 @@ state() {
   zpool list -H -o name | sort
 }
 own_files() { find /tmp -maxdepth 1 -name 'twinraid-check-*' | sort; }
+# ZFS gibt den Platz gelöschter Datasets im Hintergrund frei. Der Test-Pool ist klein; ohne
+# Warten scheitert ein neuer Lauf sonst an der Platzprüfung (Code 2), bevor er anfängt.
+settle() { zpool wait -t free mainpool; }
+# Wartet, bis ein Lauf eigene Objekte angelegt hat (höchstens 30 s).
+wait_until_running() {
+  local _
+  for _ in $(seq 1 300); do
+    if grep -q '^== Snapshot und erster Empfang' "$1"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
 
 cleanup() {
   local rc=$?
@@ -110,6 +124,7 @@ expect_equal "foreign snapshot untouched" "$(zfs list -H -o name -t snapshot -r 
   "mainpool/isos@fremd"
 
 echo "== Rest eines früheren Laufs"
+settle
 zfs create -o twinraid:zfs-check=deadbeef mainpool/twinraid-mirror/zfs-check
 zfs snapshot mainpool/twinraid-mirror/zfs-check@rest
 rc=0
@@ -134,25 +149,34 @@ fi
 zfs destroy mainpool/twinraid-mirror/zfs-check
 
 echo "== Abbruch mit SIGTERM räumt auf"
-# Direkt starten, damit SIGTERM das Skript selbst trifft.
+settle
+# Direkt starten, damit SIGTERM das Skript selbst trifft, und erst abbrechen, wenn der Lauf
+# eigene Objekte angelegt hat.
 /bin/bash "${CHECK}" target >"${WORK}/term.log" 2>&1 &
 pid=$!
-sleep 1
+if wait_until_running "${WORK}/term.log"; then pass "run under way before SIGTERM"; else
+  fail "run under way before SIGTERM"
+fi
 kill -TERM "${pid}"
 rc=0
 wait "${pid}" || rc=$?
 expect_equal "terminated run ends with code 130" "${rc}" 130
-if grep -q "abgebrochen" "${WORK}/term.log"; then pass "abort reported"; else
+if grep -q "abgebrochen (Code 130)" "${WORK}/term.log"; then pass "abort reported"; else
   fail "abort reported"
+fi
+if ((rc != 130)) || ! grep -q "abgebrochen (Code 130)" "${WORK}/term.log"; then
   cat "${WORK}/term.log" >&2
 fi
 expect_equal "nothing left after SIGTERM" "$(state)" "${before}"
 
 echo "== kill -9 lässt Reste; cleanup entfernt nur sie"
+settle
 # Eigene Prozessgruppe, damit kill -9 auch Kindprozesse beendet.
 setsid /bin/bash "${CHECK}" target >"${WORK}/kill.log" 2>&1 &
 pid=$!
-sleep 2
+if ! wait_until_running "${WORK}/kill.log"; then
+  cat "${WORK}/kill.log" >&2
+fi
 kill -9 -- "-${pid}" 2>/dev/null || true
 wait "${pid}" 2>/dev/null || true
 sleep 1
