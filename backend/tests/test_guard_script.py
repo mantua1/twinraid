@@ -1,256 +1,35 @@
-"""host-scripts/guard.sh Version 2: Nur feste Anfragen sind erlaubt (Konzept 3.5 und 5.6).
+"""host-scripts/guard.sh Version 3, Modi status und power (Konzept 3.5 und 5.6).
 
-Die Tests laufen mit einer Kopie des Skripts, in der feste Pfade und Zeiten
-ersetzt sind: virsh ist das nachgebaute virsh aus docker/fake-target, poweroff
-und logger schreiben ihre Aufrufe mit, Unraid-Pfade zeigen in einen Testordner,
-und vm-watch läuft im Takt von Zehntelsekunden.
+Den Testaufbau (Kopie des Skripts mit Testpfaden, Nachbauten von virsh, zfs und
+findmnt) liefert tests/support/guard_host.py; den Modus sync prüft test_guard_sync.py.
 """
 
-import json
+import fcntl
 import os
-import re
-import selectors
-import signal
-import subprocess
-import sys
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
 from tests.conftest import REPO_ROOT
-
-GUARD = REPO_ROOT / "host-scripts" / "guard.sh"
-FAKE_VIRSH = REPO_ROOT / "docker" / "fake-target" / "virsh"
-UUID = "0b5c4e1a-2f3d-4c5b-8a9e-112233445566"
-OTHER_UUID = "7c6b5a49-3827-4161-9504-f3e2d1c0b9a8"
-# Platzhalter: schreibt Name und Argumente als JSON-Liste in die Aufrufdatei.
-_RECORDER = """#!{python}
-import json, sys
-from pathlib import Path
-with open({calls!r}, "a") as handle:
-    handle.write(json.dumps([Path(sys.argv[0]).name, *sys.argv[1:]]) + "\\n")
-"""
-# Startet das nachgebaute virsh mit dem Python der Tests.
-_VIRSH_SHIM = """#!{python}
-import runpy, sys
-sys.argv[0] = "virsh"
-runpy.run_path({fake!r}, run_name="__main__")
-"""
-# Zeiten im Test: vm-watch fragt alle 0,1 s ab, Lebenszeichen nach 0,6 s.
-_TEST_TIMES = {
-    "QUERY_TIMEOUT": "1",
-    "START_TIMEOUT": "2",
-    "FORCE_TIMEOUT": "2",
-    "SHUTDOWN_TIMEOUT": "2",
-    "WATCH_SLEEP": "0.1",
-    "WATCH_KEEPALIVE_MS": "600",
-    "WATCH_CONF_MS": "300",
-    "WATCH_CONNECT_MS": "300",
-}
-_LINE_PATTERN = (
-    r"watch 2 vm=[A-Z_]+ name=(-|[0-9a-f]+) others=(\?|\d+) names=(-|[0-9a-f,]+) "
-    r"connect=(present|absent) flash_backup=(active|inactive|unknown)"
+from tests.support.guard_host import (
+    GIB,
+    GUARD,
+    OTHER_UUID,
+    UUID,
+    Guard,
+    hex_of,
+    kill_loops,
+    make_guard,
+    processes_of,
 )
-
-
-def hex_of(text: str) -> str:
-    return text.encode().hex()
-
-
-@dataclass
-class Watch:
-    """Eine laufende vm-watch-Schleife; liest Zeilen mit Zeitlimit."""
-
-    process: subprocess.Popen[bytes]
-    selector: selectors.DefaultSelector = field(default_factory=selectors.DefaultSelector)
-
-    def __post_init__(self) -> None:
-        assert self.process.stdout is not None
-        self.selector.register(self.process.stdout, selectors.EVENT_READ)
-
-    def line(self, timeout: float = 5.0) -> str:
-        assert self.process.stdout is not None
-        if not self.selector.select(timeout):
-            raise AssertionError("vm-watch sent no line in time")
-        raw = self.process.stdout.readline()
-        if not raw:
-            raise AssertionError("vm-watch ended")
-        line = raw.decode("ascii").rstrip("\n")
-        assert re.fullmatch(_LINE_PATTERN, line), line
-        return line
-
-    def line_with(self, text: str, timeout: float = 5.0) -> str:
-        deadline = time.monotonic() + timeout
-        while True:
-            line = self.line(max(0.1, deadline - time.monotonic()))
-            if text in line:
-                return line
-            if time.monotonic() >= deadline:
-                raise AssertionError(f"{text!r} not in {line!r}")
-
-    def close(self) -> None:
-        """Wie ein Abbruch der SSH-Verbindung: TwinRaid liest nicht mehr."""
-        self.selector.close()
-        assert self.process.stdout is not None
-        self.process.stdout.close()
-
-
-@dataclass
-class Guard:
-    script: Path
-    state: Path
-    calls_file: Path
-    power_conf: Path
-    root: Path
-
-    def env(self) -> dict[str, str]:
-        return {"PATH": "/usr/bin:/bin", "FAKE_VIRSH_STATE": str(self.state)}
-
-    def run(
-        self, mode: str | None, request: str | None, timeout: float = 15
-    ) -> subprocess.CompletedProcess[str]:
-        env = self.env()
-        if request is not None:
-            env["SSH_ORIGINAL_COMMAND"] = request
-        arguments = ["/bin/bash", str(self.script)]
-        if mode is not None:
-            arguments.append(mode)
-        return subprocess.run(  # noqa: S603 - feste Argumente, nur im Test
-            arguments, env=env, capture_output=True, text=True, check=False, timeout=timeout
-        )
-
-    def start_watch(self) -> Watch:
-        env = {**self.env(), "SSH_ORIGINAL_COMMAND": "vm-watch"}
-        process = subprocess.Popen(  # noqa: S603 - feste Argumente, nur im Test
-            ["/bin/bash", str(self.script), "status"],
-            env=env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            start_new_session=True,
-        )
-        return Watch(process)
-
-    def set_vms(self, *vms: tuple[str, str, str]) -> None:
-        """(UUID, Name, Zustand wie bei virsh)."""
-        entries = [{"uuid": uuid, "name": name, "state": state} for uuid, name, state in vms]
-        (self.state / "vms.json").write_text(json.dumps(entries))
-
-    def vm_states(self) -> dict[str, str]:
-        entries = json.loads((self.state / "vms.json").read_text())
-        return {entry["uuid"]: entry["state"] for entry in entries}
-
-    def flag(self, name: str, on: bool = True) -> None:
-        path = self.state / name
-        if on:
-            path.touch()
-        else:
-            path.unlink(missing_ok=True)
-
-    def configure(self, text: str | None = f"vm {UUID}\n") -> None:
-        if text is None:
-            self.power_conf.unlink(missing_ok=True)
-        else:
-            self.power_conf.write_text(text)
-
-    def calls(self) -> list[list[str]]:
-        if not self.calls_file.exists():
-            return []
-        return [json.loads(line) for line in self.calls_file.read_text().splitlines()]
-
-    def syslog(self) -> list[str]:
-        return [call[-1] for call in self.calls() if call[0] == "logger"]
-
-    def poweroffs(self) -> int:
-        return sum(1 for call in self.calls() if call[0] == "poweroff")
-
-    def virsh_calls(self) -> list[str]:
-        log = self.state / "virsh.log"
-        return log.read_text().splitlines() if log.exists() else []
-
-    def virsh_actions(self) -> list[str]:
-        """Aufrufe von virsh, die etwas verändern."""
-        actions = ("start ", "shutdown ", "destroy ")
-        return [call for call in self.virsh_calls() if call.startswith(actions)]
-
-
-def make_guard(tmp_path: Path, **times: str) -> Guard:
-    """Kopie von guard.sh mit Testpfaden; times ersetzt einzelne Zeiten aus _TEST_TIMES."""
-    calls = tmp_path / "calls.jsonl"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    for name in ("poweroff", "logger"):
-        fake = bin_dir / name
-        fake.write_text(_RECORDER.format(python=sys.executable, calls=str(calls)))
-        fake.chmod(0o755)
-    virsh = bin_dir / "virsh"
-    virsh.write_text(_VIRSH_SHIM.format(python=sys.executable, fake=str(FAKE_VIRSH)))
-    virsh.chmod(0o755)
-    state = tmp_path / "state"
-    state.mkdir()
-    root = tmp_path / "root"
-    for directory in ("boot/config/twinraid", "boot/config/plugins", "var/log/plugins", "run"):
-        (root / directory).mkdir(parents=True)
-    paths = {
-        "POWEROFF": str(bin_dir / "poweroff"),
-        "VIRSH": str(virsh),
-        "LOGGER": str(bin_dir / "logger"),
-        "POWER_CONF": str(root / "boot/config/twinraid/power.conf"),
-        "PLUGIN_DIR": str(root / "boot/config/plugins"),
-        "LOADED_PLUGIN_DIR": str(root / "var/log/plugins"),
-        "FLASHBACKUP_INI": str(root / "flashbackup.ini"),
-        "WATCH_LOCK_DIR": str(root / "run"),
-    }
-    text = GUARD.read_text()
-    for name, value in {**paths, **_TEST_TIMES, **times}.items():
-        prefix = f"readonly {name}="
-        lines = [line for line in text.splitlines() if line.startswith(prefix)]
-        assert len(lines) == 1, name
-        text = text.replace(lines[0] + "\n", f"{prefix}{value}\n")
-    script = tmp_path / "guard.sh"
-    script.write_text(text)
-    instance = Guard(script, state, calls, Path(paths["POWER_CONF"]), root)
-    instance.set_vms((UUID, "Gaming VM", "shut off"), (OTHER_UUID, "Second VM", "shut off"))
-    instance.configure()
-    return instance
-
-
-def _kill_loops(tmp_path: Path) -> None:
-    """Keine Schleife darf den Test überleben."""
-    marker = str(tmp_path).encode()
-    for proc in Path("/proc").iterdir():
-        if proc.name.isdigit():
-            try:
-                cmdline = (proc / "cmdline").read_bytes()
-            except OSError:
-                continue
-            if marker in cmdline:
-                os.kill(int(proc.name), signal.SIGKILL)
 
 
 @pytest.fixture
 def guard(tmp_path: Path) -> Iterator[Guard]:
     yield make_guard(tmp_path)
-    _kill_loops(tmp_path)
-
-
-def _processes_of(session: int) -> list[int]:
-    """Prozesse einer Sitzung (setsid), z. B. guard.sh mit sleep und virsh."""
-    found = []
-    for proc in Path("/proc").iterdir():
-        if not proc.name.isdigit():
-            continue
-        try:
-            fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
-        except OSError, IndexError:
-            continue
-        # Nach dem Namen: Zustand, PPID, PGID, SID, …
-        if int(fields[3]) == session and fields[0] != "Z":
-            found.append(int(proc.name))
-    return found
+    kill_loops(tmp_path)
 
 
 # --- check -----------------------------------------------------------------------------
@@ -260,7 +39,7 @@ def _processes_of(session: int) -> list[int]:
 def test_check_reports_version_and_does_nothing(guard: Guard, mode: str) -> None:
     result = guard.run(mode, "check")
     assert result.returncode == 0
-    assert result.stdout == f"twinraid-guard 2 {mode} ok\n"
+    assert result.stdout == f"twinraid-guard 3 {mode} ok\n"
     assert guard.virsh_calls() == []
     assert guard.poweroffs() == 0
 
@@ -308,6 +87,81 @@ def test_hanging_virsh_action_is_stopped(guard: Guard) -> None:
     result = guard.run("power", "vm-shutdown")
     assert result.returncode == 124
     assert time.monotonic() - started < 10
+
+
+# --- vm-start: Speicher und belegtes Gerät (ab Version 3, Konzept 3.5, E25e) ----------------
+
+KIB_PER_GIB = 1024 * 1024
+
+
+@pytest.mark.parametrize(
+    ("available_gib", "vm_gib", "arc_gib", "starts"),
+    [
+        (16, 0.5, None, True),
+        # Genau die VM plus 1 GiB Abstand reicht.
+        (5, 4, None, True),
+        (4.999, 4, None, False),
+        # Der ARC über c_min zählt mit; MemAvailable enthält ihn nicht (Z1).
+        (3, 4, (6, 4), True),
+        (3, 4, (5, 4), False),
+        # Unter c_min gibt ZFS nichts ab; abgezogen wird aber auch nichts.
+        (5, 4, (1, 2), True),
+        (4, 4, (1, 2), False),
+    ],
+)
+def test_vm_start_checks_free_memory(
+    guard: Guard,
+    available_gib: float,
+    vm_gib: float,
+    arc_gib: tuple[int, int] | None,
+    starts: bool,
+) -> None:
+    guard.meminfo(int(available_gib * KIB_PER_GIB))
+    guard.set_vms((UUID, "Gaming VM", "shut off"), memory_kib=int(vm_gib * KIB_PER_GIB))
+    if arc_gib is not None:
+        size, c_min = arc_gib
+        guard.zfs_module("0", size=size * GIB, c_min=c_min * GIB, c_max=8 * GIB)
+    result = guard.run("power", "vm-start")
+    if starts:
+        assert result.returncode == 0
+        assert guard.virsh_actions() == [f"start --domain {UUID}"]
+    else:
+        assert result.returncode == 3
+        assert result.stderr == "twinraid-guard: refused memory-low\n"
+        assert guard.virsh_actions() == []
+        assert "refused: memory-low" in guard.syslog()
+
+
+def test_vm_start_without_mem_available_is_refused(guard: Guard) -> None:
+    guard.meminfo(None)
+    result = guard.run("power", "vm-start")
+    assert result.returncode == 3
+    assert result.stderr == "twinraid-guard: refused memory-low\n"
+    assert guard.virsh_actions() == []
+
+
+@pytest.mark.parametrize("flag", ["libvirt-down", "virsh-hang"])
+def test_vm_start_without_vm_information_is_refused(guard: Guard, flag: str) -> None:
+    guard.flag(flag)
+    started = time.monotonic()
+    result = guard.run("power", "vm-start")
+    assert result.returncode == 3
+    assert result.stderr == "twinraid-guard: refused vm-state-unknown\n"
+    assert not any(call.startswith("start ") for call in guard.virsh_calls())
+    assert time.monotonic() - started < 10
+
+
+def test_vm_start_reports_a_device_in_use(guard: Guard) -> None:
+    guard.flag("device-busy")
+    result = guard.run("power", "vm-start")
+    assert result.returncode == 3
+    assert result.stderr == "twinraid-guard: refused device-busy\n"
+    assert "refused: device-busy" in guard.syslog()
+    # Die Meldung von virsh geht weder an TwinRaid noch ins Syslog.
+    assert result.stdout == ""
+    for message in guard.syslog():
+        assert "in use" not in message
+        assert "0000:01:00.0" not in message
 
 
 @pytest.mark.parametrize("request_text", ["vm-start", "vm-shutdown", "vm-force-stop"])
@@ -395,7 +249,7 @@ def test_power_mode_has_no_watch(guard: Guard) -> None:
     assert guard.virsh_calls() == []
 
 
-@pytest.mark.parametrize("mode", ["status", "power"])
+@pytest.mark.parametrize("mode", ["status", "power", "sync"])
 @pytest.mark.parametrize(
     "request_text",
     [
@@ -444,7 +298,7 @@ def test_missing_request_is_denied(guard: Guard) -> None:
     assert guard.virsh_calls() == []
 
 
-@pytest.mark.parametrize("mode", ["sync", "", "Power", "Status", "power extra", None])
+@pytest.mark.parametrize("mode", ["", "Power", "Status", "Sync", "power extra", "sync check", None])
 def test_other_modes_are_denied(guard: Guard, mode: str | None) -> None:
     for request_text in ("check", "poweroff", "vm-start", "vm-watch"):
         assert guard.run(mode, request_text).returncode == 2
@@ -507,6 +361,33 @@ def test_poweroff_without_power_conf_needs_every_vm_off(guard: Guard) -> None:
     assert guard.poweroffs() == 1
 
 
+def test_poweroff_is_refused_during_a_receive(guard: Guard) -> None:
+    lock = guard.lock_file()
+    lock.touch()
+    with lock.open() as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        result = guard.run("power", "poweroff")
+    assert result.returncode == 3
+    assert result.stderr == "twinraid-guard: refused sync-running\n"
+    assert guard.poweroffs() == 0
+    assert "refused: sync-running" in guard.syslog()
+
+
+def test_poweroff_keeps_the_receive_lock(tmp_path: Path) -> None:
+    """poweroff erbt die Sperre: Danach beginnt kein Empfang mehr (Konzept 3.7)."""
+    probe = tmp_path / "probe.sh"
+    result_file = tmp_path / "probe.out"
+    lock = tmp_path / "root/run/twinraid-guard-receive.lock"
+    probe.write_text(
+        f"#!/bin/sh\nif flock -n {lock} true; then echo free; else echo held; fi >{result_file}\n"
+    )
+    probe.chmod(0o755)
+    guard = make_guard(tmp_path, POWEROFF=str(probe))
+    assert guard.run("power", "poweroff").returncode == 0
+    assert result_file.read_text() == "held\n"
+    assert lock.is_file()
+
+
 # --- vm-watch ---------------------------------------------------------------------------
 
 
@@ -530,8 +411,8 @@ def test_watch_reports_every_state(guard: Guard, state: str, expected: str) -> N
     line = watch.line()
     watch.close()
     assert line == (
-        f"watch 2 vm={expected} name={hex_of('Gaming VM')} others=0 names=- "
-        "connect=absent flash_backup=inactive"
+        f"watch 3 vm={expected} name={hex_of('Gaming VM')} others=0 names=- "
+        "connect=absent flash_backup=inactive arc_max=- c_max=-"
     )
 
 
@@ -579,7 +460,7 @@ def test_watch_without_vm_service(guard: Guard, flag: str, expected: str) -> Non
     watch = guard.start_watch()
     line = watch.line(timeout=10)
     watch.close()
-    assert line.startswith(f"watch 2 {expected} ")
+    assert line.startswith(f"watch 3 {expected} ")
     assert " others=? names=- " in line
 
 
@@ -600,7 +481,7 @@ def test_watch_without_power_conf(guard: Guard) -> None:
     first = watch.line()
     watch.line()  # Lebenszeichen: power.conf wurde inzwischen erneut gelesen
     watch.close()
-    assert first.startswith("watch 2 vm=NOT_CONFIGURED name=- others=? names=- ")
+    assert first.startswith("watch 3 vm=NOT_CONFIGURED name=- others=? names=- ")
     # Einmal je Sitzung, nicht bei jedem erneuten Lesen.
     assert guard.syslog().count("power.conf is missing or invalid") == 1
 
@@ -610,7 +491,7 @@ def test_watch_reports_an_unknown_uuid(guard: Guard) -> None:
     watch = guard.start_watch()
     line = watch.line()
     watch.close()
-    assert line.startswith(f"watch 2 vm=NOT_FOUND name=- others=1 names={hex_of('Second VM')} ")
+    assert line.startswith(f"watch 3 vm=NOT_FOUND name=- others=1 names={hex_of('Second VM')} ")
 
 
 def test_watch_sends_keepalives_without_changes(guard: Guard) -> None:
@@ -637,7 +518,7 @@ def test_watch_sends_changes_at_once(tmp_path: Path) -> None:
         assert time.monotonic() - started < 3
         watch.close()
     finally:
-        _kill_loops(tmp_path)
+        kill_loops(tmp_path)
 
 
 def test_watch_rereads_power_conf(guard: Guard) -> None:
@@ -666,9 +547,9 @@ def test_watch_ends_when_twinraid_disconnects(guard: Guard) -> None:
     # Spätestens beim nächsten Lebenszeichen scheitert das Schreiben.
     watch.process.wait(timeout=5)
     deadline = time.monotonic() + 3
-    while _processes_of(session) and time.monotonic() < deadline:
+    while processes_of(session) and time.monotonic() < deadline:
         time.sleep(0.1)
-    assert _processes_of(session) == []
+    assert processes_of(session) == []
 
 
 def test_at_most_two_watch_loops(guard: Guard) -> None:
@@ -683,7 +564,7 @@ def test_at_most_two_watch_loops(guard: Guard) -> None:
     first.process.wait(timeout=5)
     # Auch Kindprozesse wie sleep halten die Sperre, bis sie enden.
     deadline = time.monotonic() + 3
-    while _processes_of(first.process.pid) and time.monotonic() < deadline:
+    while processes_of(first.process.pid) and time.monotonic() < deadline:
         time.sleep(0.1)
     fourth = guard.start_watch()
     fourth.line()
@@ -705,7 +586,7 @@ def test_watch_reports_unraid_connect(guard: Guard, marker: str) -> None:
     watch = guard.start_watch()
     line = watch.line()
     watch.close()
-    assert line.endswith(" connect=present flash_backup=inactive")
+    assert " connect=present flash_backup=inactive " in line
 
 
 def test_other_plugins_are_no_connect_marker(guard: Guard) -> None:
@@ -714,7 +595,7 @@ def test_other_plugins_are_no_connect_marker(guard: Guard) -> None:
     watch = guard.start_watch()
     line = watch.line()
     watch.close()
-    assert line.endswith(" connect=absent flash_backup=inactive")
+    assert " connect=absent flash_backup=inactive " in line
 
 
 @pytest.mark.parametrize(
@@ -748,7 +629,7 @@ def test_watch_reports_flash_backup(guard: Guard, content: str | None, expected:
     watch = guard.start_watch()
     line = watch.line()
     watch.close()
-    assert line.endswith(f" flash_backup={expected}")
+    assert f" flash_backup={expected} arc_max=- c_max=-" in line
 
 
 def test_watch_notices_connect_changes(guard: Guard) -> None:
@@ -756,6 +637,35 @@ def test_watch_notices_connect_changes(guard: Guard) -> None:
     assert " connect=absent " in watch.line()
     (guard.root / "var/log/plugins/dynamix.unraid.net.plg").touch()
     watch.line_with("connect=present")
+    watch.close()
+
+
+@pytest.mark.parametrize(
+    ("arc_max", "arcstats", "expected"),
+    [
+        (None, {}, "arc_max=- c_max=-"),
+        ("0", {"c_max": 16 * GIB, "size": 3 * GIB}, f"arc_max=0 c_max={16 * GIB}"),
+        (str(4 * GIB), {"c_max": 4 * GIB}, f"arc_max={4 * GIB} c_max={4 * GIB}"),
+        ("garbage", {"c_max": GIB}, f"arc_max=? c_max={GIB}"),
+        ("0", {"size": GIB}, "arc_max=0 c_max=?"),
+    ],
+)
+def test_watch_reports_the_arc_limit(
+    guard: Guard, arc_max: str | None, arcstats: dict[str, int], expected: str
+) -> None:
+    guard.zfs_module(arc_max, **arcstats)
+    watch = guard.start_watch()
+    line = watch.line()
+    watch.close()
+    assert line.endswith(f" flash_backup=inactive {expected}")
+
+
+def test_watch_notices_arc_changes(guard: Guard) -> None:
+    guard.zfs_module("0", c_max=16 * GIB)
+    watch = guard.start_watch()
+    assert " arc_max=0 " in watch.line()
+    guard.zfs_module(str(2 * GIB), c_max=2 * GIB)
+    watch.line_with(f"arc_max={2 * GIB} c_max={2 * GIB}")
     watch.close()
 
 
@@ -767,18 +677,29 @@ def test_repository_script_uses_fixed_paths_and_version() -> None:
     assert text.startswith("#!/bin/bash\n")
     assert "set -euo pipefail" in text
     assert "eval" not in text
-    assert "readonly VERSION=2\n" in text
+    assert "readonly VERSION=3\n" in text
     assert "readonly POWEROFF=/sbin/poweroff\n" in text
     assert "readonly VIRSH=/usr/bin/virsh\n" in text
     assert "readonly LOGGER=/usr/bin/logger\n" in text
     assert "readonly POWER_CONF=/boot/config/twinraid/power.conf\n" in text
     assert "export PATH=/usr/sbin:/usr/bin:/sbin:/bin\n" in text
+    # zfs, setpriv und findmnt über den festen PATH; ersetzt nur im Test.
+    assert "readonly ZFS=zfs\n" in text
+    assert "readonly SETPRIV=setpriv\n" in text
+    assert "readonly FINDMNT=findmnt\n" in text
+    assert "readonly MEMINFO=/proc/meminfo\n" in text
+    assert "readonly ZFS_MODULE=/sys/module/zfs\n" in text
+    assert 'readonly ARC_MAX_FILE="${ZFS_MODULE}/parameters/zfs_arc_max"\n' in text
+    assert "readonly ARCSTATS=/proc/spl/kstat/zfs/arcstats\n" in text
+    assert "readonly MEMORY_MARGIN=1073741824\n" in text
+    assert "readonly RECEIVE_LOCK=/var/run/twinraid-guard-receive.lock\n" in text
 
 
 def test_watch_line_format_is_documented() -> None:
     """Das Format der Zeile steht so auch im Konzept (Abschnitt 3.5)."""
     concept = (REPO_ROOT / "docs" / "KONZEPT.md").read_text()
     assert (
-        "watch 2 vm=<Zustand> name=<Hex|-> others=<Anzahl|?> names=<Hex>,<Hex>…|- "
-        "connect=<present|absent> flash_backup=<active|inactive|unknown>"
+        "watch 3 vm=<Zustand> name=<Hex|-> others=<Anzahl|?> names=<Hex>,<Hex>…|- "
+        "connect=<present|absent> flash_backup=<active|inactive|unknown> "
+        "arc_max=<Byte|-|?> c_max=<Byte|-|?>"
     ) in concept

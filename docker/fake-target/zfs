@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""Nachgebautes zfs für die Tests von guard.sh (pytest und docker/ssh-test.sh).
+
+Nur die Aufrufe, die guard.sh macht, mit derselben Ausgabe (-H: Felder mit Tabulator).
+Das echte Verhalten von OpenZFS prüft docker/guard-sync-test.sh mit Pools in Dateien.
+Zustand im Ordner FAKE_ZFS_STATE (Standard /state):
+
+  zfs.json   {"objects": {Name: Objekt}, "allow": {Dataset: [Zeile, …]},
+              "denied": [Eigenschaft, …], "txg": Zahl, "guid": Zahl}
+             Objekt: {"type": "filesystem"|"volume"|"snapshot",
+                      "props": {Eigenschaft: [Wert, Quelle]}, "mounted": bool,
+                      "txg": Zahl, optional "holds": [Name], "origin": Snapshot,
+                      "mounted_at": Pfad (findmnt meldet diesen statt mountpoint),
+                      "modified": bool (Ziel seit dem letzten Snapshot verändert)}
+             "denied": Rechte, die dem Empfang fehlen: -o dafür wird mit einer Warnung
+             übergangen, Exit-Code 0 (wie Z1b auf OpenZFS 2.4).
+  zfs.log    jeder Aufruf als JSON-Zeile {"uid": …, "args": […]}
+
+zfs receive liest statt eines echten Stroms ein JSON-Objekt von stdin:
+  {"full": true|false, "from_guid": Zahl (inkrementell),
+   "snapshots": [{"name": …, "guid": …, "creation": …, "props": {…}}],
+   "props": {Eigenschaft: Wert} (aus dem Strom, Quelle received),
+   "children": [Name, …] (wie zfs send -R), "volume": true (Strom eines Volumes),
+   "fail_after": Anzahl (danach bricht der Strom ab), "error": Meldung}
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+STATE = Path(os.environ.get("FAKE_ZFS_STATE", "/state"))
+DATA = STATE / "zfs.json"
+DEFAULTS = {
+    "readonly": "off",
+    "exec": "on",
+    "setuid": "on",
+    "devices": "on",
+    "primarycache": "all",
+    "secondarycache": "all",
+    "compression": "off",
+    "atime": "on",
+    "xattr": "on",
+    "acltype": "off",
+    "recordsize": "128K",
+    "snapdir": "hidden",
+    "sync": "standard",
+    "dedup": "off",
+    "copies": "1",
+    "checksum": "on",
+    "quota": "none",
+    "refquota": "none",
+    "reservation": "none",
+    "refreservation": "none",
+    "canmount": "on",
+    "sharesmb": "off",
+    "sharenfs": "off",
+    "volmode": "default",
+}
+# Nicht vererbte Eigenschaften (zfsprops(7)).
+NOT_INHERITED = {"canmount", "quota", "refquota", "reservation", "refreservation"}
+Objects = dict[str, dict[str, Any]]
+
+
+def say(text: str) -> None:
+    sys.stdout.write(text + "\n")
+
+
+def fail(message: str, code: int = 1) -> None:
+    sys.stderr.write(message + "\n")
+    sys.exit(code)
+
+
+def load() -> dict[str, Any]:
+    try:
+        data: dict[str, Any] = json.loads(DATA.read_text())
+    except FileNotFoundError:
+        data = {}
+    data.setdefault("objects", {})
+    data.setdefault("allow", {})
+    data.setdefault("denied", [])
+    data.setdefault("txg", 100)
+    data.setdefault("guid", 9000)
+    return data
+
+
+def save(data: dict[str, Any]) -> None:
+    # An Ort und Stelle: im Test des SSH-Zugangs schreibt auch UID 64000 (Datei 0666).
+    with DATA.open("r+" if DATA.exists() else "w") as handle:
+        handle.write(json.dumps(data, indent=1))
+        handle.truncate()
+
+
+def parent_of(name: str) -> str | None:
+    return name.rsplit("/", 1)[0] if "/" in name else None
+
+
+def value(objects: Objects, name: str, prop: str) -> tuple[str, str]:
+    """Wert und Quelle einer Eigenschaft wie zfs get (ohne -p bei Zahlen)."""
+    obj = objects[name]
+    kind = obj["type"]
+    builtin = {
+        "name": name,
+        "type": kind,
+        "createtxg": str(obj.get("txg", 0)),
+    }
+    if prop in builtin:
+        return builtin[prop], "-"
+    if prop == "mounted":
+        return ("yes" if obj.get("mounted") else "no") if kind == "filesystem" else "-", "-"
+    if prop == "clones":
+        clones = sorted(other for other, o in objects.items() if o.get("origin") == name)
+        return (",".join(clones), "-") if kind == "snapshot" else ("-", "-")
+    if prop in ("used", "available") and prop not in obj["props"]:
+        return "0", "-"
+    if prop in obj["props"]:
+        stored = obj["props"][prop]
+        return str(stored[0]), str(stored[1])
+    if ":" in prop or kind == "snapshot":
+        return "-", "-"
+    if kind == "volume" and prop != "volmode" and prop in DEFAULTS:
+        return "-", "-"
+    if prop == "mountpoint":
+        parent = parent_of(name)
+        if parent is None:
+            return "/" + name, "default"
+        mountpoint, source = value(objects, parent, "mountpoint")
+        origin = source if source.startswith("inherited") else f"inherited from {parent}"
+        return f"{mountpoint}/{name.rsplit('/', 1)[1]}", origin
+    if prop in DEFAULTS:
+        parent = parent_of(name)
+        if parent is not None and prop not in NOT_INHERITED:
+            inherited, source = value(objects, parent, prop)
+            if source in ("local", "received"):
+                return inherited, f"inherited from {parent}"
+            if source.startswith("inherited"):
+                return inherited, source
+        return DEFAULTS[prop], "default"
+    return "-", "-"
+
+
+def options(arguments: list[str], flags: str, with_value: str) -> tuple[dict[str, Any], list[str]]:
+    """Kurzoptionen wie getopt; "--" beendet sie."""
+    found: dict[str, Any] = {}
+    rest = list(arguments)
+    while rest and rest[0].startswith("-") and rest[0] != "-":
+        item = rest.pop(0)
+        if item == "--":
+            break
+        for position, letter in enumerate(item[1:]):
+            if letter in with_value:
+                found.setdefault(letter, []).append(item[position + 2 :] or rest.pop(0))
+                break
+            if letter not in flags:
+                fail(f"invalid option '{letter}'", 2)
+            found[letter] = True
+    return found, rest
+
+
+def selected(
+    objects: Objects, roots: list[str], opts: dict[str, Any], default: str, listing: bool
+) -> list[str]:
+    """Objekte wie zfs get bzw. zfs list mit -r, -d und -t."""
+    types = set(",".join(opts.get("t", [default])).split(","))
+    depth = int(opts["d"][0]) if "d" in opts else (None if "r" in opts else 0)
+    result: list[str] = []
+    for root in roots:
+        if root not in objects:
+            fail(f"cannot open '{root}': dataset does not exist")
+        if objects[root]["type"] == "snapshot":
+            result.append(root)
+            continue
+        for name in sorted(objects, key=lambda n: (n.split("@")[0], objects[n].get("txg", 0))):
+            base = name.split("@")[0]
+            kind = objects[name]["type"]
+            if kind not in types or (base != root and not base.startswith(root + "/")):
+                continue
+            level = base[len(root) :].count("/")
+            if kind == "snapshot":
+                # Snapshots zählen eine Ebene tiefer als ihr Dataset; ohne -r und -d
+                # zeigt zfs list die Snapshots des genannten Datasets.
+                wanted = depth is None or level + 1 <= depth or (listing and level == 0)
+            else:
+                wanted = depth is None or level <= depth
+            if wanted:
+                result.append(name)
+    return result
+
+
+def do_get(data: dict[str, Any], arguments: list[str]) -> None:
+    opts, rest = options(arguments, "Hpr", "dots")
+    fields = opts.get("o", ["name,property,value,source"])[0].split(",")
+    sources = ",".join(opts.get("s", ["local,default,inherited,received,temporary,-"])).split(",")
+    props, names = rest[0], rest[1:]
+    objects: Objects = data["objects"]
+    for name in selected(objects, names, opts, "filesystem,volume,snapshot", False):
+        wanted = sorted(objects[name]["props"]) if props == "all" else props.split(",")
+        for prop in wanted:
+            shown, source = value(objects, name, prop)
+            kind = source.split(" ")[0]
+            if kind not in sources and source not in sources:
+                continue
+            columns = {"name": name, "property": prop, "value": shown, "source": source}
+            say("\t".join(columns[field] for field in fields))
+
+
+def do_list(data: dict[str, Any], arguments: list[str]) -> None:
+    opts, names = options(arguments, "Hpr", "dots")
+    fields = opts.get("o", ["name"])[0].split(",")
+    objects: Objects = data["objects"]
+    found = selected(objects, names, opts, "filesystem,volume", True)
+    if "s" in opts:
+        found.sort(key=lambda n: objects[n].get("txg", 0))
+    for name in found:
+        columns = []
+        for field in fields:
+            shown, _ = value(objects, name, field)
+            if field == "guid":
+                shown = str(objects[name]["props"].get("guid", ["0"])[0])
+            if field == "creation":
+                shown = str(objects[name]["props"].get("creation", ["0"])[0])
+            columns.append(shown)
+        say("\t".join(columns))
+
+
+def need(objects: Objects, name: str) -> dict[str, Any]:
+    if name not in objects:
+        fail(f"cannot open '{name}': dataset does not exist")
+    obj: dict[str, Any] = objects[name]
+    return obj
+
+
+def do_set(data: dict[str, Any], arguments: list[str]) -> None:
+    _, rest = options(arguments, "u", "")
+    assignment, name = rest
+    prop, new = assignment.split("=", 1)
+    need(data["objects"], name)["props"][prop] = [new, "local"]
+    save(data)
+
+
+def do_receive(data: dict[str, Any], arguments: list[str]) -> None:
+    opts, rest = options(arguments, "u", "o")
+    target = rest[0]
+    objects: Objects = data["objects"]
+    stream = json.loads(sys.stdin.read() or "{}")
+    if "error" in stream:
+        fail(stream["error"])
+    if stream.get("full", True):
+        if target in objects:
+            fail(
+                f"cannot receive new filesystem stream: destination '{target}' exists\n"
+                "must specify -F to overwrite it"
+            )
+        parent = parent_of(target)
+        if parent is None or parent not in objects:
+            fail(f"cannot receive: '{parent}' does not exist")
+        data["txg"] += 1
+        kind = "volume" if stream.get("volume") else "filesystem"
+        objects[target] = {"type": kind, "props": {}, "mounted": False, "txg": data["txg"]}
+    else:
+        obj = need(objects, target)
+        snaps = [n for n in objects if n.startswith(target + "@")]
+        newest = max(snaps, key=lambda n: objects[n]["txg"]) if snaps else None
+        if obj.get("modified"):
+            fail(
+                f"cannot receive incremental stream: destination {target} has been modified\n"
+                "since most recent snapshot"
+            )
+        if newest is None or str(objects[newest]["props"]["guid"][0]) != str(stream["from_guid"]):
+            fail(
+                f"cannot receive incremental stream: most recent snapshot of {target} does not\n"
+                "match incremental source"
+            )
+    obj = objects[target]
+    for prop, new in stream.get("props", {}).items():
+        obj["props"][prop] = [str(new), "received"]
+    for assignment in opts.get("o", []):
+        prop, new = assignment.split("=", 1)
+        if prop in data["denied"]:
+            sys.stderr.write(f"cannot receive {prop} property on {target}: permission denied\n")
+            continue
+        obj["props"][prop] = [new, "local"]
+    for child in stream.get("children", []):
+        data["txg"] += 1
+        objects[f"{target}/{child}"] = {
+            "type": "filesystem",
+            "props": {"mountpoint": ["/" + child, "received"]},
+            "mounted": False,
+            "txg": data["txg"],
+        }
+    for index, snapshot in enumerate(stream.get("snapshots", [])):
+        if index == stream.get("fail_after"):
+            save(data)
+            fail("cannot receive incremental stream: failed to read from stream")
+        name = f"{target}@{snapshot['name']}"
+        if name in objects:
+            fail(f"cannot receive: destination '{name}' already exists")
+        data["txg"] += 1
+        props = {"guid": [str(snapshot["guid"]), "-"], "creation": [str(snapshot["creation"]), "-"]}
+        for prop, new in snapshot.get("props", {}).items():
+            props[prop] = [str(new), "received"]
+        objects[name] = {"type": "snapshot", "props": props, "txg": data["txg"]}
+    save(data)
+
+
+def do_mount(data: dict[str, Any], arguments: list[str], mount: bool) -> None:
+    _, rest = options(arguments, "f", "")
+    obj = need(data["objects"], rest[0])
+    if mount and (
+        obj.get("mount_fails") or value(data["objects"], rest[0], "canmount")[0] == "off"
+    ):
+        fail(f"cannot mount '{rest[0]}': mount failed")
+    obj["mounted"] = mount
+    save(data)
+
+
+def do_destroy(data: dict[str, Any], arguments: list[str]) -> None:
+    _, rest = options(arguments, "", "")
+    name = rest[0]
+    objects: Objects = data["objects"]
+    obj = need(objects, name)
+    if obj["type"] != "snapshot" or len(rest) != 1:
+        fail("this fake destroys only single snapshots")
+    if obj.get("holds"):
+        fail(f"cannot destroy snapshot {name}: dataset is busy")
+    if any(o.get("origin") == name for o in objects.values()):
+        fail(f"cannot destroy '{name}': snapshot has dependent clones")
+    del objects[name]
+    save(data)
+
+
+def do_allow(data: dict[str, Any], arguments: list[str]) -> None:
+    _, rest = options(arguments, "", "")
+    name: str | None = rest[0]
+    need(data["objects"], rest[0])
+    while name is not None:
+        for line in data["allow"].get(name, []):
+            say(line)
+        name = parent_of(name)
+
+
+def main(arguments: list[str]) -> None:
+    with (STATE / "zfs.log").open("a") as handle:
+        handle.write(json.dumps({"uid": os.getuid(), "args": arguments}) + "\n")
+    data = load()
+    command, rest = arguments[0], arguments[1:]
+    handlers = {
+        "get": lambda: do_get(data, rest),
+        "list": lambda: do_list(data, rest),
+        "set": lambda: do_set(data, rest),
+        "receive": lambda: do_receive(data, rest),
+        "mount": lambda: do_mount(data, rest, True),
+        "unmount": lambda: do_mount(data, rest, False),
+        "destroy": lambda: do_destroy(data, rest),
+        "allow": lambda: do_allow(data, rest),
+    }
+    if command not in handlers:
+        fail(f"unknown command '{command}'", 2)
+    handlers[command]()
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
