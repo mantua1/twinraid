@@ -3,10 +3,12 @@
 #
 # Prüft auf den echten Servern, wie sich OpenZFS bei genau den Befehlen verhält, die
 # Wächter und guard.sh ab v0.5.1 verwenden: Snapshot mehrerer Datasets in einem Aufruf,
-# Senden mit -L -c -e, Empfang mit der festen Befehlszeile (Eigenschaften mit -o direkt
-# am Spiegel, -x für alles andere, nie -F), was ohne -F scheitert, Lesezeichen, Hold,
-# zfs diff, die Größenschätzung, Klone für den Notbetrieb, ob receive:append unter
-# Linux als zweite Sperre trägt und auf Groß, ob MemAvailable den ARC schon enthält.
+# Senden mit -L -c -e, Empfang mit der festen Befehlszeile (alle Eigenschaften mit -o
+# direkt am Spiegel, -u, Prüfung vor dem Einhängen, nie -F), ein absichtlich böser Strom
+# mit Sperre und Zurücksetzen, was ohne -F scheitert, Lesezeichen, Hold, zfs diff, die
+# Größenschätzung, Klone für den Notbetrieb, ob -x wirkt (nur als Befund), ob
+# receive:append unter Linux als zweite Sperre trägt und auf Groß, ob MemAvailable den
+# ARC schon enthält.
 #
 #   zfs-check.sh target    auf Groß, nach „Groß prüfen“ (mainpool/twinraid-mirror muss es
 #                          geben). Arbeitet nur in mainpool/twinraid-mirror/zfs-check.
