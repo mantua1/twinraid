@@ -123,6 +123,8 @@ expect_contains "Z1b: receive without root with all rights" "${out}" "Z1b: Empfa
 expect_contains "Z1b: smallest set of rights reported" "${out}" "Z1b: nötige Rechte: receive:append,create,mount"
 expect_contains "Z1b: incremental receive without root" "${out}" "Z1b: inkrementeller Empfang ohne root (Spiegel eingehängt)"
 expect_contains "Z1b: -F prevented" "${out}" "Z1b: Empfang mit -F verhindert"
+expect_contains "Z1b: missing right leaves the value unset" "${out}" "Z1b: ohne Recht exec: Wert nicht gesetzt"
+expect_contains "Z1b: missing right locks (props-not-applied)" "${out}" "Z1b: fehlendes Recht: gesperrt (props-not-applied)"
 expect_equal "nothing left, no permissions on twinraid-mirror" "$(state)" "${before}"
 expect_equal "foreign data untouched" "$(cat /mnt/mainpool/isos/bleibt.txt)" "fremde Daten"
 expect_equal "foreign snapshot untouched" "$(zfs list -H -o name -t snapshot -r mainpool/isos)" \

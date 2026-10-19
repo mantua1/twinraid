@@ -153,22 +153,33 @@ received_properties() {
   done
 }
 
+# Hängt einen Spiegel aus (ein schon eingehängter nach einem inkrementellen Empfang) und
+# sperrt ihn mit canmount=noauto: Er bleibt auch nach einem Neustart ausgehängt, bis er von
+# Hand zurückgesetzt ist (Konzept 3.7).
+lock_mirror() {
+  if [[ "$(value_of mounted "$1")" == yes ]]; then
+    zfs unmount -- "$1" >/dev/null 2>&1 || true
+  fi
+  zfs set -- canmount=noauto "$1" >/dev/null 2>&1 || true
+}
+
 # Wie guard.sh nach dem Empfang (Konzept 3.7): erst prüfen, dann einhängen, dann den Ort
-# prüfen. Rückgabe: 0 eingehängt am festen Ort, 2 Eigenschaften aus dem Strom (bleibt
-# ausgehängt, gesperrt mit canmount=noauto), 3 Einhängen gescheitert oder falscher Ort
-# (wieder ausgehängt).
+# prüfen. Rückgabe: 0 eingehängt am festen Ort, 2 Eigenschaften aus dem Strom (gesperrt),
+# 4 ein fester Wert fehlt (props-not-applied, gesperrt), 3 Einhängen gescheitert oder falscher
+# Ort (wieder ausgehängt).
 verify_and_mount() {
   local target="$1" where
   mirror_mountpoint "${target}"
   RECEIVED_FOUND="$(received_properties "${target}")"
   if [[ -n "${RECEIVED_FOUND}" ]]; then
-    # Ein schon eingehängter Spiegel (inkrementeller Empfang) wird ausgehängt; canmount=noauto
-    # hält ihn auch nach einem Neustart ausgehängt, bis er von Hand zurückgesetzt ist.
-    if [[ "$(value_of mounted "${target}")" == yes ]]; then
-      zfs unmount -- "${target}" >/dev/null 2>&1 || true
-    fi
-    zfs set -- canmount=noauto "${target}" >/dev/null 2>&1 || true
+    lock_mirror "${target}"
     return 2
+  fi
+  # Fehlt dem Empfang ein Recht, übergeht zfs receive das -o mit Exit-Code 0; der Wert hat
+  # dann die Quelle default oder inherited, nicht received. Pflicht nach jedem Empfang.
+  if ! mirror_properties_ok "${target}"; then
+    lock_mirror "${target}"
+    return 4
   fi
   if [[ "$(value_of mounted "${target}")" != yes ]]; then
     zfs mount -- "${target}" >/dev/null 2>&1 || return 3
@@ -1038,6 +1049,62 @@ z1b_trial() {
   ((ok))
 }
 
+# Ein absichtlich fehlendes Recht: zfs receive endet mit Exit-Code 0, übergeht aber das -o.
+# Die Prüfung nach dem Empfang muss sperren wie bei received-properties (props-not-applied).
+check_missing_right() {
+  local parent="$1" perms="$2" src="$3" missing="${1}/ohne-recht" list=() reduced="" right=""
+  local q rc source
+  IFS=, read -r -a list <<<"${perms}"
+  # Bevorzugt exec (ein Spiegel mit exec=on wäre gefährlich), sonst das erste Recht für eine
+  # Eigenschaft der festen Befehlszeile.
+  if [[ ",${perms}," == *",exec,"* ]]; then
+    right="exec"
+  else
+    for q in "${list[@]}"; do
+      if [[ ",${RECV_BASE_PERMS},userprop,mountpoint," != *",${q},"* ]]; then
+        right="${q}"
+        break
+      fi
+    done
+  fi
+  for q in "${list[@]}"; do
+    if [[ "${q}" != "${right}" ]]; then
+      reduced+="${reduced:+,}${q}"
+    fi
+  done
+  if [[ -z "${right}" ]]; then
+    info "Z1b: kein Recht für ein festes -o in der Liste; Fall mit fehlendem Recht entfällt"
+    return 0
+  fi
+  grant_receiver "${parent}" "${reduced}" || bad "Z1b: Rechte ohne ${right} nicht gesetzt"
+  rc=0
+  receive_as_receiver "${missing}" "${src}@a" || rc=$?
+  if ((rc == 0)); then
+    info "Z1b: ohne Recht ${right}: zfs receive endet mit Exit-Code 0"
+  else
+    info "Z1b: ohne Recht ${right}: zfs receive scheitert (Code ${rc}: ${RECV_ERROR})"
+  fi
+  if zfs list -H -o name -- "${missing}" >/dev/null 2>&1; then
+    source="$(prop_source "${right}" "${missing}")"
+    if [[ "${source}" != local && "${source}" != received ]]; then
+      ok "Z1b: ohne Recht ${right}: Wert nicht gesetzt, Quelle ${source} (nicht received)"
+    else
+      bad "Z1b: ohne Recht ${right}: Quelle ${source}"
+    fi
+    rc=0
+    verify_and_mount "${missing}" || rc=$?
+    if ((rc == 4)) && [[ "$(value_of mounted "${missing}")" == no &&
+      "$(value_of canmount "${missing}")" == noauto &&
+      "$(prop_source canmount "${missing}")" == local ]]; then
+      ok "Z1b: fehlendes Recht: gesperrt (props-not-applied), nicht eingehängt, canmount=noauto"
+    else
+      bad "Z1b: fehlendes Recht nicht gesperrt (Code ${rc})"
+    fi
+    drop_dataset "${missing}"
+  fi
+  grant_receiver "${parent}" "${perms}" || bad "Z1b: Rechte nicht wiederhergestellt"
+}
+
 check_receive_unprivileged() {
   local src="${ROOT}/z1b-quelle" parent="${ROOT}/z1b" mirror perms all p kept=() dir rc line
   echo "== Z1b: Empfang ohne root mit der festen Befehlszeile"
@@ -1155,6 +1222,7 @@ check_receive_unprivileged() {
   fi
   expect_success "Z1b: Löschen eines alten Snapshots als root (Aufbewahrung)" \
     zfs destroy -- "${mirror}@a"
+  check_missing_right "${parent}" "${perms}" "${src}"
   if zfs unallow -u "${RECV_UID}" -- "${parent}" >/dev/null 2>&1; then
     ok "Z1b: Rechte wieder entfernt"
   else

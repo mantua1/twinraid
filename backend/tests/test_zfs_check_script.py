@@ -61,12 +61,24 @@ def _function(name: str) -> str:
     return text[start : text.index("\n}\n", start)]
 
 
-def test_lock_after_properties_from_the_stream() -> None:
-    """Eigenschaften aus dem Strom: aushängen, dann canmount=noauto, dann Ablehnung."""
+def test_lock_after_properties_from_the_stream_or_missing_values() -> None:
+    """received-properties (2) und props-not-applied (4): sperren, dann ablehnen, nie einhängen.
+
+    Konzept 3.7: Fehlt ein fester Wert nach dem Empfang, sperrt guard.sh wie bei Eigenschaften
+    aus dem Strom; die Prüfung ist Pflicht nach jedem Empfang.
+    """
+    lock = _function("lock_mirror")
+    assert lock.index("zfs unmount --") < lock.index('zfs set -- canmount=noauto "$1"')
     function = _function("verify_and_mount")
-    lock = function.index('zfs set -- canmount=noauto "${target}"')
-    assert function.index("zfs unmount --") < lock < function.index("return 2")
-    assert function.index("return 2") < function.index("zfs mount --")
+    received = function.index('RECEIVED_FOUND="$(received_properties')
+    fixed = function.index('if ! mirror_properties_ok "${target}"; then')
+    mount = function.index("zfs mount --")
+    assert received < function.index("return 2") < fixed < function.index("return 4") < mount
+    assert function.count('lock_mirror "${target}"') == 2
+    # Die Zeile mit absichtlich fehlendem Recht muss genau so gesperrt werden.
+    missing = _function("check_missing_right")
+    assert "((rc == 4))" in missing
+    assert '"$(value_of canmount "${missing}")" == noauto' in missing
 
 
 def test_no_samba_share_on_unraid_target() -> None:
