@@ -50,6 +50,7 @@ function AuthenticatedApp({
             info={data.info}
             tls={data.tls}
             notices={data.stream.status?.notices ?? []}
+            sourceGuard={data.stream.status?.source_guard ?? null}
             onBack={() => {
               setView("dashboard");
             }}

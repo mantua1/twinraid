@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<!--
+  Unraid-Template für den Testcontainer des Wächters (Konzept 3.6, docs/EINRICHTUNG.md).
+  Der Container schreibt alle 0,1 s einen Zähler nach /data/counter und eine Zeile nach
+  /data/log; beim Anhalten (SIGTERM) schreibt er „sauber beendet“ und endet. So zeigt
+  ein Test, dass der Wächter ihn sauber angehalten und wieder gestartet hat.
+  Installation: Datei nach /boot/config/plugins/dockerMan/templates-user/my-twinraid-testcontainer.xml
+  auf Unraid Klein kopieren, dann unter Docker → Add Container auswählen.
+-->
+<Container version="2">
+  <Name>twinraid-testcontainer</Name>
+  <Repository>busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e</Repository>
+  <Registry>https://hub.docker.com/_/busybox</Registry>
+  <Network>none</Network>
+  <MyIP/>
+  <MyMAC/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/mantua1/twinraid/issues</Support>
+  <Project>https://github.com/mantua1/twinraid</Project>
+  <Overview>Nur für Tests von TwinRaid: schreibt alle 0,1 s einen Zähler in die Test-Share twinraidtest und beim Anhalten „sauber beendet“. Kein Netzwerk, keine Capabilities.</Overview>
+  <Category>Tools:</Category>
+  <WebUI/>
+  <TemplateURL/>
+  <Icon/>
+  <ExtraParams>--read-only --cap-drop=ALL --security-opt=no-new-privileges</ExtraParams>
+  <PostArgs>sh -c 'trap &quot;echo sauber beendet &gt;&gt; /data/log; exit 0&quot; TERM; i=0; while true; do i=$((i+1)); echo $i &gt; /data/counter; echo &quot;zaehler $i&quot; &gt;&gt; /data/log; if [ $((i % 6000)) -eq 0 ]; then : &gt; /data/log; fi; sleep 0.1; done'</PostArgs>
+  <CPUset/>
+  <Requires>Die Share twinraidtest muss es geben (auf Klein ein eigenes Dataset mainpool/twinraidtest).</Requires>
+  <Config Name="Daten" Target="/data" Default="/mnt/user/twinraidtest/testcontainer" Mode="rw" Description="Ordner in der Test-Share twinraidtest für Zähler und Log." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/twinraidtest/testcontainer</Config>
+</Container>

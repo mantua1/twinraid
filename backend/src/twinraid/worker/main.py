@@ -69,7 +69,9 @@ def main() -> int:
         ActionLog(paths.action_log),
         tour_active=integrations.tour_active,
     )
-    handler = CommandHandler(monitor, password_check, jobs, mode, actions)
+    handler = CommandHandler(
+        monitor, password_check, jobs, mode, actions, integrations.source_guard
+    )
     server = WorkerServer(runtime.socket_path(env), allowed_uid, handler)
     log_enabled_actions(actions, mode)
     try:

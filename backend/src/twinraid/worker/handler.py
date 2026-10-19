@@ -3,6 +3,7 @@
 from typing import Protocol
 
 from twinraid.integrations.jobs import JobState
+from twinraid.integrations.source_guard import SourceGuardSource
 from twinraid.shared.actions import ActionBlocker, ActionName
 from twinraid.shared.ipc import (
     SYNC_COMMANDS,
@@ -38,12 +39,14 @@ class CommandHandler:
         jobs: JobState,
         mode: RunMode,
         actions: ActionCoordinator,
+        source_guard: SourceGuardSource,
     ) -> None:
         self._status = status
         self._password_check = password_check
         self._jobs = jobs
         self._mode = mode
         self._actions = actions
+        self._source_guard = source_guard
 
     async def handle(self, command: Command) -> Response:
         # Der Sync folgt in Phase 5. Im Modus real gesperrt, bevor irgendetwas
@@ -79,12 +82,16 @@ class CommandHandler:
 
     def snapshot(self) -> StatusSnapshot:
         status, actions = self._actions.snapshot(self._status.current())
+        # Der Wächter wird erst hier ausgewertet, damit das Alter des Herzschlags stimmt.
+        guard = self._source_guard.report()
         return StatusSnapshot.model_validate(
             {
                 **status.model_dump(),
+                "notices": (*status.notices, *guard.notices),
                 "job_running": self._jobs.is_running(),
                 "password_set": self._password_check.is_set(),
                 "actions": actions,
+                "source_guard": guard.status,
             }
         )
 

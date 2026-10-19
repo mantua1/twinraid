@@ -33,10 +33,184 @@ export const STATUS_NOTICES = [
   "target_connect_plugin",
   "target_flash_backup",
   "vm_name_mismatch",
+  // Kachel Klein, ab v0.5.0 (Konzept 3.6).
+  "source_connect_plugin",
+  "source_flash_backup",
+  "source_guard_allows_self",
 ] as const;
 export type StatusNotice = (typeof STATUS_NOTICES)[number];
 
 export type RunMode = "mock" | "real";
+
+// Wächter auf Klein, ab v0.5.0 (Konzept 3.6); Spiegel von backend/src/twinraid/shared/source_guard.py.
+export const GUARD_STATES = [
+  "active",
+  "not_mounted",
+  "inactive",
+  "error",
+  "misconfigured",
+  "invalid_status",
+] as const;
+export type GuardState = (typeof GUARD_STATES)[number];
+
+export const GUARD_SETUP_PROBLEMS = [
+  "state_not_mounted",
+  "request_not_mounted",
+  "state_writable",
+  "request_read_only",
+  "request_is_directory",
+  "request_not_regular",
+] as const;
+export type GuardSetupProblem = (typeof GUARD_SETUP_PROBLEMS)[number];
+
+export const GUARD_STATUS_PROBLEMS = [
+  "not_regular",
+  "unreadable",
+  "too_large",
+  "bad_json",
+  "schema",
+  "protocol_mismatch",
+  "heartbeat_future",
+] as const;
+export type GuardStatusProblem = (typeof GUARD_STATUS_PROBLEMS)[number];
+
+export const GUARD_ERRORS = [
+  "config_invalid",
+  "misconfigured",
+  "request_not_a_file",
+  "state_lost",
+  "docker_unavailable",
+] as const;
+export type GuardError = (typeof GUARD_ERRORS)[number];
+
+export const GUARD_ERROR_DETAILS = [
+  "missing_file",
+  "bad_owner",
+  "too_long",
+  "syntax",
+  "duplicate",
+  "bad_value",
+  "forbidden_dataset",
+  "too_many",
+  "unknown_key",
+  "allow_contains_twinraid",
+  "base_unusable",
+  "private_unusable",
+  "state_unusable",
+  "in_unusable",
+  "in_unexpected_content",
+  "mount_failed",
+  "in_wrong_mount",
+  "request_create_failed",
+  "request_is_directory",
+  "request_is_symlink",
+  "request_not_regular",
+  "request_bad_owner",
+  "request_hardlink",
+] as const;
+export type GuardErrorDetail = (typeof GUARD_ERROR_DETAILS)[number];
+
+export const GUARD_CONTAINER_STATES = ["running", "stopped", "missing", "self", "unknown"] as const;
+export type GuardContainerState = (typeof GUARD_CONTAINER_STATES)[number];
+
+export const GUARD_RUN_ENDS = [
+  "finish",
+  "deadman_heartbeat",
+  "deadman_max",
+  "stop_command",
+] as const;
+export type GuardRunEnd = (typeof GUARD_RUN_ENDS)[number];
+
+export const GUARD_RESTARTS = [
+  "started",
+  "already_running",
+  "changed",
+  "gone",
+  "start_failed",
+] as const;
+export type GuardRestart = (typeof GUARD_RESTARTS)[number];
+
+export const GUARD_SELF_DATASETS = [
+  "found",
+  "missing",
+  "outside",
+  "no_container",
+  "unknown",
+] as const;
+export type GuardSelfDataset = (typeof GUARD_SELF_DATASETS)[number];
+
+export interface GuardContainer {
+  name: string;
+  state: GuardContainerState;
+}
+
+export interface GuardRun {
+  opened_at: string;
+  heartbeat_deadline: string;
+  max_deadline: string;
+  stopped: string[];
+}
+
+export interface GuardLastRun {
+  opened_at: string;
+  closed_at: string;
+  reason: GuardRunEnd;
+  containers: { name: string; result: GuardRestart }[];
+}
+
+export interface GuardDataset {
+  name: string;
+  // null: unbekannt, weil ZFS nicht verfügbar ist.
+  present: boolean | null;
+  referenced: number | null;
+  compression: string | null;
+}
+
+export interface GuardZfs {
+  state: "ok" | "unavailable";
+  pool_used: number | null;
+  pool_available: number | null;
+  datasets: GuardDataset[];
+  self_dataset: GuardSelfDataset;
+}
+
+export interface GuardLimits {
+  max_stop_minutes: number;
+  heartbeat_timeout_seconds: number;
+  stop_timeout_seconds: number;
+  min_run_interval_minutes: number;
+  max_deletions: number;
+  snapshot_keep_days: number;
+  snapshot_reserve_percent: number;
+}
+
+// Inhalt eines frischen Status (Herzschlag höchstens 30 s alt).
+export interface GuardDetails {
+  version: number;
+  started_at: string;
+  allowed: GuardContainer[];
+  run: GuardRun | null;
+  last_run: GuardLastRun | null;
+  // Frühester nächster Lauf (Pause zwischen zwei Läufen).
+  run_allowed_at: string | null;
+  zfs: GuardZfs;
+  limits: GuardLimits;
+  target_configured: boolean;
+  target_port: number;
+  rejected_count: number;
+}
+
+export interface SourceGuardStatus {
+  state: GuardState;
+  setup_problem: GuardSetupProblem | null;
+  status_problem: GuardStatusProblem | null;
+  error: GuardError | null;
+  error_detail: GuardErrorDetail | null;
+  config_line: number | null;
+  heartbeat_at: string | null;
+  heartbeat_age_seconds: number | null;
+  details: GuardDetails | null;
+}
 
 export interface ResourceInfo {
   state: ResourceState;
@@ -157,6 +331,8 @@ export interface StatusSnapshot {
   notices: StatusNotice[];
   // Der Worker wartet nach einem Fehler der Statusverbindung (ab v0.4.4); sonst null.
   watch_retry: WatchRetry | null;
+  // Wächter auf Klein (ab v0.5.0).
+  source_guard: SourceGuardStatus;
 }
 
 export interface AppInfo {

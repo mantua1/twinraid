@@ -1,0 +1,26 @@
+# TwinRaid: Konfiguration des Wächters auf Unraid Klein (Konzept 3.6).
+# Ablage: /boot/config/twinraid/source-guard.conf. Keine Secrets.
+# Änderungen gelten nach "source-guard.sh restart"; prüfen mit "source-guard.sh check-config".
+# Eine Zeile je Wert, Kommentare mit "#". Unbekannte oder fehlerhafte Zeilen machen
+# die ganze Datei ungültig (config_invalid): Dann gilt keine Freigabe.
+
+# Container, die der Wächter für den Snapshot anhalten darf (Name wie bei Docker).
+# TwinRaid selbst darf hier nie stehen. Höchstens 50 Einträge für allow und deny zusammen.
+allow twinraid-testcontainer
+# deny <Name>                      # zusätzlich nie anhalten
+
+max_stop_minutes 20                # Höchstzeit eines Laufs (5–120)
+heartbeat_timeout_seconds 120      # Frist ohne ping (30–600)
+stop_timeout_seconds 60            # docker stop vor SIGKILL (10–600)
+min_run_interval_minutes 30        # Pause zwischen zwei Läufen (10–1440); aufheben nur von Hand
+                                   # mit "source-guard.sh reset-run-interval"
+
+# Datasets mainpool/<Name>, die gespiegelt werden (ab v0.5.1). Nie system oder domains.
+dataset twinraidtest
+max_deletions 1000                 # Löschgrenze je Job, Summe über die Datasets
+
+# Ziel für das Senden (ab v0.5.1).
+target_host 192.168.10.11          # Unraid Groß (Beispielwert)
+target_port 22
+snapshot_keep_days 7               # eigene Snapshots auf Klein (1–365)
+snapshot_reserve_percent 15        # freier Platz, der auf mainpool bleiben muss (5–50)

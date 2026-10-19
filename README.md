@@ -64,6 +64,9 @@ Die Simulation ist interaktiv: Groß und die VM starten ausgeschaltet, die Butto
 ./scripts/dev-admin.sh mock-fault guard-outdated on  # guard.sh auf Groß zu alt
 ./scripts/dev-admin.sh mock-fault connect-plugin on  # Unraid Connect mit Flash Backup auf Groß
 ./scripts/dev-admin.sh mock-fault status-key-rejected on  # Groß lehnt den Key „status“ ab
+./scripts/dev-admin.sh mock-fault source-guard-inactive on  # Wächter auf Klein läuft nicht
+./scripts/dev-admin.sh mock-fault source-guard-lost on  # Wächter hat seinen Zustand verloren
+./scripts/dev-admin.sh mock-fault source-guard-start-failed on  # Container startet nach dem Lauf nicht
 ./scripts/dev-admin.sh show-action-log            # Aktionslog des Workers
 ```
 
@@ -77,7 +80,7 @@ CHECK_EACH_CAP=1 docker/smoke-test.sh  # zusätzlich: jede Capability ist nötig
 docker/ssh-test.sh                     # SSH und Aktionen gegen ein nachgebautes Groß
 ```
 
-Alle Befehle der Admin-CLI stehen in [docs/EINRICHTUNG.md, Abschnitt 15](docs/EINRICHTUNG.md#15-befehle-der-admin-cli).
+Alle Befehle der Admin-CLI stehen in [docs/EINRICHTUNG.md, Abschnitt 18](docs/EINRICHTUNG.md#18-befehle-der-admin-cli).
 
 Tests sprechen nie echte Server an: Eine Sperre in `backend/tests/conftest.py` lässt nur Verbindungen (auch UDP wie Wake-on-LAN) zu `127.0.0.1` und zum nie gerouteten Testnetz `192.0.2.0/24` zu. Der Starttest prüft den Modus `real` ebenfalls nur mit Adressen aus diesem Testnetz. `docker/ssh-test.sh` startet ein nachgebautes Unraid Groß als Wegwerf-Container (`docker/fake-target`) in einem eigenen Docker-Netz und prüft dagegen `guard.sh`, die Einschränkungen der `authorized_keys`-Zeilen der Keys „status“ und „power“, die strikte Hostkey-Prüfung, die Sitzung `vm-watch` und alle Aktionen.
 

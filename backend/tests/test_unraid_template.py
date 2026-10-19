@@ -52,12 +52,34 @@ def test_hardening_matches_the_start_test() -> None:
         assert forbidden not in _text("ExtraParams")
 
 
+def test_source_guard_paths() -> None:
+    """Leer, auch ohne Standardwert, bis der Wächter läuft; /run nur in der Beschreibung.
+
+    Mit Standardwert könnten Unraid oder Community Applications das Feld beim ersten
+    Anlegen vorbelegen, und Docker legte ein Verzeichnis an (Konzept 6.1).
+    """
+    configs = {c.get("Target"): c for c in _root().iter("Config")}
+    request = configs["/srv/worker/source-guard/request"]
+    state = configs["/srv/worker/source-guard/state"]
+    assert request.get("Mode") == "rw"
+    assert state.get("Mode") == "ro"
+    assert "/run/twinraid-source-guard/in/request" in (request.get("Description") or "")
+    assert "/run/twinraid-source-guard/state" in (state.get("Description") or "")
+    for config in (request, state):
+        assert config.get("Type") == "Path"
+        assert config.get("Required") == "false"
+        assert config.get("Default") == ""
+        assert (config.text or "") == ""
+    assert "/var/run" not in TEMPLATE.read_text(encoding="utf-8")
+
+
 def test_volumes_and_mode() -> None:
     configs = {c.get("Target"): c for c in _root().iter("Config")}
     assert configs["/config"].get("Mode") == "ro"
     assert configs["/data"].get("Mode") == "rw"
-    # Shares und Templates erst ab Phase 5 (Konzept 6.1).
-    assert not any(target and target.startswith("/srv/worker") for target in configs)
+    # Keine Shares und kein Templates-Ordner (E25), nur die zwei Pfade des Wächters.
+    worker = sorted(t for t in configs if t and t.startswith("/srv/worker"))
+    assert worker == ["/srv/worker/source-guard/request", "/srv/worker/source-guard/state"]
     mode = configs["TWINRAID_MODE"]
     assert mode.get("Required") == "true"
     assert mode.get("Default") == "mock|real"

@@ -63,7 +63,10 @@
     "notices": {
       "target_connect_plugin": "The Unraid Connect plugin is installed on {{target}}. It connects the server to the Unraid cloud; with Flash Backup an unencrypted copy of the USB stick would be stored there, including the SSH host keys of the server.",
       "target_flash_backup": "Flash Backup of Unraid Connect is active on {{target}}.",
-      "vm_name_mismatch": "The VM from power.conf on {{target}} has a different name than gaming_vm.unraid_vm_name. Please check the UUID in power.conf."
+      "vm_name_mismatch": "The VM from power.conf on {{target}} has a different name than gaming_vm.unraid_vm_name. Please check the UUID in power.conf.",
+      "source_connect_plugin": "The Unraid Connect plugin is installed on {{target}}. Its boot medium holds the “sync” key (from v0.5.1); with Flash Backup an unencrypted copy of it would be in Unraid's cloud.",
+      "source_flash_backup": "Unraid Connect Flash Backup is active on {{target}}.",
+      "source_guard_allows_self": "The guard's allow list on {{target}} contains TwinRaid's container. Check source-guard.conf: TwinRaid is never stopped."
     }
   },
   "dashboard": {
@@ -349,5 +352,125 @@
       "checkShutdown": "Please look at the web interface of the server."
     },
     "validUntil": "valid until {{time}}"
+  },
+  "guard": {
+    "active_one": "Guard: active · heartbeat {{age}} s ago · {{count}} container allowed",
+    "active_other": "Guard: active · heartbeat {{age}} s ago · {{count}} containers allowed",
+    "notMounted": "Guard not set up. The steps are in docs/EINRICHTUNG.md.",
+    "inactive": "Guard not active.",
+    "inactiveSince": "Guard not active since {{time}}.",
+    "inactiveHint": "Check on {{source}} with: /bin/bash /boot/config/twinraid/source-guard.sh status",
+    "errors": {
+      "config_invalid": "Guard: source-guard.conf is invalid; it accepts no orders.",
+      "misconfigured": "Guard: the folders under /run/twinraid-source-guard are not usable; it accepts no orders.",
+      "request_not_a_file": "Guard: the order file is unusable; it accepts no orders.",
+      "state_lost": "The guard lost its state (private/ is missing). Check the containers it had stopped in Unraid and start them by hand; then run source-guard.sh restart.",
+      "docker_unavailable": "Guard: Docker is not reachable on {{source}}; it tries again every 5 seconds."
+    },
+    "configLine": "Line {{line}} in source-guard.conf.",
+    "errorDetails": {
+      "missing_file": "source-guard.conf is missing or is a symlink.",
+      "bad_owner": "source-guard.conf is not owned by root.",
+      "too_long": "source-guard.conf has more than 200 lines.",
+      "syntax": "A line is not of the form “key value”.",
+      "duplicate": "An entry appears twice.",
+      "bad_value": "A value is invalid or out of range.",
+      "forbidden_dataset": "system and domains are never mirrored.",
+      "too_many": "Too many entries (allow and deny at most 50 together, dataset at most 20).",
+      "unknown_key": "Unknown key.",
+      "allow_contains_twinraid": "allow contains TwinRaid itself; the guard never stops TwinRaid.",
+      "base_unusable": "/run/twinraid-source-guard is not usable.",
+      "private_unusable": "/run/twinraid-source-guard/private is not usable.",
+      "state_unusable": "/run/twinraid-source-guard/state is not usable.",
+      "in_unusable": "/run/twinraid-source-guard/in is not a folder.",
+      "in_unexpected_content": "/run/twinraid-source-guard/in contains something unexpected; the guard does not mount a tmpfs there.",
+      "mount_failed": "The tmpfs for the order file could not be mounted.",
+      "in_wrong_mount": "Something other than the guard's own tmpfs is mounted on /run/twinraid-source-guard/in.",
+      "request_create_failed": "The order file could not be created.",
+      "request_is_directory": "There is a directory in place of the order file (TwinRaid started before the guard).",
+      "request_is_symlink": "The order file is a symlink.",
+      "request_not_regular": "The order file is not a regular file.",
+      "request_bad_owner": "The order file is not owned by root.",
+      "request_hardlink": "The order file has more than one hard link."
+    },
+    "setup": {
+      "state_not_mounted": "Guard mounted incorrectly: the template lacks the path for the status (/srv/worker/source-guard/state).",
+      "request_not_mounted": "Guard mounted incorrectly: the template lacks the path for the order file (/srv/worker/source-guard/request).",
+      "state_writable": "Guard mounted incorrectly: the status is mounted writable; set it to “Read Only” in the template.",
+      "request_read_only": "Guard mounted incorrectly: the order file is mounted read-only; set it to “Read/Write” in the template.",
+      "request_is_directory": "There is a directory in place of the order file because TwinRaid started before the guard. Start the guard, then restart TwinRaid (steps in docs/EINRICHTUNG.md).",
+      "request_not_regular": "Guard mounted incorrectly: the order file is not a regular file."
+    },
+    "invalid": "Invalid guard status: {{problem}}",
+    "statusProblems": {
+      "not_regular": "status.json is not a regular file.",
+      "unreadable": "status.json cannot be read.",
+      "too_large": "status.json is larger than 64 KiB.",
+      "bad_json": "status.json is not valid JSON.",
+      "schema": "status.json does not have the expected structure.",
+      "protocol_mismatch": "The guard speaks another protocol; copy the source-guard.sh that matches this version of TwinRaid.",
+      "heartbeat_future": "The heartbeat lies in the future; check the server's clock."
+    },
+    "run_one": "{{count}} container stopped ({{names}}), back on at {{time}} at the latest.",
+    "run_other": "{{count}} containers stopped ({{names}}), back on at {{time}} at the latest.",
+    "restarts": {
+      "started": "{{name}} was started again after the run.",
+      "already_running": "{{name}} was already running again after the run.",
+      "changed": "{{name}} was recreated during the run and therefore not started. Check it in Unraid.",
+      "gone": "{{name}} no longer exists after the run. Check it in Unraid.",
+      "start_failed": "{{name}} did not start again after the run. Check it in Unraid and start it by hand."
+    },
+    "runEnds": {
+      "finish": "The last run ended normally at {{time}}.",
+      "deadman_heartbeat": "The last run ended at {{time}} by the dead man's switch: TwinRaid stopped reporting.",
+      "deadman_max": "The last run ended at {{time}} by the dead man's switch: the maximum time was reached.",
+      "stop_command": "The last run ended at {{time}} with source-guard.sh stop."
+    },
+    "zfs": {
+      "summary_one": "ZFS: {{count}} dataset, {{free}} free on mainpool.",
+      "summary_other": "ZFS: {{count}} datasets, {{free}} free on mainpool.",
+      "summaryNoPool_one": "ZFS: {{count}} dataset.",
+      "summaryNoPool_other": "ZFS: {{count}} datasets.",
+      "unavailable": "ZFS not available: mainpool is missing or zfs does not respond.",
+      "missing": "The dataset mainpool/{{name}} is missing.",
+      "compressionOff": "Compression is off for mainpool/{{name}}. In Unraid, choose “Compression on” in the pool settings."
+    },
+    "selfDataset": {
+      "found": "TwinRaid's own dataset was found (mainpool/appdata/twinraid).",
+      "missing": "TwinRaid's own dataset mainpool/appdata/twinraid is missing; without it the guard does not send appdata (test Z4 in docs/EINRICHTUNG.md).",
+      "outside": "TwinRaid's /config or /data are not in mainpool/appdata/twinraid; the guard therefore does not send appdata (test Z4).",
+      "no_container": "The guard cannot find TwinRaid's container (image or label); appdata is therefore not sent.",
+      "unknown": "Whether TwinRaid's own dataset exists is unknown right now."
+    },
+    "nextSync": "Next sync at {{time}} at the earliest.",
+    "containerStates": {
+      "running": "running",
+      "stopped": "stopped",
+      "missing": "not found",
+      "self": "TwinRaid itself (not allowed)",
+      "unknown": "unknown"
+    },
+    "settings": {
+      "title": "Guard on {{name}}",
+      "description": "Stops the allowed containers on {{name}} for the sync and starts them again. TwinRaid only reads its status; what is allowed is set in source-guard.conf on {{name}}.",
+      "noDetails": "No current status from the guard.",
+      "version": "Version",
+      "startedAt": "Running since",
+      "limits": "Limits",
+      "limitsValue": "Run at most {{max}} min · heartbeat {{heartbeat}} s · docker stop {{stop}} s · pause between runs {{pause}} min",
+      "maxDeletions": "Deletion limit",
+      "snapshots": "Snapshots on {{name}}",
+      "snapshotsValue": "kept {{days}} days · reserve {{reserve}} % (from v0.5.1)",
+      "target": "Target for sending",
+      "targetConfigured": "configured (SSH port {{port}})",
+      "targetMissing": "not configured (needed from v0.5.1)",
+      "allowed": "Allowed containers",
+      "none": "none",
+      "datasets": "Datasets",
+      "datasetValue": "{{size}} · compression {{compression}}",
+      "datasetMissing": "missing",
+      "datasetUnknown": "unknown",
+      "rejected": "Rejected orders"
+    }
   }
 }

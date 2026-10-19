@@ -9,11 +9,14 @@ import { HistoryTile } from "@/components/HistoryTile";
 import { NoticeList } from "@/components/NoticeList";
 import { PlaceholderTile } from "@/components/PlaceholderTile";
 import { RetryLine } from "@/components/RetryLine";
+import { SourceGuardPanel } from "@/components/SourceGuardPanel";
 import { StatusTile } from "@/components/StatusTile";
 import type { DashboardData } from "@/hooks/useDashboardData";
+import { formatTime, roundUpToMinute } from "@/lib/format";
 
 const UNKNOWN: ResourceInfo = { state: "unknown", reason: null };
-const VM_NOTICES = new Set<StatusNotice>(["vm_name_mismatch"]);
+const tileOf = (notice: StatusNotice) =>
+  notice.startsWith("source_") ? "source" : notice.startsWith("vm_") ? "vm" : "target";
 
 export function Dashboard({ data }: { data: DashboardData }) {
   const { t, i18n } = useTranslation();
@@ -21,13 +24,20 @@ export function Dashboard({ data }: { data: DashboardData }) {
   const status = stream.status;
   const actions = status?.actions ?? null;
   const names = {
+    source: info?.names.source ?? t("tiles.source.fallbackTitle"),
     target: info?.names.target ?? t("tiles.target.fallbackTitle"),
     vm: info?.names.vm ?? t("tiles.vm.fallbackTitle"),
   };
   const vmRunning = status?.vm.state === "online" || status?.vm.state === "stopping";
   const notices = status?.notices ?? [];
-  const targetNotices = notices.filter((notice) => !VM_NOTICES.has(notice));
-  const vmNotices = notices.filter((notice) => VM_NOTICES.has(notice));
+  const sourceNotices = notices.filter((notice) => tileOf(notice) === "source");
+  const targetNotices = notices.filter((notice) => tileOf(notice) === "target");
+  const vmNotices = notices.filter((notice) => tileOf(notice) === "vm");
+  // Pause des Wächters zwischen zwei Läufen (Konzept 3.6), auf die Minute aufgerundet. Der
+  // Wächter setzt run_allowed_at nur, solange die Pause gilt; ein veralteter Status fehlt hier.
+  const runAllowedAt = status?.source_guard.details?.run_allowed_at ?? null;
+  const nextSync =
+    runAllowedAt !== null ? formatTime(i18n.resolvedLanguage, roundUpToMinute(runAllowedAt)) : null;
   // Für die Begründung „Auf <Server> laufen noch weitere VMs: <Namen> …“ (Konzept 4.2).
   const otherVms = status?.other_vms_running ?? [];
   const blockerValues = {
@@ -136,10 +146,19 @@ export function Dashboard({ data }: { data: DashboardData }) {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatusTile
-          title={info?.names.source ?? t("tiles.source.fallbackTitle")}
+          testId="tile-source"
+          title={names.source}
           description={t("tiles.source.description")}
           info={status?.source ?? UNKNOWN}
-        />
+        >
+          {status != null && (
+            <SourceGuardPanel
+              guard={status.source_guard}
+              notices={sourceNotices}
+              source={names.source}
+            />
+          )}
+        </StatusTile>
         <StatusTile
           testId="tile-target"
           title={names.target}
@@ -183,10 +202,17 @@ export function Dashboard({ data }: { data: DashboardData }) {
           />
         </StatusTile>
         <PlaceholderTile
+          testId="tile-sync"
           title={t("tiles.sync.title")}
           description={t("tiles.sync.description")}
           empty={status?.job_running === true ? t("tiles.sync.running") : t("tiles.sync.empty")}
-        />
+        >
+          {nextSync !== null && (
+            <p className="text-sm" data-testid="next-sync">
+              {t("guard.nextSync", { time: nextSync })}
+            </p>
+          )}
+        </PlaceholderTile>
         <HistoryTile className="sm:col-span-2" entries={data.audit} />
       </div>
     </div>

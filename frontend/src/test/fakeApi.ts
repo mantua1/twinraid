@@ -2,6 +2,8 @@
 import { vi } from "vitest";
 
 import type {
+  GuardDetails,
+  SourceGuardStatus,
   ActionBlocker,
   ActionName,
   ActionsSnapshot,
@@ -48,6 +50,49 @@ export function actionsSnapshot(
   };
 }
 
+/** Aktiver Wächter auf Klein mit einem freigegebenen Container (Konzept 3.6). */
+export const GUARD_DETAILS: GuardDetails = {
+  version: 1,
+  started_at: "2026-10-13T08:00:00Z",
+  allowed: [{ name: "twinraid-testcontainer", state: "running" }],
+  run: null,
+  last_run: null,
+  run_allowed_at: null,
+  zfs: {
+    state: "ok",
+    pool_used: 120 * 1024 ** 3,
+    pool_available: 680 * 1024 ** 3,
+    datasets: [
+      { name: "twinraidtest", present: true, referenced: 2 * 1024 ** 3, compression: "on" },
+    ],
+    self_dataset: "found",
+  },
+  limits: {
+    max_stop_minutes: 20,
+    heartbeat_timeout_seconds: 120,
+    stop_timeout_seconds: 60,
+    min_run_interval_minutes: 30,
+    max_deletions: 1000,
+    snapshot_keep_days: 7,
+    snapshot_reserve_percent: 15,
+  },
+  target_configured: false,
+  target_port: 22,
+  rejected_count: 0,
+};
+
+export const GUARD_ACTIVE: SourceGuardStatus = {
+  state: "active",
+  setup_problem: null,
+  status_problem: null,
+  error: null,
+  error_detail: null,
+  config_line: null,
+  heartbeat_at: "2026-10-13T12:00:00Z",
+  heartbeat_age_seconds: 4,
+  details: GUARD_DETAILS,
+};
+
 export const STATUS: StatusSnapshot = {
   source: { state: "online", reason: null },
   target: { state: "offline", reason: "unreachable" },
@@ -59,6 +104,7 @@ export const STATUS: StatusSnapshot = {
   other_vms_running: null,
   notices: [],
   watch_retry: null,
+  source_guard: GUARD_ACTIVE,
 };
 
 /** Groß und VM laufen: Herunterfahren ist möglich, Erzwingen noch nicht. */

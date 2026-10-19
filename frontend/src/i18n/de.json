@@ -63,7 +63,10 @@
     "notices": {
       "target_connect_plugin": "Auf {{target}} ist das Plugin Unraid Connect installiert. Es verbindet den Server mit der Cloud von Unraid; mit Flash Backup läge eine unverschlüsselte Kopie des USB-Sticks dort, darunter die SSH-Hostkeys des Servers.",
       "target_flash_backup": "Flash Backup von Unraid Connect ist auf {{target}} aktiv.",
-      "vm_name_mismatch": "Die VM aus power.conf auf {{target}} heißt anders als gaming_vm.unraid_vm_name. Bitte die UUID in power.conf prüfen."
+      "vm_name_mismatch": "Die VM aus power.conf auf {{target}} heißt anders als gaming_vm.unraid_vm_name. Bitte die UUID in power.conf prüfen.",
+      "source_connect_plugin": "Auf {{target}} ist das Plugin Unraid Connect installiert. Dort liegt auf dem Boot-Medium der Key „sync“ (ab v0.5.1); mit Flash Backup läge eine unverschlüsselte Kopie davon in der Cloud von Unraid.",
+      "source_flash_backup": "Flash Backup von Unraid Connect ist auf {{target}} aktiv.",
+      "source_guard_allows_self": "Die Erlaubnisliste des Wächters auf {{target}} enthält den Container von TwinRaid. source-guard.conf prüfen: TwinRaid wird nie angehalten."
     }
   },
   "dashboard": {
@@ -349,5 +352,125 @@
       "checkShutdown": "Bitte die Unraid-Oberfläche des Servers ansehen."
     },
     "validUntil": "gültig bis {{time}}"
+  },
+  "guard": {
+    "active_one": "Wächter: aktiv · Herzschlag vor {{age}} s · {{count}} Container freigegeben",
+    "active_other": "Wächter: aktiv · Herzschlag vor {{age}} s · {{count}} Container freigegeben",
+    "notMounted": "Wächter nicht eingerichtet. Die Schritte stehen in docs/EINRICHTUNG.md.",
+    "inactive": "Wächter nicht aktiv.",
+    "inactiveSince": "Wächter nicht aktiv seit {{time}}.",
+    "inactiveHint": "Auf {{source}} prüfen mit: /bin/bash /boot/config/twinraid/source-guard.sh status",
+    "errors": {
+      "config_invalid": "Wächter: source-guard.conf ist ungültig; er nimmt keine Aufträge an.",
+      "misconfigured": "Wächter: Die Ordner unter /run/twinraid-source-guard sind nicht nutzbar; er nimmt keine Aufträge an.",
+      "request_not_a_file": "Wächter: Die Auftragsdatei ist unbrauchbar; er nimmt keine Aufträge an.",
+      "state_lost": "Wächter hat seinen Zustand verloren (private/ fehlt). Container, die er angehalten hatte, in Unraid prüfen und von Hand starten; danach source-guard.sh restart.",
+      "docker_unavailable": "Wächter: Docker ist auf {{source}} nicht erreichbar; er versucht es alle 5 Sekunden erneut."
+    },
+    "configLine": "Zeile {{line}} in source-guard.conf.",
+    "errorDetails": {
+      "missing_file": "source-guard.conf fehlt oder ist ein Symlink.",
+      "bad_owner": "source-guard.conf gehört nicht root.",
+      "too_long": "source-guard.conf hat mehr als 200 Zeilen.",
+      "syntax": "Eine Zeile hat nicht die Form „Schlüssel Wert“.",
+      "duplicate": "Ein Eintrag steht doppelt.",
+      "bad_value": "Ein Wert ist ungültig oder liegt außerhalb des erlaubten Bereichs.",
+      "forbidden_dataset": "system und domains werden nie gespiegelt.",
+      "too_many": "Zu viele Einträge (allow und deny zusammen höchstens 50, dataset höchstens 20).",
+      "unknown_key": "Unbekannter Schlüssel.",
+      "allow_contains_twinraid": "In allow steht TwinRaid selbst; der Wächter hält TwinRaid nie an.",
+      "base_unusable": "/run/twinraid-source-guard ist nicht nutzbar.",
+      "private_unusable": "/run/twinraid-source-guard/private ist nicht nutzbar.",
+      "state_unusable": "/run/twinraid-source-guard/state ist nicht nutzbar.",
+      "in_unusable": "/run/twinraid-source-guard/in ist kein Ordner.",
+      "in_unexpected_content": "In /run/twinraid-source-guard/in liegt etwas Unerwartetes; der Wächter hängt dort kein tmpfs ein.",
+      "mount_failed": "Das tmpfs für die Auftragsdatei ließ sich nicht einhängen.",
+      "in_wrong_mount": "In /run/twinraid-source-guard/in hängt etwas anderes als das eigene tmpfs.",
+      "request_create_failed": "Die Auftragsdatei ließ sich nicht anlegen.",
+      "request_is_directory": "An der Stelle der Auftragsdatei liegt ein Verzeichnis (TwinRaid startete vor dem Wächter).",
+      "request_is_symlink": "Die Auftragsdatei ist ein Symlink.",
+      "request_not_regular": "Die Auftragsdatei ist keine reguläre Datei.",
+      "request_bad_owner": "Die Auftragsdatei gehört nicht root.",
+      "request_hardlink": "Die Auftragsdatei hat mehr als einen Hardlink."
+    },
+    "setup": {
+      "state_not_mounted": "Wächter falsch eingebunden: Im Template fehlt der Pfad für den Status (/srv/worker/source-guard/state).",
+      "request_not_mounted": "Wächter falsch eingebunden: Im Template fehlt der Pfad für die Auftragsdatei (/srv/worker/source-guard/request).",
+      "state_writable": "Wächter falsch eingebunden: Der Status ist beschreibbar eingebunden; im Template auf „Read Only“ stellen.",
+      "request_read_only": "Wächter falsch eingebunden: Die Auftragsdatei ist nur lesend eingebunden; im Template auf „Read/Write“ stellen.",
+      "request_is_directory": "An der Stelle der Auftragsdatei liegt ein Verzeichnis, weil TwinRaid vor dem Wächter gestartet ist. Wächter starten, dann TwinRaid neu starten (Schritte in docs/EINRICHTUNG.md).",
+      "request_not_regular": "Wächter falsch eingebunden: Die Auftragsdatei ist keine reguläre Datei."
+    },
+    "invalid": "Status des Wächters ungültig: {{problem}}",
+    "statusProblems": {
+      "not_regular": "status.json ist keine reguläre Datei.",
+      "unreadable": "status.json ist nicht lesbar.",
+      "too_large": "status.json ist größer als 64 KiB.",
+      "bad_json": "status.json ist kein gültiges JSON.",
+      "schema": "status.json hat nicht den erwarteten Aufbau.",
+      "protocol_mismatch": "Der Wächter spricht ein anderes Protokoll; source-guard.sh passend zu dieser Version von TwinRaid kopieren.",
+      "heartbeat_future": "Der Herzschlag liegt in der Zukunft; die Uhrzeit des Servers prüfen."
+    },
+    "run_one": "{{count}} Container angehalten ({{names}}), spätestens wieder an um {{time}}.",
+    "run_other": "{{count}} Container angehalten ({{names}}), spätestens wieder an um {{time}}.",
+    "restarts": {
+      "started": "{{name}} wurde nach dem Lauf wieder gestartet.",
+      "already_running": "{{name}} lief nach dem Lauf schon wieder.",
+      "changed": "{{name}} wurde während des Laufs neu angelegt und deshalb nicht gestartet. In Unraid prüfen.",
+      "gone": "{{name}} gibt es nach dem Lauf nicht mehr. In Unraid prüfen.",
+      "start_failed": "{{name}} ist nach dem Lauf nicht wieder gestartet. In Unraid prüfen und von Hand starten."
+    },
+    "runEnds": {
+      "finish": "Der letzte Lauf endete regulär um {{time}}.",
+      "deadman_heartbeat": "Der letzte Lauf endete um {{time}} über den Totmannschalter: TwinRaid hat sich nicht mehr gemeldet.",
+      "deadman_max": "Der letzte Lauf endete um {{time}} über den Totmannschalter: Die Höchstzeit war erreicht.",
+      "stop_command": "Der letzte Lauf endete um {{time}} mit source-guard.sh stop."
+    },
+    "zfs": {
+      "summary_one": "ZFS: {{count}} Dataset, {{free}} frei auf mainpool.",
+      "summary_other": "ZFS: {{count}} Datasets, {{free}} frei auf mainpool.",
+      "summaryNoPool_one": "ZFS: {{count}} Dataset.",
+      "summaryNoPool_other": "ZFS: {{count}} Datasets.",
+      "unavailable": "ZFS nicht verfügbar: mainpool fehlt oder zfs antwortet nicht.",
+      "missing": "Das Dataset mainpool/{{name}} fehlt.",
+      "compressionOff": "Bei mainpool/{{name}} ist die Kompression aus. In Unraid in den Einstellungen des Pools „Compression on“ wählen."
+    },
+    "selfDataset": {
+      "found": "Eigenes Dataset von TwinRaid gefunden (mainpool/appdata/twinraid).",
+      "missing": "Das eigene Dataset mainpool/appdata/twinraid fehlt; ohne es sendet der Wächter appdata nicht (Test Z4 in docs/EINRICHTUNG.md).",
+      "outside": "/config oder /data von TwinRaid liegen nicht in mainpool/appdata/twinraid; der Wächter sendet appdata deshalb nicht (Test Z4).",
+      "no_container": "Der Wächter findet den Container von TwinRaid nicht (Image oder Label); appdata wird deshalb nicht gesendet.",
+      "unknown": "Ob das eigene Dataset von TwinRaid besteht, ist gerade unbekannt."
+    },
+    "nextSync": "Nächster Sync frühestens um {{time}}.",
+    "containerStates": {
+      "running": "läuft",
+      "stopped": "angehalten",
+      "missing": "nicht gefunden",
+      "self": "TwinRaid selbst (nicht erlaubt)",
+      "unknown": "unbekannt"
+    },
+    "settings": {
+      "title": "Wächter auf {{name}}",
+      "description": "Hält auf {{name}} freigegebene Container für den Sync an und startet sie wieder. TwinRaid liest nur seinen Status; was erlaubt ist, steht in source-guard.conf auf {{name}}.",
+      "noDetails": "Kein aktueller Status des Wächters.",
+      "version": "Version",
+      "startedAt": "Läuft seit",
+      "limits": "Grenzen",
+      "limitsValue": "Lauf höchstens {{max}} min · Herzschlag {{heartbeat}} s · docker stop {{stop}} s · Pause zwischen Läufen {{pause}} min",
+      "maxDeletions": "Löschgrenze",
+      "snapshots": "Snapshots auf {{name}}",
+      "snapshotsValue": "{{days}} Tage aufbewahren · Reserve {{reserve}} % (ab v0.5.1)",
+      "target": "Ziel für das Senden",
+      "targetConfigured": "eingetragen (SSH-Port {{port}})",
+      "targetMissing": "nicht eingetragen (erst ab v0.5.1 nötig)",
+      "allowed": "Freigegebene Container",
+      "none": "keine",
+      "datasets": "Datasets",
+      "datasetValue": "{{size}} · Kompression {{compression}}",
+      "datasetMissing": "fehlt",
+      "datasetUnknown": "unbekannt",
+      "rejected": "Abgelehnte Aufträge"
+    }
   }
 }

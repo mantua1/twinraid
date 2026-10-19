@@ -82,11 +82,12 @@ rm -rf /var/lib/apt/lists/*
 EOF
 
 # Web-Benutzer und Verzeichnisse (Konzept 3.2 und 5.4):
-# /srv/worker gehört root mit 0700; dort hängen Shares und Templates.
+# /srv/worker gehört root mit 0700; ab v0.5.0 hängen in /srv/worker/source-guard die
+# Auftragsdatei und der Status des Wächters (Konzept 3.6 und 5.9).
 RUN groupadd --system --gid 10001 twinraid \
     && useradd --system --uid 10001 --gid 10001 --no-create-home \
         --home-dir /nonexistent --shell /usr/sbin/nologin twinraid-web \
-    && install -d -m 0700 -o root -g root /srv/worker \
+    && install -d -m 0700 -o root -g root /srv/worker /srv/worker/source-guard \
     && install -d -m 0755 -o root -g root /config /data
 
 COPY --from=backend /app/.venv /app/.venv

@@ -5,6 +5,7 @@ from enum import StrEnum
 
 from twinraid.shared.actions import ActionsSnapshot
 from twinraid.shared.base import StrictModel
+from twinraid.shared.source_guard import SourceGuardStatus
 
 
 class ResourceState(StrEnum):
@@ -59,6 +60,11 @@ class StatusNotice(StrEnum):
     TARGET_FLASH_BACKUP = "target_flash_backup"
     # Die VM aus power.conf heißt anders als gaming_vm.unraid_vm_name.
     VM_NAME_MISMATCH = "vm_name_mismatch"
+    # Auf Klein ist Unraid Connect installiert bzw. Flash Backup aktiv (Wächter, Konzept 3.6).
+    SOURCE_CONNECT_PLUGIN = "source_connect_plugin"
+    SOURCE_FLASH_BACKUP = "source_flash_backup"
+    # Die eigene Container-ID steht in der Erlaubnisliste des Wächters (Gegenprüfung).
+    SOURCE_GUARD_ALLOWS_SELF = "source_guard_allows_self"
 
 
 class ResourceInfo(StrictModel):
@@ -106,3 +112,5 @@ class StatusSnapshot(ResourceStatus):
     password_set: bool
     # Verfügbarkeit, laufende Aktionen und letzte Ergebnisse (Konzept 4.2).
     actions: ActionsSnapshot
+    # Wächter auf Klein (Konzept 3.6, ab v0.5.0).
+    source_guard: SourceGuardStatus

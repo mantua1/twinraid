@@ -570,7 +570,7 @@ describe("other running VMs", () => {
   it("locks shutting down Groß and names the running VMs", async () => {
     const { target } = await openDashboard({ status: blocked });
     expect(await within(target).findByRole("button", { name: "Herunterfahren" })).toBeDisabled();
-    expect(within(target).getByTestId("action-hint")).toHaveTextContent(
+    expect(await within(target).findByTestId("action-hint")).toHaveTextContent(
       "Herunterfahren: Auf Unraid Groß laufen noch weitere VMs: Test-VM, Linux. Bitte fahre sie zuerst über die Unraid-Oberfläche herunter. Zur Sicherheit schaltet TwinRaid den Server nicht aus, solange andere VMs laufen, damit keine Daten verloren gehen.",
     );
   });
