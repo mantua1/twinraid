@@ -323,9 +323,18 @@ expect_not_contains "the message of zfs does not go to Klein" "${GUARD_ERR}" "ca
 rm "${MOUNT}/fremd.txt" 2>/dev/null || true
 zfs rollback "${MIRROR}@f"
 
-echo "== Falsche Basis: Exit-Code 1 ohne Text"
+echo "== Basis älter als der neueste Snapshot, Basis unbekannt"
+# OpenZFS prüft bei einer älteren vorhandenen Basis, ob sich das Ziel seither verändert hat;
+# die neueren Snapshots zählen als Veränderung (ETXTBSY, Konzept 3.7).
 receive twinraidtest -i @a "${SRC}/twinraidtest@g"
-expect_equal "wrong base" "${GUARD_RC}:${GUARD_ERR}" "1:"
+expect_refused "older base than the newest snapshot" target-modified
+# @g kam nie an: Diese Basis kennt der Spiegel nicht.
+zfs snapshot "${SRC}/twinraidtest@g2"
+receive twinraidtest -i @g "${SRC}/twinraidtest@g2"
+expect_equal "unknown base" "${GUARD_RC}:${GUARD_ERR}" "1:"
+# Nur die erste Zeile kommt ins Syslog; die Meldung bricht nach "does not" um.
+expect_contains "first line of zfs in the syslog" "$(syslog)" \
+  "zfs receive: cannot receive incremental stream: most recent snapshot of ${MIRROR} does not"
 expect_equal "mirror unchanged" "$(zfs list -H -t snapshot -o name -s createtxg "${MIRROR}" | tail -1)" \
   "${MIRROR}@f"
 
@@ -353,7 +362,7 @@ receive_raw kinder -R -L -c -e "${SRC}/kinder@a"
 expect_refused "stream with children" received-properties
 expect_locked "mirror locked" "${ROOT}/kinder"
 expect_locked "child locked" "${ROOT}/kinder/etc"
-expect_equal "child not mounted anywhere" "$(findmnt -n -o TARGET /mnt/etc-kind 2>/dev/null || true)" ""
+expect_equal "child not mounted" "$(where "${ROOT}/kinder/etc")" ""
 expect_contains "check: props=mismatch with children" "$(check)" "mirror kinder state=mirror props=mismatch "
 
 echo "== Fremdes Dataset an der Stelle eines Spiegels (E26)"

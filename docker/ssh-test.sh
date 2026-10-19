@@ -553,6 +553,7 @@ expect_equal "guard.sh never switched off with running VMs" "$(state poweroff.lo
 expect_equal "the refusals are in the syslog" "$(syslog_count "refused: vm-running")" "1"
 wait_for_status "the VM is reported as off" "${OFF}" 20
 # Während eines Empfangs schaltet guard.sh Groß nicht aus (ab Version 3, sync-running).
+wait_for_status "no other VM runs before the receive test" '"other_vms_running":[]' 20
 docker exec -d "${TARGET}" sh -c 'exec flock /var/run/twinraid-guard-receive.lock sh -c \
   "touch /state/lock-held; while [ ! -e /state/release-lock ]; do sleep 0.2; done"'
 for _ in $(seq 1 50); do
