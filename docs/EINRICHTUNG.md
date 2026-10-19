@@ -1331,7 +1331,13 @@ Erwartet: `mainpool/appdata  /mnt/mainpool/appdata` und der Ordner von TwinRaid 
 | Container-Log | keine Meldung `Generated the TwinRaid CA` |
 | Wächter | `"self_dataset":"found"` |
 
-5. **Die alte Kopie löschen**, sobald TwinRaid wieder läuft. Sie enthält die Secrets von TwinRaid und liegt noch im Dataset `mainpool/appdata`; sie muss weg sein, bevor `appdata` zum ersten Mal gespiegelt wird:
+5. **Die alte Kopie löschen**, sobald TwinRaid wieder läuft. Sie enthält die Secrets von TwinRaid und liegt noch im Dataset `mainpool/appdata`; sie muss weg sein, bevor `appdata` zum ersten Mal gespiegelt wird. Zuerst prüfen, dass es von `mainpool/appdata` keine Snapshots gibt:
+
+   ```bash
+   zfs list -t snapshot -r mainpool/appdata
+   ```
+
+   Erwartet: `no datasets available`. **Zeigt der Befehl Snapshots, nicht weitermachen:** Die Secrets aus `twinraid.alt` stecken dann auch in diesen Snapshots und blieben nach dem Löschen der Kopie dort erhalten. Die Ausgabe im PR melden (ohne die Namen der Snapshots, falls sie private Angaben enthalten) und erst nach Rücksprache weiter. Ist die Liste leer:
 
    ```bash
    rm -r /mnt/mainpool/appdata/twinraid.alt
