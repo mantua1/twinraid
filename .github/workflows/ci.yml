@@ -120,6 +120,9 @@ jobs:
           fi
           sudo modprobe zfs
       - run: sudo ZFS_CHECK_TEST_HOST=disposable docker/zfs-check-test.sh
+      # guard.sh, Modus sync, mit echtem ZFS: Empfang als UID 64000 mit der Delegation aus
+      # der Anleitung, Sperren, Aufbewahrung (Konzept 3.7, ab v0.5.1).
+      - run: sudo GUARD_SYNC_TEST_HOST=disposable docker/guard-sync-test.sh
 
   container:
     name: Container (build and start test)
