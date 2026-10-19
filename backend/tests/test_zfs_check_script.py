@@ -118,12 +118,41 @@ def test_script_never_destroys_recursively() -> None:
 
 
 def test_receive_with_force_only_as_unprivileged_user() -> None:
-    """Die einzige Stelle mit -F prüft receive:append als Benutzer ohne root."""
+    """-F steht nur in den Gegenproben, als UID 64000 auf eigenen Test-Datasets."""
     lines = SCRIPT.read_text().splitlines()
-    forced = [i for i, line in enumerate(lines) if "zfs receive" in line and " -F" in line]
-    assert len(forced) == 1
-    assert "setpriv --reuid" in lines[forced[0] - 1]
-    assert '"${deleg}"' in lines[forced[0]]
+    forced = [line for line in lines if "zfs receive" in line and " -F" in line]
+    assert len(forced) == 2
+    for line in forced:
+        assert "as_receiver zfs receive -u -F -- " in line, line
+    assert '"${deleg}"' in forced[0]
+    assert '"${mirror}"' in forced[1]
+
+
+def test_receiver_as_in_the_concept() -> None:
+    """Empfang ohne root wie guard.sh: UID/GID 64000, nie nobody (Konzept 3.7, E27)."""
+    text = SCRIPT.read_text()
+    assert "readonly RECV_UID=64000\n" in text
+    assert "readonly RECV_GID=64000\n" in text
+    assert "readonly RECV_BASE_PERMS=receive:append,create,mount\n" in text
+    receiver = _function("as_receiver")
+    for flag in (
+        '--reuid "${RECV_UID}"',
+        '--regid "${RECV_GID}"',
+        "--clear-groups",
+        "--inh-caps=-all",
+        "--bounding-set=-all",
+        "--no-new-privs",
+    ):
+        assert flag in receiver, flag
+    # Kein anderer Benutzer für setpriv oder zfs allow.
+    assert text.count("setpriv --reuid") == 1
+    assert "id -u" not in text
+    for line in text.splitlines():
+        if "zfs allow -u" in line or "zfs unallow -u" in line:
+            assert '-u "${RECV_UID}"' in line, line
+    concept = CONCEPT.read_text()
+    assert "UID und GID 64000" in concept
+    assert "Nie verwendet wird `nobody` (99)" in concept
 
 
 def test_fixed_paths() -> None:
