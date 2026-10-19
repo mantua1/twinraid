@@ -303,7 +303,7 @@ done < <(zfs get -H -r -s received -o name,property all "${MIRROR}")
 expect_equal "no received property after the reset" \
   "$(zfs get -H -r -s received -o name,property all "${MIRROR}")" ""
 zfs set canmount=on "${MIRROR}"
-zfs inherit quota "${SRC}/twinraidtest"
+zfs set quota=none "${SRC}/twinraidtest"
 zfs inherit twinraid:received "${SRC}/twinraidtest"
 zfs snapshot "${SRC}/twinraidtest@f"
 receive twinraidtest -i @d "${SRC}/twinraidtest@f"
