@@ -161,10 +161,19 @@ kill -TERM "${pid}"
 rc=0
 wait "${pid}" || rc=$?
 expect_equal "terminated run ends with code 130" "${rc}" 130
+# Der Abbruch trifft meist einen Aufruf mit >/dev/null; die Meldungen müssen trotzdem kommen.
+term_ok=1
 if grep -q "abgebrochen (Code 130)" "${WORK}/term.log"; then pass "abort reported"; else
   fail "abort reported"
+  term_ok=0
 fi
-if ((rc != 130)) || ! grep -q "abgebrochen (Code 130)" "${WORK}/term.log"; then
+if grep -q "aufgeräumt: mainpool/twinraid-mirror/zfs-check" "${WORK}/term.log"; then
+  pass "cleanup reported"
+else
+  fail "cleanup reported"
+  term_ok=0
+fi
+if ((rc != 130 || !term_ok)); then
   cat "${WORK}/term.log" >&2
 fi
 expect_equal "nothing left after SIGTERM" "$(state)" "${before}"

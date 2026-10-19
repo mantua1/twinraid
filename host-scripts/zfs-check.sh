@@ -75,6 +75,9 @@ CREATED_POOL=0
 XATTR_SET=0
 ACL_SET=0
 FINISHED=0
+# Ursprüngliche Ausgabe; die Aufräumfunktion schreibt immer dorthin (siehe cleanup).
+STDOUT_FD=""
+STDERR_FD=""
 
 ok() { printf 'ok     %s\n' "$1"; }
 bad() {
@@ -327,6 +330,11 @@ cleanup() {
   local rc=$?
   trap - EXIT
   set +e
+  # Ein Abbruch kann mitten in einem Aufruf mit >/dev/null kommen; die Meldungen und die
+  # Liste der Reste gehören trotzdem in die ursprüngliche Ausgabe.
+  if [[ -n "${STDOUT_FD}" && -n "${STDERR_FD}" ]]; then
+    exec 1>&"${STDOUT_FD}" 2>&"${STDERR_FD}"
+  fi
   if ((!FINISHED)); then
     printf 'zfs-check: abgebrochen (Code %d); räume auf\n' "${rc}" >&2
   fi
@@ -1001,6 +1009,7 @@ case "${MODE}" in
     [[ $# -eq 1 ]] || usage
     need_root
     new_run_id
+    exec {STDOUT_FD}>&1 {STDERR_FD}>&2
     trap cleanup EXIT
     trap 'exit 130' INT TERM HUP
     printf 'zfs-check %s, Lauf %s\n' "${MODE}" "${RUN_ID}"
