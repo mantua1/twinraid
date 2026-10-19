@@ -908,7 +908,7 @@ Die Tests W1 bis W8 führen durch die Einrichtung. Sie arbeiten nur mit einem ei
      https://raw.githubusercontent.com/mantua1/twinraid/v0.5.0/host-scripts/twinraid-testcontainer.xml
    ```
 
-   Dann Reiter **Docker** → **Add Container** → Template **twinraid-testcontainer** → **Apply**.
+   Dann Reiter **Docker** → **Add Container** → Template **twinraid-testcontainer** → **Apply**. Danach im Reiter **Docker** beim Testcontainer **Autostart** einschalten (Schalter in der Spalte *Autostart*), damit er nach einem Neustart von Klein wieder läuft (Test W6).
 3. **Kontrolle:** Den folgenden Befehl zweimal im Abstand von ein paar Sekunden ausführen; die Zahl muss wachsen.
 
    ```bash
@@ -990,12 +990,15 @@ Dieser Test zeigt, dass Unraid einen leeren Pfad im Template auslässt und Docke
 
    ```bash
    bash /boot/config/twinraid/source-guard.sh start
+   sleep 5
    bash /boot/config/twinraid/source-guard.sh status
    ls -l /run/twinraid-source-guard/in/request
    findmnt -n -o FSTYPE,OPTIONS /run/twinraid-source-guard/in
    ```
 
-6. **Pfade in TwinRaid eintragen:** Reiter **Docker** → Symbol *TwinRaid* → **Edit**. Bei **Wächter: Auftragsdatei** als Host Path `/run/twinraid-source-guard/in/request` (Access Mode `Read/Write`), bei **Wächter: Status** `/run/twinraid-source-guard/state` (Access Mode `Read Only`) eintragen; wer die Einträge in W1 nicht anlegen konnte, legt sie jetzt wie in der Tabelle dort an, mit diesen Werten. Immer `/run/…` schreiben, nicht `/var/run/…` → **Apply**.
+   Der Wächter braucht nach `start` ein paar Sekunden, bis er läuft und seinen ersten Status geschrieben hat; deshalb das `sleep 5`. Ruft man `status` sofort auf, meldet es unter Umständen noch „Der Wächter läuft nicht.“
+
+6. **Pfade in TwinRaid eintragen:** Reiter **Docker** → Symbol *TwinRaid* → **Edit**. Bei **Wächter: Auftragsdatei** als Host Path `/run/twinraid-source-guard/in/request` (Access Mode `Read/Write`), bei **Wächter: Status** `/run/twinraid-source-guard/state` (Access Mode `Read Only`) eintragen; wer die Einträge in W1 nicht anlegen konnte, legt sie jetzt wie in der Tabelle dort an, mit diesen Werten. Immer `/run/…` schreiben, nicht `/var/run/…`. Der Auswahldialog von Unraid (Klick ins Feld) zeigt `/run` nicht an; den Pfad deshalb von Hand ins Feld schreiben. → **Apply**.
 
 | Prüfen | Erwartet |
 |---|---|
@@ -1076,7 +1079,7 @@ Meldet sich TwinRaid während eines Laufs nicht mehr, startet der Wächter die a
 
 ### 12.7 Test W6: Neustart von Klein
 
-Wenn es passt, Unraid Klein neu starten. Danach im **Unraid-Terminal von Klein**:
+Wenn es passt, Unraid Klein neu starten. Ist beim Testcontainer kein Autostart eingeschaltet (12.1), ihn danach zuerst starten (Reiter **Docker** → *twinraid-testcontainer* → **Start**); sonst meldet der Selbsttest richtig `not_running`. Dann im **Unraid-Terminal von Klein**:
 
 ```bash
 bash /boot/config/twinraid/source-guard.sh status | grep -o '"last_seq":[0-9]*'
@@ -1088,7 +1091,7 @@ bash /boot/config/twinraid/source-guard.sh selftest twinraid-testcontainer
 |---|---|
 | `last_seq` | `"last_seq":0`: Nach einem Neustart beginnt die Zählung neu |
 | `ls -l …/request` | eine Datei (`-rw-------`), kein Verzeichnis: Der Wächter lief vor Docker |
-| Kachel **Unraid Klein** | „Wächter: aktiv …“, sobald TwinRaid läuft |
+| Kachel **Unraid Klein** | „Wächter: aktiv …“, sobald TwinRaid läuft. Kurz nach dem Start kann dort „Wächter: Docker ist … nicht erreichbar“ stehen, bis Docker läuft; das verschwindet von selbst |
 | Selbsttest | `OK: angehalten und wieder gestartet.`; im Syslog `order 1: begin: opened` |
 
 Danach `reset-run-interval`.
@@ -1099,42 +1102,51 @@ Reiter **Plugins** auf Klein ansehen: Ist **Unraid Connect** installiert, zeigt 
 
 ### 12.9 Test W8: Verzeichnis statt Auftragsdatei
 
-Dieser Test stellt nach, was passiert, wenn TwinRaid vor dem Wächter startet, etwa weil die Zeile in der go-Datei fehlt. Docker legt dann an der Stelle der Auftragsdatei ein Verzeichnis an. Alles spielt sich unter `/run` ab, also nur im Arbeitsspeicher.
+Startet TwinRaid, bevor der Wächter lief (etwa weil die Zeile in der go-Datei fehlt), legt Docker an der Stelle der Auftragsdatei ein Verzeichnis an. Was dann passiert, hängt vom Container ab:
+
+- **Der Container lief schon einmal mit der Datei** (der Normalfall, etwa nach einem Neustart von Klein): Er startet gar nicht. Unraid meldet „Bad parameter“, Docker `not a directory: Are you trying to mount a directory onto a file (or vice-versa)?`.
+- **Der Container wurde gerade neu angelegt** (Erstinstallation oder **Edit → Apply**): Er startet, und die Kachel **Unraid Klein** zeigt rot „An der Stelle der Auftragsdatei liegt ein Verzeichnis, weil TwinRaid vor dem Wächter gestartet ist. Wächter starten, dann TwinRaid neu starten …“.
+
+Der Test stellt den Teil des Wächters nach, ohne TwinRaid dafür vor dem Wächter zu starten: Du legst das Verzeichnis selbst an, so wie Docker es tun würde. Alles spielt sich unter `/run` ab, also nur im Arbeitsspeicher.
 
 1. Reiter **Docker** → *TwinRaid* → **Stop**.
-2. Im **Unraid-Terminal von Klein** den Wächter stoppen und seinen Ordner entfernen, wie nach einem Neustart ohne Wächter:
+2. Im **Unraid-Terminal von Klein** den Wächter stoppen, seinen Ordner entfernen und das Verzeichnis anlegen, wie Docker es täte:
 
    ```bash
    bash /boot/config/twinraid/source-guard.sh stop
    umount /run/twinraid-source-guard/in
    rm -r /run/twinraid-source-guard
+   mkdir -p /run/twinraid-source-guard/in/request /run/twinraid-source-guard/state
    ```
 
-3. Reiter **Docker** → *TwinRaid* → **Start**. Dann:
-
-   ```bash
-   ls -ld /run/twinraid-source-guard/in/request
-   ```
-
-   Erwartet: Die Zeile beginnt mit `d`: Docker hat ein Verzeichnis angelegt.
-4. **Kachel Unraid Klein:** rot „An der Stelle der Auftragsdatei liegt ein Verzeichnis, weil TwinRaid vor dem Wächter gestartet ist. Wächter starten, dann TwinRaid neu starten (Schritte in docs/EINRICHTUNG.md).“
-5. Den Wächter starten und seinen Status ansehen:
+3. Den Wächter starten und ansehen, was er meldet:
 
    ```bash
    bash /boot/config/twinraid/source-guard.sh start
+   sleep 5
    bash /boot/config/twinraid/source-guard.sh status | grep -o '"error":"[a-z_]*","error_detail":"[a-z_]*"'
+   findmnt /run/twinraid-source-guard/in || echo "kein tmpfs"
    ```
 
-   Erwartet: `"error":"request_not_a_file","error_detail":"request_is_directory"`; im Syslog von Klein `request is a directory (TwinRaid started before the guard): stop TwinRaid, remove the directory, restart the guard, then start TwinRaid`. Der Wächter legt nichts darüber und nimmt keine Aufträge an.
-6. **Beheben**, genau in dieser Reihenfolge: TwinRaid stoppen (Reiter **Docker** → *TwinRaid* → **Stop**), dann
+   Erwartet: `"error":"request_not_a_file","error_detail":"request_is_directory"` und `kein tmpfs`; im Syslog von Klein `request is a directory (TwinRaid started before the guard): stop TwinRaid, remove the directory, restart the guard, then start TwinRaid`. Der Wächter legt nichts über das Verzeichnis und nimmt keine Aufträge an.
+4. **Beheben** wie im Ernstfall (unten), hier ab Punkt 2, weil TwinRaid schon gestoppt ist.
+
+**So behebst du es im Ernstfall**, in dieser Reihenfolge:
+
+1. TwinRaid stoppen, falls es läuft (Reiter **Docker** → *TwinRaid* → **Stop**).
+2. Das Verzeichnis entfernen und den Wächter starten bzw. neu starten:
 
    ```bash
    rmdir /run/twinraid-source-guard/in/request
    bash /boot/config/twinraid/source-guard.sh restart
+   sleep 5
    ls -l /run/twinraid-source-guard/in/request
+   findmnt -n -o FSTYPE /run/twinraid-source-guard/in
    ```
 
-   und TwinRaid wieder starten. Erwartet: `ls` zeigt eine Datei (`-rw-------`), die Kachel zeigt wieder „Wächter: aktiv …“.
+   Erwartet: `ls` zeigt eine Datei (`-rw-------`, `root root`), `findmnt` zeigt `tmpfs`. Meldet `rmdir`, das Verzeichnis sei nicht leer, liegt darin etwas Unerwartetes: nachsehen, nicht löschen.
+3. TwinRaid starten: Reiter **Docker** → *TwinRaid* → **Start** oder im Terminal `docker start TwinRaid`. Startet es trotzdem mit „Bad parameter“ nicht, über **Edit** → ohne Änderung **Apply** neu anlegen.
+4. Die Kachel **Unraid Klein** zeigt wieder „Wächter: aktiv …“. Danach die Zeile in `/boot/config/go` prüfen (12.3), damit der Wächter beim nächsten Neustart vor Docker startet.
 
 ### 12.10 Simulation (optional)
 
@@ -1181,7 +1193,7 @@ Diese Schritte prüfen den vorhandenen Stand und räumen auf, was Unraid sonst a
    ```
 
    Erwartet: `mainpool/twinraid-mirror  /mnt/mainpool/twinraid-mirror`.
-3. **ISO-Ordner des VM-Managers:** *Settings → VM Manager* → **Default ISO storage path**. Zeigt er auf eine Share, die gespiegelt werden soll (Standard ist `/mnt/user/isos`), auf einen Ordner mit anderem Namen umstellen, z. B. eine eigene Share `vm-isos` auf dem Pool für VMs. Je nach Unraid-Version geht das nur bei ausgeschaltetem VM-Dienst; dann vorher alle VMs herunterfahren. Nach dem ersten Sync von isos kann der Pfad auch auf `/mnt/mainpool/twinraid-mirror/isos/` zeigen; dort sind aber keine Downloads möglich (etwa des VirtIO-ISOs), weil der Spiegel schreibgeschützt ist.
+3. **ISO-Ordner des VM-Managers:** *Settings → VM Manager* → **Default ISO storage path**. Zeigt er auf eine Share, die gespiegelt werden soll (Standard ist `/mnt/user/isos`), auf einen Ordner mit anderem Namen umstellen, z. B. eine eigene Share `vm-isos` auf dem Pool für VMs. Je nach Unraid-Version geht das nur bei ausgeschaltetem VM-Dienst; dann vorher alle VMs herunterfahren. Nach dem ersten Sync von isos kann der Pfad auch auf `/mnt/mainpool/twinraid-mirror/isos/` zeigen; dort sind aber keine Downloads möglich (etwa des VirtIO-ISOs), weil der Spiegel schreibgeschützt ist. Ebenso das Feld **Default Windows VirtIO driver ISO** auf derselben Seite: Es zeigt meist auf eine Datei unter `/mnt/user/isos/`; die Datei in den neuen Ordner kopieren und das Feld dorthin umstellen, oder das Feld leeren.
 4. **Share-Konfigurationen mit den Namen der gespiegelten Shares entfernen.** Unraid legt für jede Share-Konfiguration ein Dataset auf oberster Ebene eines Pools an, auch auf einem anderen Pool als dem eingetragenen, wenn dieser fehlt. Im Normalbetrieb darf es auf Groß deshalb keine Konfiguration mit dem Namen einer gespiegelten Share geben (z. B. `appdata` oder `isos`). Für jeden Namen aus `sync.shares` (Beispiel `isos`):
 
    ```bash
@@ -1197,6 +1209,21 @@ Diese Schritte prüfen den vorhandenen Stand und räumen auf, was Unraid sonst a
    ```
 
    Ohne `-r` löscht ZFS ein Dataset nur, wenn es keine Snapshots und keine Kinder hat; sonst meldet es einen Fehler, und du siehst nach, was darin liegt.
+
+   **Lässt sich die Share in der Oberfläche nicht löschen** („Selected Pool is not available“), gibt es ihren eingetragenen Pool nicht mehr. Dann von Hand:
+
+   1. Prüfen, dass sie leer ist, wie oben (`ls -A /mnt/user/isos` gibt nichts aus; `zfs list -t all -r -o name` auf jedem Pool zeigt höchstens ein leeres Dataset dieses Namens).
+   2. Ein solches Dataset ohne `-r` löschen, z. B. `zfs destroy mainpool/isos`.
+   3. Die Konfiguration sichern:
+
+      ```bash
+      mkdir -p /boot/config/twinraid/shares-sicherung
+      cp /boot/config/shares/isos.cfg /boot/config/twinraid/shares-sicherung/
+      ```
+
+   4. Alle VMs herunterfahren, dann Reiter **Main** → **Stop** (Array und Pools stoppen).
+   5. Die Datei löschen: `rm /boot/config/shares/isos.cfg`
+   6. Reiter **Main** → **Start**. Die Share erscheint nicht mehr unter **Shares**.
 5. **Kontrolle:** `ls /boot/config/shares/` zeigt keine Datei mit einem gespiegelten Namen mehr. `zfs list -r -o name mainpool` und derselbe Befehl mit dem Namen des Pools für VMs zeigen kein Dataset mit einem gespiegelten Namen auf oberster Ebene.
 6. **ARC und Docker:**
 
@@ -1380,7 +1407,8 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 | Klein: **TwinRaid läuft auf diesem Server** | Normal im Echtbetrieb: TwinRaid läuft auf Klein und prüft Klein deshalb nicht | Nichts zu tun. „Host access to custom networks“ bleibt aus (Schritt 2) |
 | Klein: **Wächter nicht eingerichtet** (grau) | Die zwei Pfade des Wächters sind im Template leer | Normal, bis der Wächter läuft. Einrichten nach Abschnitt 12: erst den Wächter starten, dann die Pfade eintragen |
 | Klein: **Wächter nicht aktiv seit …** | Der Wächter schreibt keinen Status mehr: Er läuft nicht (Zeile in `/boot/config/go` fehlt, beendet, nach zu vielen Abbrüchen aufgegeben) | Im Unraid-Terminal von Klein `bash /boot/config/twinraid/source-guard.sh status`; läuft er nicht, `… start`. Die Zeile in der go-Datei prüfen (12.3), Syslog von Klein ansehen (Kennung `twinraid-source-guard`) |
-| Klein: **An der Stelle der Auftragsdatei liegt ein Verzeichnis …** | TwinRaid ist vor dem Wächter gestartet, Docker hat ein Verzeichnis angelegt | TwinRaid stoppen, `rmdir /run/twinraid-source-guard/in/request`, `source-guard.sh restart`, TwinRaid starten (12.9 Punkt 6); die Zeile in der go-Datei prüfen |
+| Klein: **An der Stelle der Auftragsdatei liegt ein Verzeichnis …** | TwinRaid wurde neu angelegt und vor dem Wächter gestartet; Docker hat ein Verzeichnis angelegt | Wie in 12.9 unter „So behebst du es im Ernstfall“: TwinRaid stoppen, `rmdir /run/twinraid-source-guard/in/request`, Wächter neu starten, Datei prüfen, TwinRaid starten; danach die Zeile in der go-Datei prüfen |
+| TwinRaid startet nicht: Unraid „Bad parameter“, Docker `not a directory: Are you trying to mount a directory onto a file` | Der Wächter lief beim Start von TwinRaid nicht; Docker hat an der Stelle der Auftragsdatei ein Verzeichnis angelegt und kann es nicht auf die Datei im Container einhängen | Wie in 12.9 unter „So behebst du es im Ernstfall“; startet TwinRaid danach mit `docker start TwinRaid` noch nicht, über **Edit → Apply** neu anlegen |
 | Klein: **Wächter falsch eingebunden: …** | Im Template fehlt einer der zwei Pfade, oder die Zugriffsart ist vertauscht | Im Template beide Pfade eintragen: Auftragsdatei `Read/Write`, Status `Read Only` (12.3 Punkt 6) |
 | Klein: **Wächter: source-guard.conf ist ungültig** | Fehler in `source-guard.conf`; die Kachel nennt Grund und Zeile | `bash /boot/config/twinraid/source-guard.sh check-config` zeigt dasselbe; korrigieren, dann `… restart` |
 | Klein: **Wächter: Docker ist … nicht erreichbar** | Kurz nach dem Start von Klein normal: Der Wächter startet vor Docker | Verschwindet von selbst; bleibt es, den Docker-Dienst von Klein prüfen |

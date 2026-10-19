@@ -1056,9 +1056,16 @@ def test_killed_supervisor_does_not_keep_the_lock(host: Host) -> None:
     assert "gestartet" in result.stdout, result.stdout
     restarted = host.wait_status(lambda s: s["started_at"] > status["started_at"])
     assert restarted["instance"] == status["instance"]
-    time.sleep(0.5)
-    assert len(_pids(host, "run")) == 1
-    assert len(_pids(host, "supervise")) == 1
+    # Genau ein Wächter und eine Überwachungsschleife; Subshells eines Wächters (etwa für
+    # $(…)) tragen dieselbe Befehlszeile und zählen nicht.
+    _wait_for(lambda: len(_guards(host, "run")) == 1 and len(_guards(host, "supervise")) == 1)
+    # Eine Sekunde lang nie zwei Wächter und nie eine zweite oder wartende Sperre auf
+    # run.lock: Nur wer sie hält, nimmt Aufträge an.
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        assert len(_guards(host, "run")) == 1
+        assert _run_lock(host) == (1, 0)
+        time.sleep(0.05)
     host.command("stop")
 
 
@@ -1145,6 +1152,38 @@ def _pids(host: Host, word: str) -> list[int]:
             if marker in cmdline and state != "Z":
                 found.append(int(proc.name))
     return found
+
+
+def _guards(host: Host, word: str) -> list[int]:
+    """Prozesse des Wächters ohne ihre Subshells (deren Elternprozess selbst einer ist)."""
+    pids = _pids(host, word)
+    guards = []
+    for pid in pids:
+        try:
+            parent = int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[1])
+        except OSError, IndexError, ValueError:
+            continue
+        if parent not in pids:
+            guards.append(pid)
+    return guards
+
+
+def _run_lock(host: Host) -> tuple[int, int]:
+    """Sperren auf private/run.lock aus /proc/locks: (gehaltene, wartende)."""
+    inode = (host.private / "run.lock").stat().st_ino
+    held = waiting = 0
+    for line in Path("/proc/locks").read_text().splitlines():
+        fields = line.split()
+        if "FLOCK" not in fields:
+            continue
+        device = fields[fields.index("FLOCK") + 4]
+        if int(device.rsplit(":", 1)[1]) != inode:
+            continue
+        if "->" in fields:
+            waiting += 1
+        else:
+            held += 1
+    return held, waiting
 
 
 def _wait_for(condition: Callable[[], bool], timeout: float = 10) -> None:
