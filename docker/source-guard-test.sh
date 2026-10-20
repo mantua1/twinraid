@@ -243,7 +243,7 @@ expect_equal "request: regular empty file of root, 0600" "$(stat -c '%F %U %a' "
 expect_equal "state/: root, 0755" "$(stat -c '%U %a' "${BASE}/state")" "root 755"
 expect_equal "private/: root, 0700" "$(stat -c '%U %a' "${BASE}/private")" "root 700"
 expect_equal "status.json: 0644" "$(stat -c '%a' "${STATUS}")" 644
-expect_equal "protocol 1" "$(status_field protocol)" 1
+expect_equal "protocol 2" "$(status_field protocol)" 2
 expect_equal "zfs unavailable on the runner, guard still active" "$(status_field zfs.state)" unavailable
 
 echo "== Container und Konfiguration"
@@ -350,8 +350,9 @@ send finish
 for name in "${OTHER}" sg-twin-image sg-twin-label sg-twin-mount sg-twin-varrun "${APP}"; do
   expect_equal "${name} still runs" "$(running_state "${name}")" true
 done
+# Ohne ZFS auf dem Runner (der ZFS-Teil läuft in docker/source-guard-sync-test.sh).
 send snapshot
-expect_equal "snapshot not supported in version 1" "${RESULT}" not_supported
+expect_equal "snapshot without ZFS" "${RESULT}" zfs_unavailable
 
 echo "== Angriffe aus dem Container"
 for attempt in "rm -f /srv/worker/source-guard/request" \

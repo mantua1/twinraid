@@ -394,17 +394,19 @@ age_mirrors
 order snapshot created
 order prepare preparing
 wait_job "prepared|awaiting_confirm|failed"
-flock "${WORK}/receive.lock" sleep 30 &
-locker=$!
-sleep 0.5
+# Die Sperre hält dieses Skript selbst über einen eigenen Deskriptor; ein Hintergrund-
+# prozess wie "flock … sleep" vererbte sie an sleep und hielte sie über kill hinaus.
+exec {lock_fd}>>"${WORK}/receive.lock"
+flock "${lock_fd}"
 order send sending
 wait_job "done|failed"
-kill "${locker}" 2>/dev/null || true
-wait "${locker}" 2>/dev/null || true
+exec {lock_fd}>&-
 expect_equal "receive busy on Groß" "$(job result):$(job reason)" "target_refused:receive_busy"
+expect_equal "receive lock free again" "$(flock -n "${WORK}/receive.lock" true && echo free)" "free"
 
 echo "== close und Neustart während einer Übertragung"
 full_run
+expect_equal "ready to send" "$(job state):$(job send_ready)" "prepared:true"
 before="$(zfs list -H -t snapshot -o name -- "${ROOT}/twinraidtest" | wc -l)"
 # Die ssh-Hilfe wartet vor guard.sh; zfs send hängt so am vollen Puffer.
 echo 10 >"${WORK}/ssh-delay"

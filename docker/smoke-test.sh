@@ -802,20 +802,23 @@ import json, os, sys, time
 
 now = int(time.time())
 status = {
-    "protocol": 1, "version": 1, "heartbeat_at": now, "started_at": now - 60,
+    "protocol": 2, "version": 2, "heartbeat_at": now, "started_at": now - 60,
     "instance": "0123456789abcdef", "error": None, "error_detail": None, "config_line": None,
     "last_seq": 0, "last": None, "rejected": {"count": 0, "last_at": None},
     "host": {"connect": "absent", "flash_backup": "inactive"},
     "limits": {"max_stop_minutes": 20, "heartbeat_timeout_seconds": 120,
                "stop_timeout_seconds": 60, "min_run_interval_minutes": 30,
                "max_deletions": 1000, "snapshot_keep_days": 7, "snapshot_reserve_percent": 15},
-    "target": {"configured": False, "port": 22},
+    "target": {"configured": False, "port": 22, "key": False, "known_host": False,
+               "check": None},
     "allowed": [{"name": "twinraid-testcontainer", "id": None, "state": "missing"}],
     "run": None, "run_allowed_at": None, "last_run": None,
     "zfs": {"state": "unavailable", "pool": None,
             "datasets": [{"name": "twinraidtest", "present": None, "referenced": None,
-                          "compression": None}],
+                          "compression": None, "snapshots": None,
+                          "oldest_snapshot_at": None, "base": None, "bookmark": None}],
             "self_dataset": "unknown"},
+    "job": None,
     "seq_exhausted": False,
 }
 tmp = sys.argv[1] + ".tmp"
