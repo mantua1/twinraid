@@ -270,6 +270,11 @@ def guard_processes(host: Host, word: str) -> list[int]:
     return found
 
 
+def next_second() -> None:
+    """Snapshot-Namen haben Sekunden; im Test fehlt der Abstand von 30 min zwischen zwei."""
+    time.sleep(1.05 - time.time() % 1)
+
+
 def wait_until(condition: Callable[[], bool], timeout: float = 10) -> None:
     deadline = time.monotonic() + timeout
     while not condition():
@@ -417,6 +422,23 @@ def test_snapshot_limit_counts_only_own_snapshots(host: Host) -> None:
     assert host.send("snapshot")["result"] == "created"
     assert host.send("close")["result"] == "closed"
     assert host.send("snapshot")["result"] == "snapshot_limit"
+
+
+def test_snapshot_with_an_existing_name_fails(host: Host) -> None:
+    """Gleicher Name (dieselbe Sekunde): zfs snapshot scheitert, kein Job entsteht."""
+    now = int(time.time())
+
+    def seed(zfs: dict[str, Any]) -> None:
+        for offset in range(30):
+            stamp = time.strftime("twinraid-%Y%m%dT%H%M%SZ", time.gmtime(now + offset))
+            zfs["snapshots"][f"{DS}@{stamp}"] = snapshot(
+                str(9000 + offset), created=now, txg=990 + offset, props={}
+            )
+
+    host.update_zfs(seed)
+    started(host)
+    assert host.send("snapshot")["result"] == "snapshot_failed"
+    assert host.status()["job"] is None
 
 
 def test_failed_snapshot_opens_no_job(host: Host) -> None:
@@ -805,6 +827,7 @@ def test_prepare_fails_on_klein(host: Host, failing: str) -> None:
     assert job["result"] == "prepare_failed"
     assert job["deadline"] is None
     assert host.send("send")["result"] == "no_job"
+    next_second()
     assert host.send("snapshot")["result"] == "created"
 
 
@@ -1098,6 +1121,7 @@ def test_close(running: Host) -> None:
     # Der Snapshot bleibt und läuft nach snapshot_keep_days ab.
     assert new_name(job) in running.zfs()["snapshots"]
     assert running.send("close")["result"] == "no_job"
+    next_second()
     assert running.send("snapshot")["result"] == "created"
 
 
