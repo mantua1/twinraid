@@ -19,7 +19,8 @@ min_run_interval_minutes 30        # Pause zwischen zwei Läufen (10–1440); au
 dataset twinraidtest
 max_deletions 1000                 # Löschgrenze je Job, Summe über die Datasets
 
-# Ziel für das Senden (ab v0.5.1).
+# Ziel für das Senden (ab v0.5.1). Danach einmal "source-guard.sh init-key" (Key „sync“,
+# gibt die Zeile für Groß aus) und "source-guard.sh trust-target" (Hostkey von Groß).
 target_host 192.168.10.11          # Unraid Groß (Beispielwert)
 target_port 22
 snapshot_keep_days 7               # eigene Snapshots auf Klein (1–365)
