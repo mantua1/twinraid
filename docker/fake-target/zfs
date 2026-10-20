@@ -262,12 +262,21 @@ def do_receive(data: dict[str, Any], arguments: list[str]) -> None:
         obj = need(objects, target)
         snaps = [n for n in objects if n.startswith(target + "@")]
         newest = max(snaps, key=lambda n: objects[n]["txg"]) if snaps else None
-        if obj.get("modified"):
+        guids = {str(objects[n]["props"]["guid"][0]) for n in snaps}
+        from_guid = str(stream["from_guid"])
+        # Wie OpenZFS (recv_begin_check_existing_impl): Eine ältere vorhandene Basis zählt als
+        # Veränderung seit diesem Snapshot, eine unbekannte als nicht passend.
+        older = (
+            newest is not None
+            and from_guid in guids
+            and (str(objects[newest]["props"]["guid"][0]) != from_guid)
+        )
+        if obj.get("modified") or older:
             fail(
                 f"cannot receive incremental stream: destination {target} has been modified\n"
                 "since most recent snapshot"
             )
-        if newest is None or str(objects[newest]["props"]["guid"][0]) != str(stream["from_guid"]):
+        if newest is None or str(objects[newest]["props"]["guid"][0]) != from_guid:
             fail(
                 f"cannot receive incremental stream: most recent snapshot of {target} does not\n"
                 "match incremental source"

@@ -789,6 +789,14 @@ def test_modified_target_is_named(guard: Guard) -> None:
     assert guard.snapshots(MIRROR) == ["a"]
 
 
+def test_older_base_counts_as_modified_target(guard: Guard) -> None:
+    """Eine ältere vorhandene Basis meldet OpenZFS wie ein verändertes Ziel (Konzept 3.7)."""
+    day_ago = int(time.time()) - DAY
+    guard.add_mirror(NAME, [("a", 11, day_ago), ("b", 12, day_ago)])
+    refused(receive(guard, stream(("c", 13), full=False, from_guid=11)), "target-modified")
+    assert guard.snapshots(MIRROR) == ["a", "b"]
+
+
 @pytest.mark.parametrize("variant", ["elsewhere", "mount-fails"])
 def test_mount_is_checked(guard: Guard, variant: str) -> None:
     if variant == "elsewhere":
