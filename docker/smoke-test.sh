@@ -862,9 +862,10 @@ done
 expect_equal "source guard mounted as in the template is active" \
   "$(guard_state "${PREFIX}-guard-ok" "active - twinraid-testcontainer" "${guard_root}/ok")" \
   "active - twinraid-testcontainer"
+# Die Daten eines frischen Status bleiben auch bei misconfigured sichtbar (Konzept 3.6).
 expect_equal "writable status mount is reported" \
-  "$(guard_state "${PREFIX}-guard-rw" "misconfigured state_writable -" "${guard_root}/rw")" \
-  "misconfigured state_writable -"
+  "$(guard_state "${PREFIX}-guard-rw" "misconfigured state_writable twinraid-testcontainer" "${guard_root}/rw")" \
+  "misconfigured state_writable twinraid-testcontainer"
 expect_equal "directory in place of the order file is reported" \
   "$(guard_state "${PREFIX}-guard-dir" "misconfigured request_is_directory -")" \
   "misconfigured request_is_directory -"

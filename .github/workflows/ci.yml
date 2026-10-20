@@ -119,6 +119,11 @@ jobs:
             exit 1
           fi
           sudo modprobe zfs
+          # /dev/zfs wie auf Unraid und laut udev-Regel von OpenZFS (90-zfs.rules) für alle
+          # offen; was ein Benutzer darf, prüft der Kernel je Befehl (zfs allow). Neuere
+          # Runner-Images setzen das nicht immer; ohne es scheitert der Empfang als UID 64000.
+          ls -l /dev/zfs
+          sudo chmod 0666 /dev/zfs
       - run: sudo ZFS_CHECK_TEST_HOST=disposable docker/zfs-check-test.sh
       # guard.sh, Modus sync, mit echtem ZFS: Empfang als UID 64000 mit der Delegation aus
       # der Anleitung, Sperren, Aufbewahrung (Konzept 3.7, ab v0.5.1).
