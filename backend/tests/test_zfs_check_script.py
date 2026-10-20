@@ -160,8 +160,15 @@ def test_receiver_as_in_the_concept() -> None:
     assert text.count("setpriv --reuid") == 1
     assert "id -u" not in text
     for line in text.splitlines():
+        # Meldungen mit einem Befehl zum Abschreiben sind kein Aufruf.
+        if line.lstrip().startswith('stop "'):
+            continue
         if "zfs allow -u" in line or "zfs unallow -u" in line:
             assert '-u "${RECV_UID}"' in line, line
+    # Mit der Delegation für guard.sh erbte das Test-Dataset alle Rechte (Konzept 5.6).
+    prepare = text.split("prepare_target() {", 1)[1].split("\n}\n", 1)[0]
+    assert prepare.index('zfs allow -- "${MIRROR_ROOT}"') < prepare.index("zfs create")
+    assert "zfs unallow -u ${RECV_UID} ${MIRROR_ROOT}" in prepare
     concept = CONCEPT.read_text()
     assert "UID und GID 64000" in concept
     assert "Nie verwendet wird `nobody` (99)" in concept

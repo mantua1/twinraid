@@ -445,6 +445,12 @@ prepare_target() {
   if [[ "$(zfs get -H -o value -- type "${MIRROR_ROOT}" 2>/dev/null)" != filesystem ]]; then
     stop "${MIRROR_ROOT} fehlt; zuerst den Schritt Groß prüfen ausführen (Share twinraid-mirror anlegen)"
   fi
+  # Mit der Delegation für guard.sh (E27) erbte das Test-Dataset alle Rechte; Z1b und die
+  # Prüfung von receive:append lieferten dann falsche Ergebnisse (Konzept 5.6).
+  if [[ -n "$(zfs allow -- "${MIRROR_ROOT}" 2>/dev/null)" ]]; then
+    zfs allow -- "${MIRROR_ROOT}" >&2
+    stop "auf ${MIRROR_ROOT} oder ${POOL} sind Rechte delegiert; vorher entfernen, etwa mit: zfs unallow -u ${RECV_UID} ${MIRROR_ROOT} (nach dem Lauf nach docs/EINRICHTUNG.md neu setzen)"
+  fi
   if zfs list -H -o name -- "${TARGET_ROOT}" >/dev/null 2>&1; then
     zfs list -H -t all -o name -r -- "${TARGET_ROOT}" >&2
     stop "${TARGET_ROOT} gibt es schon (Rest eines früheren Laufs?); entfernen mit: zfs-check.sh cleanup target"
