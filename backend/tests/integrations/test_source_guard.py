@@ -27,9 +27,17 @@ from twinraid.integrations.source_guard import (
     read_observation,
 )
 from twinraid.shared.source_guard import (
+    GuardBlocker,
+    GuardCheckResult,
+    GuardConfirmReason,
     GuardContainerState,
+    GuardDatasetProblem,
+    GuardDatasetResult,
     GuardError,
     GuardErrorDetail,
+    GuardJobReason,
+    GuardJobResult,
+    GuardJobState,
     GuardOrder,
     GuardOrderResult,
     GuardRestart,
@@ -49,11 +57,14 @@ NOW = datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC)
 HEARTBEAT = int(NOW.timestamp()) - 4
 OWN_ID = "a" * 64
 OTHER_ID = "b" * 64
+GUID = "1234567890123456789"
+SNAPSHOT = "twinraid-20261019T115900Z"
 
-# Wie write_status in source-guard.sh: Lauf offen, letzter Lauf, ZFS in Ordnung.
+# Wie write_status in source-guard.sh (Protokoll 2): Lauf offen, letzter Lauf, ZFS in
+# Ordnung, letztes check von Groß, ein vorbereiteter Job.
 STATUS: dict[str, Any] = {
-    "protocol": 1,
-    "version": 1,
+    "protocol": 2,
+    "version": 2,
     "heartbeat_at": HEARTBEAT,
     "started_at": HEARTBEAT - 3600,
     "instance": "0123456789abcdef",
@@ -79,7 +90,50 @@ STATUS: dict[str, Any] = {
         "snapshot_keep_days": 7,
         "snapshot_reserve_percent": 15,
     },
-    "target": {"configured": True, "port": 22},
+    "target": {
+        "configured": True,
+        "port": 22,
+        "key": True,
+        "known_host": True,
+        "check": {
+            "at": HEARTBEAT - 20,
+            "result": "ok",
+            "summary": {
+                "root": "ok",
+                "conf": "ok",
+                "deleg": "ok",
+                "receive": "idle",
+                "clones": 0,
+                "available": 10**12,
+                "size": 2 * 10**12,
+                "reserve_percent": 15,
+                "keep_days": 30,
+                "min_interval_minutes": 10,
+            },
+            "mirrors": [
+                {
+                    "name": "twinraidtest",
+                    "state": "mirror",
+                    "props": "ok",
+                    "count": 3,
+                    "newest_guid": GUID,
+                    "newest_created": HEARTBEAT - 90000,
+                    "newest_received": HEARTBEAT - 89000,
+                    "oldest_created": HEARTBEAT - 900000,
+                },
+                {
+                    "name": "dokumente",
+                    "state": "absent",
+                    "props": None,
+                    "count": None,
+                    "newest_guid": None,
+                    "newest_created": None,
+                    "newest_received": None,
+                    "oldest_created": None,
+                },
+            ],
+        },
+    },
     "allowed": [
         {"name": "twinraid-testcontainer", "id": OTHER_ID, "state": "stopped"},
         {"name": "stopped-one", "id": None, "state": "missing"},
@@ -101,9 +155,75 @@ STATUS: dict[str, Any] = {
         "state": "ok",
         "pool": {"used": 100, "available": 900},
         "datasets": [
-            {"name": "twinraidtest", "present": True, "referenced": 4096, "compression": "on"}
+            {
+                "name": "twinraidtest",
+                "present": True,
+                "referenced": 4096,
+                "compression": "on",
+                "snapshots": 4,
+                "oldest_snapshot_at": HEARTBEAT - 500000,
+                "base": {"guid": GUID, "created_at": HEARTBEAT - 90000},
+                "bookmark": True,
+            },
+            {
+                "name": "dokumente",
+                "present": True,
+                "referenced": 8192,
+                "compression": "lz4",
+                "snapshots": 1,
+                "oldest_snapshot_at": HEARTBEAT - 60,
+                "base": None,
+                "bookmark": False,
+            },
         ],
         "self_dataset": "found",
+    },
+    "job": {
+        "id": 5,
+        "state": "awaiting_confirm",
+        "result": None,
+        "reason": None,
+        "snapshot": SNAPSHOT,
+        "created_at": HEARTBEAT - 60,
+        "deadline": HEARTBEAT + 1700,
+        "confirmed": False,
+        "confirm_reasons": ["deletions"],
+        "send_ready": True,
+        "blockers": [],
+        "datasets": [
+            {
+                "name": "twinraidtest",
+                "mode": "incremental",
+                "base_guid": GUID,
+                "base_type": "snapshot",
+                "problem": None,
+                "deleted": 1200,
+                "modified": 3,
+                "added": 0,
+                "renamed": 1,
+                "referenced": 4096,
+                "base_referenced": 6000,
+                "size": 70000,
+                "sent": None,
+                "result": None,
+            },
+            {
+                "name": "dokumente",
+                "mode": "full",
+                "base_guid": None,
+                "base_type": None,
+                "problem": None,
+                "deleted": None,
+                "modified": None,
+                "added": None,
+                "renamed": None,
+                "referenced": 8192,
+                "base_referenced": None,
+                "size": 9000,
+                "sent": None,
+                "result": None,
+            },
+        ],
     },
     "seq_exhausted": False,
 }
@@ -238,9 +358,11 @@ def _problem(raw: bytes) -> GuardStatusProblem:
         (b'{"protocol":NaN}', GuardStatusProblem.BAD_JSON),
         ('{"name":"ä"}'.encode(), GuardStatusProblem.BAD_JSON),
         (b"[1]", GuardStatusProblem.SCHEMA),
-        (b'{"protocol":2}', GuardStatusProblem.PROTOCOL_MISMATCH),
+        # Version 1 des Wächters (TwinRaid 0.5.0) schreibt Protokoll 1.
+        (b'{"protocol":1}', GuardStatusProblem.PROTOCOL_MISMATCH),
+        (b'{"protocol":3}', GuardStatusProblem.PROTOCOL_MISMATCH),
         (b'{"protocol":true}', GuardStatusProblem.SCHEMA),
-        (b'{"protocol":1}', GuardStatusProblem.SCHEMA),
+        (b'{"protocol":2}', GuardStatusProblem.SCHEMA),
     ],
 )
 def test_status_syntax(raw: bytes, problem: GuardStatusProblem) -> None:
@@ -255,7 +377,8 @@ def test_duplicate_key_deep_inside_is_rejected() -> None:
 @pytest.mark.parametrize(
     ("path", "value"),
     [
-        ("version", "1"),
+        ("version", "2"),
+        ("version", 1),
         ("heartbeat_at", True),
         ("heartbeat_at", -1),
         ("heartbeat_at", 1.5),
@@ -283,6 +406,38 @@ def test_duplicate_key_deep_inside_is_rejected() -> None:
         ("seq_exhausted", 0),
         ("extra", 1),
         ("host.extra", 1),
+        # Ab Protokoll 2: Ziel, check, Snapshots und Job.
+        ("target.key", None),
+        ("target.check.result", "ssh said: hello"),
+        ("target.check.at", -1),
+        ("target.check.summary.deleg", "id-in-use"),
+        ("target.check.summary.reserve_percent", 100),
+        ("target.check.mirrors.0.state", "mirrored"),
+        ("target.check.mirrors.0.newest_guid", 123),
+        ("target.check.mirrors.0.newest_guid", "12345678901234567890123"),
+        ("target.check.mirrors.0.name", "../etc"),
+        ("target.check.mirrors.0.extra", 1),
+        ("zfs.datasets.0.base", {"guid": GUID}),
+        ("zfs.datasets.0.base.guid", "abc"),
+        ("zfs.datasets.0.bookmark", "yes"),
+        ("zfs.datasets.0.snapshots", -1),
+        ("job.id", 0),
+        ("job.state", "running"),
+        ("job.result", "maybe"),
+        ("job.reason", "permission denied"),
+        ("job.snapshot", "other-20261019T115900Z"),
+        ("job.snapshot", "twinraid-20261019T115900Z@x"),
+        ("job.confirmed", None),
+        ("job.confirm_reasons", ["deletions", "many"]),
+        ("job.send_ready", "true"),
+        ("job.blockers", ["space_low", "rm -rf"]),
+        ("job.datasets.0.mode", "partial"),
+        ("job.datasets.0.base_type", "clone"),
+        ("job.datasets.0.problem", "target-exists"),
+        ("job.datasets.0.result", "done"),
+        ("job.datasets.0.sent", -5),
+        ("job.datasets.0.extra", None),
+        ("job.extra", None),
     ],
 )
 def test_schema_rejects(path: str, value: Any) -> None:  # noqa: ANN401 - beliebiger JSON-Wert
@@ -299,6 +454,31 @@ def test_schema_rejects_missing_fields_and_long_lists() -> None:
     data = copy.deepcopy(STATUS)
     data["zfs"]["datasets"] = [STATUS["zfs"]["datasets"][0]] * 21
     assert _problem(_raw(data)) is GuardStatusProblem.SCHEMA
+    data = copy.deepcopy(STATUS)
+    data["job"]["datasets"] = [STATUS["job"]["datasets"][0]] * 21
+    assert _problem(_raw(data)) is GuardStatusProblem.SCHEMA
+    data = copy.deepcopy(STATUS)
+    data["target"]["check"]["mirrors"] = [STATUS["target"]["check"]["mirrors"][0]] * 21
+    assert _problem(_raw(data)) is GuardStatusProblem.SCHEMA
+    data = copy.deepcopy(STATUS)
+    del data["job"]
+    assert _problem(_raw(data)) is GuardStatusProblem.SCHEMA
+
+
+def test_schema_accepts_empty_parts() -> None:
+    """Ohne Job, ohne check und ohne Snapshots (gerade gestartet, Groß nie gefragt)."""
+    data = _changed("job", None)
+    data["target"]["check"] = None
+    data["zfs"]["datasets"][0].update(
+        snapshots=None, oldest_snapshot_at=None, base=None, bookmark=None
+    )
+    assert parse_status(_raw(data)).job is None
+    unreachable = _changed(
+        "target.check", {"at": HEARTBEAT, "result": "unreachable", "summary": None, "mirrors": []}
+    )
+    file = parse_status(_raw(unreachable))
+    assert file.target.check is not None
+    assert file.target.check.result is GuardCheckResult.UNREACHABLE
 
 
 # --- Lesen ---------------------------------------------------------------------------------
@@ -573,3 +753,47 @@ def test_zfs_codes_match_the_script() -> None:
     text = _script()
     assert set(re.findall(r"\bZFS_STATE=([a-z_]+)", text)) == _values(GuardZfsState)
     assert set(re.findall(r"\bSELF_DATASET_STATE=([a-z_]+)", text)) == _values(GuardSelfDataset)
+
+
+def _function(text: str, name: str) -> str:
+    start = text.index(f"\n{name}() {{\n")
+    return text[start : text.index("\n}\n", start)]
+
+
+def test_job_codes_match_the_script() -> None:
+    text = _script()
+    states = set(re.findall(r'\bJOB_STATE="?([a-z_]+)"?', text))
+    assert states == _values(GuardJobState)
+    results = set(re.findall(r"\bJOB_RESULT=([a-z_]+)", text))
+    results |= set(re.findall(r"\bfallback=([a-z_]+)", text))
+    assert results == _values(GuardJobResult)
+    ssh_codes = set(re.findall(r"\bSSH_CODE=([a-z_]+)", text))
+    refusals = re.search(r"^readonly SEND_REFUSALS=\(([^)]*)\)", text, re.MULTILINE)
+    assert refusals is not None
+    reasons = set(re.findall(r"\bJOB_REASON=([a-z_]+)", text)) | ssh_codes
+    reasons |= {item.replace("-", "_") for item in refusals.group(1).split()}
+    assert reasons == _values(GuardJobReason)
+
+
+def test_check_codes_match_the_script() -> None:
+    text = _script()
+    results = set(re.findall(r"\bCHECK_RESULT=([a-z_]+)", text))
+    results |= set(re.findall(r"\bSSH_CODE=([a-z_]+)", text))
+    assert results == _values(GuardCheckResult)
+
+
+def test_prepare_and_send_codes_match_the_script() -> None:
+    text = _script()
+    problems = set(re.findall(r"\bJD_PROBLEM\[i\]=([a-z_]+)", text))
+    assert problems == _values(GuardDatasetProblem)
+    blockers = set(re.findall(r"\bJOB_BLOCKERS\+=\(([a-z_]+)\)", text))
+    blockers |= set(re.findall(r"add_unique JOB_BLOCKERS ([a-z_]+)", text))
+    assert blockers | problems == _values(GuardBlocker)
+    reasons = set(re.findall(r"add_unique JOB_CONFIRM_REASONS ([a-z_]+)", text))
+    assert reasons == _values(GuardConfirmReason)
+    send = _function(text, "child_send")
+    results = set(re.findall(r"\bJD_RESULT\[i\]=([a-z_]+)", send))
+    # JD_RESULT[i]="${JOB_RESULT}" übernimmt das Ergebnis des gescheiterten Datasets.
+    assert 'JD_RESULT[i]="${JOB_RESULT}"' in send
+    results |= set(re.findall(r"\bJOB_RESULT=([a-z_]+)", send)) - {"ok"}
+    assert results == _values(GuardDatasetResult)

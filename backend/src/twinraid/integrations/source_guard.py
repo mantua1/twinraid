@@ -27,12 +27,20 @@ from pydantic import ConfigDict, Field, StringConstraints, ValidationError
 
 from twinraid.shared.base import StrictModel
 from twinraid.shared.source_guard import (
+    GuardBlocker,
+    GuardCheckResult,
+    GuardConfirmReason,
     GuardContainer,
     GuardContainerState,
     GuardDataset,
+    GuardDatasetProblem,
+    GuardDatasetResult,
     GuardDetails,
     GuardError,
     GuardErrorDetail,
+    GuardJobReason,
+    GuardJobResult,
+    GuardJobState,
     GuardLastRun,
     GuardLimits,
     GuardOrder,
@@ -59,7 +67,8 @@ READ_INTERVAL_SECONDS = 5.0
 # Aktiv heißt: Herzschlag höchstens so alt (Konzept 3.6).
 FRESH_SECONDS = 30
 MAX_STATUS_BYTES = 64 * 1024
-PROTOCOL = 1
+# Protokoll 2 ab source-guard.sh Version 2 (TwinRaid v0.5.1, Konzept 3.6).
+PROTOCOL = 2
 
 # Zeichenregeln wie im Wächter.
 ContainerName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")]
@@ -67,6 +76,8 @@ ShareName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-
 ContainerId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 Instance = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{16}$")]
 Compression = Annotated[str, StringConstraints(pattern=r"^[a-z0-9-]{1,20}$")]
+Guid = Annotated[str, StringConstraints(pattern=r"^[0-9]{1,20}$")]
+SnapshotName = Annotated[str, StringConstraints(pattern=r"^twinraid-[0-9]{8}T[0-9]{6}Z$")]
 # Uhrzeiten als Sekunden seit 1970; Zahlen höchstens 19 Ziffern wie json_number im Wächter.
 Timestamp = Annotated[int, Field(ge=0, lt=10**11)]
 Count = Annotated[int, Field(ge=0, lt=10**19)]
@@ -108,9 +119,45 @@ class _Limits(_FileModel):
     snapshot_reserve_percent: Annotated[int, Field(ge=5, le=50)]
 
 
+class _CheckSummary(_FileModel):
+    """Zeile summary von guard.sh sync check (Konzept 3.7)."""
+
+    root: Literal["ok", "missing"]
+    conf: Literal["ok", "missing", "invalid"]
+    deleg: Literal["ok", "mismatch", "id_in_use"]
+    receive: Literal["idle", "busy"]
+    clones: Count | None
+    available: Count | None
+    size: Count | None
+    reserve_percent: Annotated[int, Field(ge=0, le=99)] | None
+    keep_days: Annotated[int, Field(ge=0, le=9999)] | None
+    min_interval_minutes: Annotated[int, Field(ge=0, le=9999)] | None
+
+
+class _CheckMirror(_FileModel):
+    name: ShareName
+    state: Literal["absent", "mirror", "foreign"]
+    props: Literal["ok", "mismatch"] | None
+    count: Count | None
+    newest_guid: Guid | None
+    newest_created: Timestamp | None
+    newest_received: Timestamp | None
+    oldest_created: Timestamp | None
+
+
+class _Check(_FileModel):
+    at: Timestamp
+    result: GuardCheckResult
+    summary: _CheckSummary | None
+    mirrors: Annotated[tuple[_CheckMirror, ...], Field(max_length=20)]
+
+
 class _Target(_FileModel):
     configured: bool
     port: Annotated[int, Field(ge=1, le=65535)]
+    key: bool
+    known_host: bool
+    check: _Check | None
 
 
 class _Allowed(_FileModel):
@@ -149,11 +196,20 @@ class _Pool(_FileModel):
     available: Count | None
 
 
+class _Base(_FileModel):
+    guid: Guid
+    created_at: Timestamp
+
+
 class _Dataset(_FileModel):
     name: ShareName
     present: bool | None
     referenced: Count | None
     compression: Compression | None
+    snapshots: Count | None
+    oldest_snapshot_at: Timestamp | None
+    base: _Base | None
+    bookmark: bool | None
 
 
 class _Zfs(_FileModel):
@@ -163,11 +219,45 @@ class _Zfs(_FileModel):
     self_dataset: GuardSelfDataset
 
 
+class _JobDataset(_FileModel):
+    name: ShareName
+    mode: Literal["full", "incremental"] | None
+    base_guid: Guid | None
+    base_type: Literal["snapshot", "bookmark"] | None
+    problem: GuardDatasetProblem | None
+    deleted: Count | None
+    modified: Count | None
+    added: Count | None
+    renamed: Count | None
+    referenced: Count | None
+    base_referenced: Count | None
+    size: Count | None
+    sent: Count | None
+    result: GuardDatasetResult | None
+
+
+class _Job(_FileModel):
+    """Job des Wächters (Konzept 3.6, „Job, Prüfen und Senden“)."""
+
+    id: Annotated[int, Field(ge=1, le=999_999_999)]
+    state: GuardJobState
+    result: GuardJobResult | None
+    reason: GuardJobReason | None
+    snapshot: SnapshotName
+    created_at: Timestamp
+    deadline: Timestamp | None
+    confirmed: bool
+    confirm_reasons: Annotated[tuple[GuardConfirmReason, ...], Field(max_length=3)]
+    send_ready: bool | None
+    blockers: Annotated[tuple[GuardBlocker, ...], Field(max_length=20)]
+    datasets: Annotated[tuple[_JobDataset, ...], Field(max_length=20)]
+
+
 class GuardFile(_FileModel):
     """state/status.json, wie write_status in source-guard.sh es schreibt."""
 
-    protocol: Literal[1]
-    version: Annotated[int, Field(ge=1, le=999)]
+    protocol: Literal[2]
+    version: Annotated[int, Field(ge=2, le=999)]
     heartbeat_at: Timestamp
     started_at: Timestamp
     instance: Instance | None
@@ -186,6 +276,7 @@ class GuardFile(_FileModel):
     run_allowed_at: Timestamp | None
     last_run: _LastRun | None
     zfs: _Zfs
+    job: _Job | None
     seq_exhausted: bool
 
 
