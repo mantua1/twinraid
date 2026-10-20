@@ -75,6 +75,9 @@ readonly NAME_PATTERN='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 readonly MAX_MIRRORS=20
 # Ein Empfang zur Zeit; poweroff nimmt dieselbe Sperre (sync-running).
 readonly RECEIVE_LOCK=/var/run/twinraid-guard-receive.lock
+# So lange hält ein Hintergrundprozess die Sperre nach poweroff (Sekunden, wie das Warten
+# von TwinRaid auf das Ausschalten); beim Herunterfahren beendet Unraid ihn ohnehin.
+readonly POWEROFF_LOCK_SECONDS=900
 # Empfang ohne root (E27): feste UID und GID ohne Eintrag in /etc/passwd und /etc/group,
 # nie nobody (99) oder eine UID, unter der auf Unraid Samba oder Container laufen.
 readonly PASSWD=/etc/passwd
@@ -613,7 +616,9 @@ read_mirror_conf() {
     case "${key}" in
       mirror)
         lower="${value,,}"
-        if [[ ! "${value}" =~ ${NAME_PATTERN} || "${lower}" == system || "${lower}" == domains ]] ||
+        # zfs-check: Test-Dataset von zfs-check.sh (Konzept 5.6), nie ein Spiegel.
+        if [[ ! "${value}" =~ ${NAME_PATTERN} || "${lower}" == system || "${lower}" == domains ||
+          "${lower}" == zfs-check ]] ||
           in_list "${value}" "${MIRRORS[@]+"${MIRRORS[@]}"}" || ((${#MIRRORS[@]} >= MAX_MIRRORS)); then
           conf_invalid "${number}"
           return 1
@@ -814,7 +819,8 @@ receiver_ids_free() {
 
 # Sperre für Empfänge: flock auf eine Datei in /var/run, nur lesend geöffnet, damit auch
 # zfs receive als UID 64000 sie halten kann, ohne in die Datei schreiben zu können. Die
-# Sperre gilt, bis das Skript (oder poweroff nach exec) endet. Rückgabe 1, wenn belegt.
+# Sperre gilt, solange ein Prozess den Deskriptor offen hat: das Skript, zfs receive und
+# nach poweroff der Hintergrundprozess aus hold_receive_lock. Rückgabe 1, wenn belegt.
 claim_receive_lock() {
   if [[ -L "${RECEIVE_LOCK}" ]]; then
     log "receive lock is a symlink"
@@ -840,6 +846,16 @@ receive_running() {
     return 1
   fi
   exec {fd}<&-
+}
+
+# Hält die Sperre nach poweroff weiter: /sbin/poweroff ist auf Unraid ein Link auf halt
+# (sysvinit) und übergibt nur an init; es kehrt zurück, während Unraid noch herunterfährt.
+# Ein Hintergrundprozess erbt den Deskriptor, ignoriert SIGHUP und hat sonst nichts offen.
+hold_receive_lock() {
+  (
+    trap '' HUP
+    exec sleep "${POWEROFF_LOCK_SECONDS}"
+  ) </dev/null >/dev/null 2>&1 &
 }
 
 # Klone von Snapshots der Spiegel aus mirror.conf (clone-active, Konzept 4.6). Setzt CLONES;
@@ -913,7 +929,7 @@ read_snapshots() {
     fi
     SNAP_NAMES+=("${name}")
     SNAP_GUIDS+=("${guid}")
-    SNAP_CREATED+=("${created}")
+    SNAP_CREATED+=("$((10#${created}))")
     SNAP_RECEIVED+=("${received[${name}]:--}")
   done <<<"${output}"
 }
@@ -934,8 +950,9 @@ mount_mirror() {
 }
 
 # Aufbewahrung (Konzept 3.7) für alle Spiegel aus mirror.conf, die in Ordnung sind: nur
-# twinraid:received mit Quelle local zählt, älter als KEEP_DAYS, nie die drei neuesten,
-# nie mit Klon, nie mit -r, nie ein Name ohne "@".
+# twinraid:received mit Quelle local zählt; er und creation (von der Uhr von Klein) müssen
+# beide älter als KEEP_DAYS sein, damit eine vorgestellte Uhr auf Groß allein nichts löscht.
+# Nie die drei neuesten, nie mit Klon, nie mit -r, nie ein Name ohne "@".
 retention() {
   local name dataset i snap clones limit destroyed failed
   limit=$((NOW - KEEP_DAYS * 86400))
@@ -952,7 +969,8 @@ retention() {
     for ((i = 0; i < ${#SNAP_NAMES[@]} - 3; i++)); do
       snap="${SNAP_NAMES[i]}"
       if [[ "${snap}" != "${dataset}@"* || "${snap#"${dataset}@"}" == *[@/#]* ||
-        "${SNAP_RECEIVED[i]}" == - ]] || ((SNAP_RECEIVED[i] >= limit)); then
+        "${SNAP_RECEIVED[i]}" == - ]] ||
+        ((SNAP_RECEIVED[i] >= limit || SNAP_CREATED[i] >= limit)); then
         continue
       fi
       clones="$("${ZFS}" get -H -o value -- clones "${snap}" 2>/dev/null)" || continue
@@ -1185,10 +1203,11 @@ case "${mode}" in
         vm_command "forced stop" destroy "${FORCE_TIMEOUT}"
         ;;
       poweroff)
-        # Die Sperre bleibt bis zum Ausschalten offen: Danach beginnt kein Empfang mehr.
+        # Die Sperre bleibt bis zum Ausschalten belegt: Danach beginnt kein Empfang mehr.
         claim_receive_lock || refuse sync-running
         ensure_vms_off
         log "poweroff requested by TwinRaid"
+        hold_receive_lock
         exec "${POWEROFF}"
         ;;
       *)

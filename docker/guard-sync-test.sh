@@ -400,22 +400,41 @@ for snap in i j; do
   expect_received "receive ${snap}"
 done
 old=$(($(date +%s) - 40 * 86400))
-for snap in a b c d f; do
+for snap in a b c d f h; do
   zfs set "twinraid:received=${old}" "${MIRROR}@${snap}"
 done
 zfs inherit twinraid:received "${MIRROR}@b"
 zfs hold twinraid-test "${MIRROR}@c"
-zfs set "twinraid:received=${old}" "${MIRROR}@h"
 age_newest "${MIRROR}" 700
 zfs snapshot "${SRC}/twinraidtest@k"
 receive twinraidtest -i @j "${SRC}/twinraidtest@k"
-expect_received "receive triggers the retention"
-# a, d, f und h sind alt; b trägt kein twinraid:received mit Quelle local, c hat einen
-# Hold; i, j und k sind die drei neuesten.
+expect_received "receive with only twinraid:received old"
+# Zwei Uhren (Konzept 3.7): creation kommt von Klein und ist hier von eben. Eine alte Zeit
+# von Groß allein löscht nichts.
+expect_equal "nothing deleted while creation is young" \
+  "$(zfs list -H -t snapshot -o name -s createtxg "${MIRROR}" | sed 's/.*@//' | tr '\n' ' ')" \
+  "a b c d f h i j k "
+# Den Löschweg prüft eine Kopie, die nur hier keep_days 0 erlaubt; dann ist auch creation alt.
+# shellcheck disable=SC2016 # ${value} ist Text in guard.sh, nicht in diesem Skript.
+sed -e 's|keep_days) int_in "${value}" 30 3650|keep_days) int_in "${value}" 0 3650|' \
+  "${GUARD}" >"${WORK}/guard-keep0.sh"
+expect_equal "the copy differs in the range of keep_days only" \
+  "$(diff "${GUARD}" "${WORK}/guard-keep0.sh" | grep -c '^>' || true)" 1
+printf 'mirror twinraidtest\nmirror isos\nmirror fremd\nmirror kinder\nkeep_days 0\n' >"${WORK}/mirror.conf"
+age_newest "${MIRROR}" 700
+zfs snapshot "${SRC}/twinraidtest@l"
+sleep 1
+rc=0
+err="$(SSH_ORIGINAL_COMMAND="receive twinraidtest" /bin/bash "${WORK}/guard-keep0.sh" sync \
+  < <(zfs send -L -c -e -i @k "${SRC}/twinraidtest@l") 2>&1 >/dev/null)" || rc=$?
+expect_equal "receive triggers the retention" "${rc}:${err}" "0:"
+# a, d, f, h und i sind alt genug; b trägt kein twinraid:received mit Quelle local, c hat
+# einen Hold; j, k und l sind die drei neuesten.
 expect_equal "retention kept the right snapshots" \
   "$(zfs list -H -t snapshot -o name -s createtxg "${MIRROR}" | sed 's/.*@//' | tr '\n' ' ')" \
-  "b c i j k "
-expect_contains "retention in the syslog" "$(syslog)" "retention of mirror twinraidtest: 4 snapshots destroyed, 1 failed"
+  "b c j k l "
+expect_contains "retention in the syslog" "$(syslog)" "retention of mirror twinraidtest: 5 snapshots destroyed, 1 failed"
+printf 'mirror twinraidtest\nmirror isos\nmirror fremd\nmirror kinder\n' >"${WORK}/mirror.conf"
 zfs release twinraid-test "${MIRROR}@c"
 expect_equal "locked mirror untouched by retention" \
   "$(zfs list -H -t snapshot -o name "${ROOT}/kinder" | wc -l)" 1

@@ -7,6 +7,7 @@ den Befehl danach unverändert aus, ohne die UID zu wechseln), Unraid-Pfade zeig
 einen Testordner, und vm-watch läuft im Takt von Zehntelsekunden.
 """
 
+import fcntl
 import json
 import os
 import re
@@ -102,6 +103,8 @@ TEST_TIMES = {
     "WATCH_KEEPALIVE_MS": "600",
     "WATCH_CONF_MS": "300",
     "WATCH_CONNECT_MS": "300",
+    # Halteprozess der Sperre nach poweroff: kurz, damit kein Test ihn 15 Minuten zurücklässt.
+    "POWEROFF_LOCK_SECONDS": "2",
 }
 LINE_PATTERN = (
     r"watch 3 vm=[A-Z_]+ name=(-|[0-9a-f]+) others=(\?|\d+) names=(-|[0-9a-f,]+) "
@@ -406,6 +409,19 @@ class Guard:
 
     def lock_file(self) -> Path:
         return self.root / "run/twinraid-guard-receive.lock"
+
+    def wait_for_lock_release(self, timeout: float = 6.0) -> None:
+        """Bis der Halteprozess nach poweroff die Sperre freigibt (POWEROFF_LOCK_SECONDS)."""
+        deadline = time.monotonic() + timeout
+        with self.lock_file().open() as handle:
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise AssertionError("the receive lock was never released") from None
+                    time.sleep(0.1)
 
 
 def stream(

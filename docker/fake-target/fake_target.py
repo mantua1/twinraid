@@ -7,7 +7,9 @@ Weiterer Zustand in /state:
   syslog.log      Meldungen an /dev/log, z. B. von guard.sh (Kennung twinraid-guard)
 """
 
+import contextlib
 import os
+import signal
 import socket
 import threading
 import time
@@ -52,6 +54,18 @@ def power_loop() -> None:
 
 
 def boot() -> None:
+    """Neustart: Wie beim echten Herunterfahren lebt kein Prozess mehr, der die Sperre des
+    Empfangs hält (guard.sh hält sie nach poweroff mit einem Hintergrundprozess)."""
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            targets = [str(fd.readlink()) for fd in (proc / "fd").iterdir()]
+        except OSError:
+            continue
+        if any(target.endswith("/twinraid-guard-receive.lock") for target in targets):
+            with contextlib.suppress(OSError):
+                os.kill(int(proc.name), signal.SIGKILL)
     (STATE / "power-off").unlink(missing_ok=True)
 
 

@@ -319,6 +319,8 @@ def test_valid_mirror_conf(
         ("mirror system\n", 1),
         ("mirror twinraidtest\nmirror Domains\n", 2),
         ("mirror SYSTEM\n", 1),
+        ("mirror zfs-check\n", 1),
+        ("mirror twinraidtest\nmirror ZFS-Check\n", 2),
         ("mirror twinraidtest\nmirror twinraidtest\n", 2),
         ("mirror ../etc\n", 1),
         ("mirror a/b\n", 1),
@@ -878,6 +880,19 @@ def test_retention_after_a_receive(guard: Guard) -> None:
         ["destroy", "--", f"{MIRROR}@s3"],
         ["destroy", "--", f"{MIRROR}@s5"],
     ]
+
+
+def test_retention_needs_both_clocks(guard: Guard) -> None:
+    """twinraid:received (Uhr von Groß) und creation (Uhr von Klein) müssen beide alt sein."""
+    now = int(time.time())
+    old = now - 40 * DAY
+    guard.add_mirror(
+        NAME, [("s1", 1, old), ("s2", 2, now - DAY), ("s3", 3, old), ("s4", 4, old), ("s5", 5, old)]
+    )
+    # Für s2 lief die Uhr von Klein vor (creation alt), für s3 die von Groß (received alt).
+    guard.set_prop(f"{MIRROR}@s3", "creation", str(now - DAY), "-")
+    assert receive(guard, stream(("s6", 6), full=False, from_guid=5)).returncode == 0
+    assert guard.snapshots(MIRROR) == ["s2", "s3", "s4", "s5", "s6"]
 
 
 def test_retention_respects_keep_days(guard: Guard) -> None:

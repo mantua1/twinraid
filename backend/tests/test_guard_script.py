@@ -354,6 +354,7 @@ def test_poweroff_is_refused_when_the_vm_list_is_unreadable(guard: Guard, flag: 
 def test_poweroff_without_power_conf_needs_every_vm_off(guard: Guard) -> None:
     guard.configure(None)
     assert guard.run("power", "poweroff").returncode == 0
+    guard.wait_for_lock_release()
     guard.set_vms((UUID, "Gaming VM", "crashed"))
     result = guard.run("power", "poweroff")
     assert result.returncode == 3
@@ -371,6 +372,30 @@ def test_poweroff_is_refused_during_a_receive(guard: Guard) -> None:
     assert result.stderr == "twinraid-guard: refused sync-running\n"
     assert guard.poweroffs() == 0
     assert "refused: sync-running" in guard.syslog()
+
+
+def test_poweroff_keeps_the_receive_lock_after_it_returned(tmp_path: Path) -> None:
+    """/sbin/poweroff ist auf Unraid halt (sysvinit) und kehrt zurück, bevor Groß aus ist."""
+    guard = make_guard(tmp_path, POWEROFF_LOCK_SECONDS="3")
+    started = time.monotonic()
+    result = guard.run("power", "poweroff")
+    assert result.returncode == 0
+    # guard.sh wartet nicht auf den Halteprozess; er hat keine Ausgabe offen.
+    assert time.monotonic() - started < 2.5
+    with guard.lock_file().open() as handle:
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        receive = guard.run("sync", "receive twinraidtest", stdin="{}")
+        assert receive.returncode == 3
+        assert receive.stderr == "twinraid-guard: refused receive-busy\n"
+    guard.wait_for_lock_release()
+
+
+def test_refused_poweroff_leaves_no_lock(guard: Guard) -> None:
+    guard.set_vms((UUID, "Gaming VM", "running"))
+    assert guard.run("power", "poweroff").returncode == 3
+    with guard.lock_file().open() as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def test_poweroff_keeps_the_receive_lock(tmp_path: Path) -> None:
@@ -693,6 +718,7 @@ def test_repository_script_uses_fixed_paths_and_version() -> None:
     assert "readonly ARCSTATS=/proc/spl/kstat/zfs/arcstats\n" in text
     assert "readonly MEMORY_MARGIN=1073741824\n" in text
     assert "readonly RECEIVE_LOCK=/var/run/twinraid-guard-receive.lock\n" in text
+    assert "readonly POWEROFF_LOCK_SECONDS=900\n" in text
 
 
 def test_watch_line_format_is_documented() -> None:
