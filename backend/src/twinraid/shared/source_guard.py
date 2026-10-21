@@ -155,6 +155,132 @@ class GuardOrderResult(StrEnum):
     DENIED_SELF = "denied_self"
     NOT_FOUND = "not_found"
     STOP_FAILED = "stop_failed"
+    # Ab Version 2 (Konzept 3.6, „Job, Prüfen und Senden“).
+    JOB_OPEN = "job_open"
+    CREATED = "created"
+    ZFS_UNAVAILABLE = "zfs_unavailable"
+    NO_DATASETS = "no_datasets"
+    DATASET_MISSING = "dataset_missing"
+    SNAPSHOT_LOW_SPACE = "snapshot_low_space"
+    SNAPSHOT_LIMIT = "snapshot_limit"
+    SNAPSHOT_FAILED = "snapshot_failed"
+    PREPARING = "preparing"
+    NO_JOB = "no_job"
+    WRONG_STATE = "wrong_state"
+    CONFIRMED = "confirmed"
+    NOT_NEEDED = "not_needed"
+    SENDING = "sending"
+    NOT_READY = "not_ready"
+    CLOSED = "closed"
+
+
+class GuardJobState(StrEnum):
+    """Zustand des Jobs (Konzept 3.6); offen sind die ersten fünf."""
+
+    SNAPSHOT = "snapshot"
+    PREPARING = "preparing"
+    PREPARED = "prepared"
+    AWAITING_CONFIRM = "awaiting_confirm"
+    SENDING = "sending"
+    DONE = "done"
+    FAILED = "failed"
+    CLOSED = "closed"
+
+
+class GuardJobResult(StrEnum):
+    OK = "ok"
+    CLOSED = "closed"
+    INTERRUPTED = "interrupted"
+    JOB_TIMEOUT = "job_timeout"
+    PREPARE_FAILED = "prepare_failed"
+    SEND_FAILED = "send_failed"
+    TARGET_REFUSED = "target_refused"
+    TARGET_MODIFIED = "target_modified"
+
+
+class GuardCheckResult(StrEnum):
+    """Ergebnis von guard.sh sync check über SSH; Meldungen von ssh gehen nie weiter."""
+
+    OK = "ok"
+    TARGET_NOT_CONFIGURED = "target_not_configured"
+    KEY_MISSING = "key_missing"
+    HOST_UNTRUSTED = "host_untrusted"
+    HOST_KEY_MISMATCH = "host_key_mismatch"
+    AUTH_FAILED = "auth_failed"
+    UNREACHABLE = "unreachable"
+    DENIED = "denied"
+    SSH_FAILED = "ssh_failed"
+    BAD_ANSWER = "bad_answer"
+
+
+class GuardJobReason(StrEnum):
+    """job.reason: Grund von guard.sh (3.7, mit "_"), ein Fehler von ssh oder auf Klein."""
+
+    NAME_DENIED = "name_denied"
+    RECEIVE_BUSY = "receive_busy"
+    MIRROR_ROOT_MISSING = "mirror_root_missing"
+    RECEIVER_ID_IN_USE = "receiver_id_in_use"
+    TARGET_EXISTS = "target_exists"
+    DELEGATION_MISMATCH = "delegation_mismatch"
+    PROPS_MISMATCH = "props_mismatch"
+    PROPS_NOT_APPLIED = "props_not_applied"
+    CLONE_ACTIVE = "clone_active"
+    SPACE_LOW = "space_low"
+    TOO_SOON = "too_soon"
+    RECEIVED_PROPERTIES = "received_properties"
+    MOUNT_MISMATCH = "mount_mismatch"
+    REFUSED_OTHER = "refused_other"
+    KEY_MISSING = "key_missing"
+    HOST_UNTRUSTED = "host_untrusted"
+    HOST_KEY_MISMATCH = "host_key_mismatch"
+    AUTH_FAILED = "auth_failed"
+    UNREACHABLE = "unreachable"
+    DENIED = "denied"
+    SSH_FAILED = "ssh_failed"
+    BASE_MISSING = "base_missing"
+    NOT_READY = "not_ready"
+    SELF_DATASET_MISSING = "self_dataset_missing"
+    SEND_ERROR = "send_error"
+
+
+class GuardBlocker(StrEnum):
+    """Warum ein vorbereiteter Job nicht gesendet werden kann (send_ready false)."""
+
+    TARGET_UNREACHABLE = "target_unreachable"
+    MIRROR_ROOT_MISSING = "mirror_root_missing"
+    MIRROR_CONF_INVALID = "mirror_conf_invalid"
+    DELEGATION_MISMATCH = "delegation_mismatch"
+    RECEIVE_BUSY = "receive_busy"
+    CLONE_ACTIVE = "clone_active"
+    SPACE_LOW = "space_low"
+    BASE_MISSING = "base_missing"
+    TARGET_EXISTS = "target_exists"
+    NOT_IN_MIRROR_CONF = "not_in_mirror_conf"
+    SELF_DATASET_MISSING = "self_dataset_missing"
+    PROPS_MISMATCH = "props_mismatch"
+
+
+class GuardConfirmReason(StrEnum):
+    DELETIONS = "deletions"
+    SHRUNK = "shrunk"
+    NO_DIFF = "no_diff"
+
+
+class GuardDatasetProblem(StrEnum):
+    BASE_MISSING = "base_missing"
+    NOT_IN_MIRROR_CONF = "not_in_mirror_conf"
+    TARGET_EXISTS = "target_exists"
+    SELF_DATASET_MISSING = "self_dataset_missing"
+
+
+class GuardDatasetResult(StrEnum):
+    OK = "ok"
+    SKIPPED = "skipped"
+    BASE_MISSING = "base_missing"
+    NOT_READY = "not_ready"
+    SEND_FAILED = "send_failed"
+    TARGET_REFUSED = "target_refused"
+    TARGET_MODIFIED = "target_modified"
 
 
 class GuardZfsState(StrEnum):

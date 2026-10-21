@@ -96,6 +96,13 @@ class ActionOutcome(StrEnum):
     VM_RUNNING = "vm_running"
     # Groß wurde nicht ausgeschaltet, weil weitere VMs liefen (ab v0.4.2).
     OTHER_VMS_RUNNING = "other_vms_running"
+    # Ab v0.5.1 (guard.sh Version 3, Konzept 3.5): VM-Start abgelehnt, weil zu wenig
+    # Arbeitsspeicher frei ist oder ein durchgereichtes Gerät belegt ist; andere Fehler von
+    # virsh start; poweroff abgelehnt, weil ein Empfang läuft.
+    VM_MEMORY_LOW = "vm_memory_low"
+    VM_DEVICE_BUSY = "vm_device_busy"
+    VM_START_FAILED = "vm_start_failed"
+    SYNC_RUNNING = "sync_running"
     # Der Worker wurde beendet, während die Aktion lief (nur im Aktionslog).
     INTERRUPTED = "interrupted"
     INTERNAL_ERROR = "internal_error"

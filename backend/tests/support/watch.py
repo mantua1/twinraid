@@ -12,6 +12,8 @@ def report(
     name: str | None = "Windows 11 Gaming",
     connect_plugin: bool = False,
     flash_backup: str = "inactive",
+    arc_max: int | None = 4 * 1024**3,
+    c_max: int | None = 4 * 1024**3,
 ) -> WatchReport:
     return WatchReport(
         vm=vm,
@@ -19,6 +21,8 @@ def report(
         others=others,
         connect_plugin=connect_plugin,
         flash_backup=flash_backup,
+        arc_max=arc_max,
+        c_max=c_max,
     )
 
 
