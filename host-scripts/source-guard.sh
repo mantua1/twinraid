@@ -1838,17 +1838,23 @@ stop_child() {
 }
 
 # Ein Kindprozess aus einem früheren Lauf des Wächters (nur nach kill -9 möglich) wird mit
-# seiner Sitzung beendet. Lebt unter der PID ein anderer Prozess (PID wiederverwendet),
-# bleibt er unberührt; ist die PID frei, gehören übrige Prozesse der Sitzung zum Kindprozess.
+# seiner Sitzung beendet. Als solcher gilt nur ein Prozess, dessen Befehlszeile genau so
+# lautet, wie start_child ihn startet: /bin/bash <dieses Skript> child <Art> <PID>. Lebt unter
+# der PID ein anderer Prozess (PID wiederverwendet), bleibt er unberührt; ist die PID frei,
+# gehören übrige Prozesse der Sitzung zum Kindprozess.
 stop_stale_child() {
   local pid
+  local -a args=()
   if [[ ! -f "${PRIVATE_DIR}/child.pid" ]]; then
     return 0
   fi
   pid="$(<"${PRIVATE_DIR}/child.pid")"
   if [[ "${pid}" =~ ^[0-9]{1,9}$ ]]; then
-    if [[ ! -e "/proc/${pid}" ]] ||
-      tr '\0' ' ' <"/proc/${pid}/cmdline" 2>/dev/null | grep -q -- ' child '; then
+    if [[ ! -e "/proc/${pid}" ]]; then
+      signal_session KILL "${pid}"
+    elif mapfile -d '' -t args 2>/dev/null <"/proc/${pid}/cmdline" && ((${#args[@]} == 5)) &&
+      [[ "${args[0]}" == /bin/bash && "${args[1]}" == "${SELF}" && "${args[2]}" == child &&
+        "${args[3]}" =~ ^(prepare|send)$ && "${args[4]}" =~ ^[0-9]{1,9}$ ]]; then
       signal_session KILL "${pid}"
     fi
   fi

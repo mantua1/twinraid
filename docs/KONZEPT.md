@@ -323,7 +323,7 @@ TRSG1 <Nr> close <Prüfsumme>
 
 **Snapshots auf Klein (ab v0.5.1, Entscheidung E25b)**
 
-- **Basis:** der neueste eigene Snapshot je Dataset, dessen GUID zum neuesten Snapshot des Spiegels auf Groß passt. Der Wächter hält ihn mit `zfs hold twinraid-base` fest; nach einem erfolgreichen Senden bekommt die neue Basis zuerst den Hold, dann wird der alte freigegeben. Dazu legt er je Senden ein Lesezeichen `#twinraid-<Zeit>` an; fehlt der Basis-Snapshot doch einmal, sendet er inkrementell vom Lesezeichen.
+- **Basis:** der neueste eigene Snapshot je Dataset, dessen GUID zum neuesten Snapshot des Spiegels auf Groß passt. Der Wächter hält ihn mit `zfs hold twinraid-base` fest; nach einem erfolgreichen Senden bekommt die neue Basis zuerst den Hold, dann wird der alte freigegeben. Dazu legt er je Senden ein Lesezeichen `#twinraid-<Zeit>` an; fehlt der Basis-Snapshot doch einmal, sendet er inkrementell vom Lesezeichen. Lesezeichen behält der Wächter in v0.5.1 alle (je Senden und Dataset eines, wenige Byte); das Aufräumen steht in der Merkliste für Phase 7 (10.3).
 - **Aufbewahrung:** Eigene Snapshots (Namensanfang und Eigenschaft) älter als `snapshot_keep_days` löscht der Wächter nach jedem erfolgreichen Senden und einmal täglich; nie die Basis, nie einen mit Hold oder Klon, nie mit `-r`, nie einen Namen ohne `@`. Fremde Snapshots fasst er nie an.
 - **Statt vorzeitig zu löschen** lehnt der Wächter neue Snapshots ab: Platzreserve `snapshot_reserve_percent` von `mainpool`, höchstens 50 je Dataset, Mindestabstand 30 min. Ein übernommener TwinRaid kann so höchstens weitere Läufe blockieren, nichts löschen.
 - **Nutzen:** Einzelne Dateien der letzten Tage liegen direkt auf Klein unter `/mnt/mainpool/<Share>/.zfs/snapshot/…`.
@@ -331,7 +331,7 @@ TRSG1 <Nr> close <Prüfsumme>
 
 **Job, Prüfen und Senden (ab v0.5.1, festgelegt am 20.10.2026)**
 
-- **Kindprozess:** `prepare` und `send` können lange dauern (`zfs diff` über große Datasets, eine Übertragung über Stunden). Sie laufen deshalb in einem Kindprozess des Wächters in einer eigenen Sitzung (`setsid`); die Hauptschleife nimmt weiter Aufträge an (`ping`, `close`) und schreibt alle 5 s den Status mit dem Fortschritt. Beendet wird der Kindprozess immer mit allen Prozessen seiner Sitzung (aus `/proc/<PID>/stat`), weil `timeout` für `zfs` und `ssh` eigene Prozessgruppen anlegt; ein Signal an die Prozessgruppe erreichte sie nicht. Beide Aufträge antworten sofort (`preparing` bzw. `sending`), das Ergebnis steht im Job. Endet der Wächter (Neustart, `stop`, Signal), beendet er den Kindprozess vorher; ein Job in `preparing` oder `sending` gilt danach als gescheitert (`interrupted`). Ein Kindprozess, dessen Wächter fehlt, beendet sich selbst.
+- **Kindprozess:** `prepare` und `send` können lange dauern (`zfs diff` über große Datasets, eine Übertragung über Stunden). Sie laufen deshalb in einem Kindprozess des Wächters in einer eigenen Sitzung (`setsid`); die Hauptschleife nimmt weiter Aufträge an (`ping`, `close`) und schreibt alle 5 s den Status mit dem Fortschritt. Beendet wird der Kindprozess immer mit allen Prozessen seiner Sitzung (aus `/proc/<PID>/stat`), weil `timeout` für `zfs` und `ssh` eigene Prozessgruppen anlegt; ein Signal an die Prozessgruppe erreichte sie nicht. Beide Aufträge antworten sofort (`preparing` bzw. `sending`), das Ergebnis steht im Job. Endet der Wächter (Neustart, `stop`, Signal), beendet er den Kindprozess vorher; ein Job in `preparing` oder `sending` gilt danach als gescheitert (`interrupted`). Ein Kindprozess, dessen Wächter fehlt, beendet sich selbst. Findet ein neu gestarteter Wächter in `private/child.pid` einen Kindprozess eines früheren Laufs (nur nach `kill -9` beider Schleifen möglich), beendet er ihn mit seiner Sitzung, aber nur, wenn dessen Befehlszeile genau `/bin/bash <Skript> child <prepare|send> <PID>` lautet, wie der Wächter ihn startet; ist die PID frei, beendet er die übrigen Prozesse ihrer Sitzung (ergänzt am 21.10.2026).
 - **Job:** höchstens einer; `snapshot` öffnet ihn, seine Kennung (`job.id`) ist die Nummer dieses Auftrags. Zustände: `snapshot` (Snapshot angelegt), `preparing`, `prepared`, `awaiting_confirm`, `sending`, `done`, `failed`, `closed`; offen sind die ersten fünf. Ergebnis (`job.result`, sobald der Job nicht mehr offen ist): `ok`, `closed`, `interrupted`, `job_timeout`, `prepare_failed`, `send_failed`, `target_refused`, `target_modified`.
 - **Grund** (`job.reason`, nur bei `send_failed` und `target_refused`): bei `target_refused` der Grund von guard.sh aus 3.7 mit `_` statt `-` (`name_denied`, `receive_busy`, `mirror_root_missing`, `receiver_id_in_use`, `target_exists`, `delegation_mismatch`, `props_mismatch`, `props_not_applied`, `clone_active`, `space_low`, `too_soon`, `received_properties`, `mount_mismatch`), jeder andere `refused_other`; bei `send_failed` ein Code von SSH (`key_missing`, `host_untrusted`, `host_key_mismatch`, `auth_failed`, `unreachable`, `denied`, `ssh_failed`), `base_missing` (Basis auf Klein nicht mehr da), `not_ready` (Dataset ohne Basis und nicht als erster Strom), `self_dataset_missing` (appdata, siehe unten) oder `send_error` (`zfs send` scheiterte auf Klein).
 - **Fristen** (nach Laufzeit): `prepare` höchstens 30 min; danach ohne `send` oder `close` höchstens 30 min; eine Übertragung höchstens 12 h. Sonst schließt der Wächter den Job (`job_timeout`) und beendet einen Kindprozess. TwinRaid wartet auf `preparing` → `prepared` oder `awaiting_confirm` höchstens 30 min und auf `sending` → `done` höchstens 12 h; den Fortschritt zeigt es dabei an (4.4).
@@ -380,7 +380,7 @@ stop_timeout_seconds 60            # docker stop vor SIGKILL (10–600), E16
 min_run_interval_minutes 30        # Pause zwischen zwei Läufen (10–1440), E16
 dataset twinraidtest               # mainpool/<Name> wird gespiegelt (ab v0.5.1)
 max_deletions 1000                 # Löschgrenze je Job (Summe über die Datasets)
-target_host 192.168.10.11          # Unraid Groß (Beispielwert)
+target_host 192.0.2.11             # Unraid Groß (Beispielwert, RFC 5737)
 target_port 22
 snapshot_keep_days 7
 snapshot_reserve_percent 15
@@ -1213,6 +1213,7 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 - [ ] Klein (ab v0.5.0): Wächter `source-guard.sh` und `source-guard.conf` nach `/boot/config/twinraid/`, Zeile in `/boot/config/go`, einmal starten; erst danach die zwei Pfade im Template von TwinRaid ergänzen
 - [ ] Groß (ab v0.5.0): Pool `mainpool` (ZFS) nur für die Spiegel, VMs und `system` auf einem anderen Pool; Share `twinraid-mirror` (Primärspeicher `mainpool`, Export „No“); keine Share-Konfigurationen mit den Namen der gespiegelten Shares und kein Pfad des VM-Managers dorthin (E26); Docker-Dienst aus; `zfs_arc_max` in Unraid eingetragen (*Settings → Disk Settings*)
 - [ ] Groß (ab v0.5.1): erst TwinRaid 0.5.1, dann `guard.sh` Version 3; `mirror.conf` und die Zeile für den Key „sync“ aus `source-guard.sh init-key`; mit E27 die Delegation für UID 64000 auf `mainpool/twinraid-mirror` (Test Z1b vorher); Hostkey von Groß auf Klein mit `source-guard.sh trust-target` bestätigen
+- [ ] Klein und Groß (ab v0.5.1): Freigabe des Boot-Mediums *Flash → SMB Security Settings → Export: No*. Dort liegen `guard.sh`, `authorized_keys`, `source-guard.sh`, die go-Datei und der private Key „sync“ (Prüfung durch TwinRaid: Merkliste 10.3)
 - [ ] Klein: „Host access to custom networks“ in den Docker-Einstellungen **nicht** aktivieren (siehe 5.1)
 - [ ] Klein: Container-Templates prüfen: absolute Pfade nur unter `/mnt/user/…` oder in gespiegelten Shares (4.7)
 - [ ] UniFi: feste IP für den Container, Firewall-Regel Client-Netz → Container-IP:8443
@@ -1377,6 +1378,13 @@ Bevor eine echte Share gespiegelt wird (nach v0.5.2), gilt:
 - Für appdata: eigenes Dataset von TwinRaid gefunden; Erlaubnisliste des Wächters mit den echten Containern; `never_stop` geprüft; das Ergebnis der Suche nach setuid- und Gerätedateien (4.6) angesehen.
 - Templates: Bis v0.5.4 ist der Notbetrieb ohne Vorlagen nur eingeschränkt möglich; das ist bewusst so, bis der Weg entschieden ist.
 - Je Share alle drei Ebenen ergänzen (4.3), eine Share nach der anderen, appdata erst mit der echten Erlaubnisliste des Wächters. Danach ist Phase 5 fertig.
+
+### 10.3 Merkliste für Phase 7
+
+Punkte, die bewusst nicht in Phase 5 umgesetzt werden (festgehalten am 21.10.2026):
+
+- **Lesezeichen auf Klein aufräumen:** Der Wächter löscht eigene Lesezeichen (`#twinraid-…`), die älter sind als der älteste Snapshot des Spiegels auf Groß (`oldest_created` aus `check`, 3.7), nie das neueste je Dataset. Ein solches Lesezeichen kann nie mehr Basis eines inkrementellen Stroms sein, weil Groß den passenden Snapshot nicht mehr hat. Bis dahin bleiben alle (3.6).
+- **Freigabe des Boot-Mediums prüfen:** TwinRaid weist darauf hin, wenn die Freigabe „flash“ auf Klein oder Groß exportiert ist (auf Klein über den Wächter, auf Groß über `guard.sh status`), wie bei den Hinweisen zu Unraid Connect. Bis dahin ist *Export: No* eine Voraussetzung der Einrichtung (Kapitel 9).
 
 ---
 

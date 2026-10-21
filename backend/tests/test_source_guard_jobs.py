@@ -1259,29 +1259,70 @@ def test_child_ends_when_the_guard_is_killed(make: Callable[..., Host], phase: s
     assert job["result"] == "interrupted"
 
 
-def test_stale_child_is_stopped_at_start(host: Host) -> None:
-    """Nur ein Prozess mit " child " in der Befehlszeile; sonst wäre die PID wiederverwendet."""
-    host.private.mkdir(parents=True)
-    stale = subprocess.Popen(  # noqa: S603 - feste Argumente, nur im Test
-        ["/bin/bash", "-c", f'exec -a "{host.tmp}/x child send" sleep 60'],
+@pytest.mark.parametrize("leader", ["alive", "killed"])
+def test_stale_child_is_stopped_at_start(host: Host, leader: str) -> None:
+    """Ein Kindprozess, der den Wächter überlebt hat (kill -9 auf beide Schleifen).
+
+    Er läuft genau so, wie start_child ihn startet; ein langlebiger Prozess steht für den
+    toten Wächter, damit watch_parent ihn nicht vorher beendet. Ist nur noch der Rest seiner
+    Sitzung da (zfs send, ssh), werden auch diese Prozesse beendet.
+    """
+    host.update_zfs(lambda z: z.update(send_seconds=60))
+    started(host)
+    prepared(host)
+    host.stop_run(host.processes[-1])
+    job_file = host.private / "job"
+    job_file.write_text(job_file.read_text().replace("state prepared\n", "state sending\n"))
+    # Wie start_child: eigener Ordner für die Rückgabe des Kindprozesses.
+    (host.private / "child").mkdir(mode=0o700)
+    keeper = subprocess.Popen(["/bin/sleep", "120"])
+    child = subprocess.Popen(  # noqa: S603 - feste Argumente, nur im Test
+        ["/bin/bash", str(host.script), "child", "send", str(keeper.pid)],
+        env=host.env(),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
-    other = subprocess.Popen(["/bin/sleep", "60"], start_new_session=True)
     try:
-        (host.private / "child.pid").write_text(str(stale.pid))
+        wait_until(lambda: guard_processes(host, "bin/ssh") != [])
+        (host.private / "child.pid").write_text(str(child.pid))
+        if leader == "killed":
+            child.kill()
+            child.wait()
+            assert guard_processes(host, "bin/zfs") != []
         host.start_run()
-        assert stale.wait(timeout=5) == -signal.SIGKILL
+        wait_until(lambda: guard_processes(host, " child ") == [], timeout=5)
+        wait_until(lambda: guard_processes(host, "bin/zfs") == [], timeout=5)
+        wait_until(lambda: guard_processes(host, "bin/ssh") == [], timeout=5)
+        job = host.wait_status(lambda s: s["job"]["state"] != "prepared")["job"]
+        assert (job["state"], job["result"]) == ("failed", "interrupted")
         assert not (host.private / "child.pid").exists()
-        host.stop_run(host.processes[-1])
+        assert host.received() == [] or host.received()[0]["name"] == "twinraidtest"
+    finally:
+        for process in (child, keeper):
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            process.wait()
+
+
+@pytest.mark.parametrize("kind", ["other", "lookalike"])
+def test_other_process_under_the_child_pid_is_left_alone(host: Host, kind: str) -> None:
+    """Nur die genaue Befehlszeile zählt; " child " irgendwo darin genügt nicht."""
+    host.private.mkdir(parents=True, mode=0o700)
+    command = ["/bin/sleep", "60"]
+    if kind == "lookalike":
+        command = ["/bin/bash", "-c", f'exec -a "/bin/bash {host.script} child send 1" sleep 60']
+    other = subprocess.Popen(command, start_new_session=True)  # noqa: S603 - nur im Test
+    try:
         (host.private / "child.pid").write_text(str(other.pid))
         host.start_run()
         time.sleep(0.5)
         assert other.poll() is None
+        assert not (host.private / "child.pid").exists()
     finally:
-        for process in (stale, other):
-            with contextlib.suppress(ProcessLookupError):
-                process.kill()
-            process.wait()
+        other.kill()
+        other.wait()
 
 
 # --- Aufbewahrung auf Klein ---------------------------------------------------------------
