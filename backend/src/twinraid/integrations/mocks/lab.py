@@ -15,7 +15,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from twinraid.integrations.control import ActionError
-from twinraid.integrations.mocks.status import MockStatusProvider
+from twinraid.integrations.mocks.status import (
+    MOCK_ARC_MAX,
+    MOCK_C_MAX_UNLIMITED,
+    MockStatusProvider,
+)
 from twinraid.integrations.status import (
     SOURCE_STATUS,
     VM_TARGET_OFFLINE,
@@ -30,6 +34,7 @@ from twinraid.shared.status import (
     ResourceStatus,
     StatusNotice,
     StatusReason,
+    TargetZfs,
     WatchRetry,
 )
 
@@ -48,9 +53,23 @@ FAULTS = (
     "source-guard-inactive",
     "source-guard-lost",
     "source-guard-start-failed",
+    # Ab v0.5.1 (Konzept 6.4): Probelauf (MockSourceGuard); sync-send-error und sync-slow
+    # wirken erst mit dem Senden in v0.5.2.
+    "sync-deletions",
+    "sync-empty-source",
+    "sync-target-refused",
+    "target-exists",
+    "target-clone",
+    "sync-send-error",
+    "sync-slow",
+    # Start der VM (guard.sh 3) und Grenze des ZFS-Caches auf Groß
+    "vm-device-busy",
+    "vm-memory-low",
+    "arc-unlimited",
 )
-# Name der weiteren VM bei mock-fault other-vm.
+# Name der weiteren VM bei mock-fault other-vm (und vm-device-busy, die das Gerät belegt).
 MOCK_OTHER_VM = "Test-VM"
+
 _OFF_STATES = frozenset({"SHUTOFF", "CRASHED"})
 # Pause nach einem dauerhaften Fehler der Statusverbindung, wie im Modus real (Konzept 3.5).
 PERMANENT_PAUSE = timedelta(seconds=WatchTimings().permanent_pause_seconds)
@@ -158,8 +177,9 @@ class MockLab:
         if self.tour_active():
             return await self._tour.get_status()
         others: tuple[str, ...] | None = None
-        notices: tuple[StatusNotice, ...] = ()
+        notices: list[StatusNotice] = []
         problem: StatusReason | None = None
+        zfs: TargetZfs | None = None
         up = self._target_up()
         if not up:
             vm = VM_TARGET_OFFLINE
@@ -168,17 +188,26 @@ class MockLab:
         else:
             vm = map_vm_state(self._vm_state)
             others = self._others()
+            zfs = self._zfs()
         if up and self.fault("connect-plugin"):
-            notices = (StatusNotice.TARGET_CONNECT_PLUGIN, StatusNotice.TARGET_FLASH_BACKUP)
+            notices += [StatusNotice.TARGET_CONNECT_PLUGIN, StatusNotice.TARGET_FLASH_BACKUP]
+        if zfs is not None and zfs.arc_max == 0:
+            notices.append(StatusNotice.TARGET_ARC_UNLIMITED)
         return ResourceStatus(
             source=SOURCE_STATUS,
             target=server_status(up),
             vm=vm,
             checked_at=self._clock(),
             other_vms_running=others,
-            notices=notices,
+            notices=tuple(notices),
             watch_retry=self._retry(problem),
+            target_zfs=zfs,
         )
+
+    def _zfs(self) -> TargetZfs:
+        if self.fault("arc-unlimited"):
+            return TargetZfs(arc_max=0, c_max=MOCK_C_MAX_UNLIMITED)
+        return TargetZfs(arc_max=MOCK_ARC_MAX, c_max=MOCK_ARC_MAX)
 
     def _retry(self, problem: StatusReason | None) -> WatchRetry | None:
         """Pause wie die Sitzung vm-watch: 30 Minuten, dann ein neuer Versuch (Konzept 3.5).
@@ -194,7 +223,8 @@ class MockLab:
         return WatchRetry(at=self._pause_until, paused=True)
 
     def _others(self) -> tuple[str, ...]:
-        return (MOCK_OTHER_VM,) if self.fault("other-vm") else ()
+        busy = self.fault("other-vm") or self.fault("vm-device-busy")
+        return (MOCK_OTHER_VM,) if busy else ()
 
     def _require_state(self) -> None:
         if not self._target_up():
@@ -228,6 +258,11 @@ class MockLab:
             raise ActionError(ActionOutcome.VM_NOT_CONFIGURED)
         if self._vm_state not in _OFF_STATES:
             raise ActionError(ActionOutcome.REMOTE_FAILED)
+        # Wie guard.sh 3: Speicherprüfung vor virsh start, danach ein belegtes Gerät.
+        if self.fault("vm-memory-low"):
+            raise ActionError(ActionOutcome.VM_MEMORY_LOW)
+        if self.fault("vm-device-busy"):
+            raise ActionError(ActionOutcome.VM_DEVICE_BUSY)
         self._vm_change = ("RUNNING", self._monotonic() + self._timings.vm_start_seconds)
 
     async def shutdown_vm(self) -> None:

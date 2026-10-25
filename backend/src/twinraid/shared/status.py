@@ -6,6 +6,7 @@ from enum import StrEnum
 from twinraid.shared.actions import ActionsSnapshot
 from twinraid.shared.base import StrictModel
 from twinraid.shared.source_guard import SourceGuardStatus
+from twinraid.shared.sync import SyncStatus
 
 
 class ResourceState(StrEnum):
@@ -65,11 +66,23 @@ class StatusNotice(StrEnum):
     SOURCE_FLASH_BACKUP = "source_flash_backup"
     # Die eigene Container-ID steht in der Erlaubnisliste des Wächters (Gegenprüfung).
     SOURCE_GUARD_ALLOWS_SELF = "source_guard_allows_self"
+    # Auf Groß ist keine Grenze für den ZFS-Cache eingetragen (arc_max 0, Konzept 3.5, ab v0.5.1).
+    TARGET_ARC_UNLIMITED = "target_arc_unlimited"
 
 
 class ResourceInfo(StrictModel):
     state: ResourceState
     reason: StatusReason | None = None
+
+
+class TargetZfs(StrictModel):
+    """Grenze des ZFS-Caches auf Groß aus vm-watch (Konzept 3.5, ab v0.5.1), in Byte.
+
+    None: ZFS ist auf Groß nicht geladen oder der Wert ist nicht lesbar.
+    """
+
+    arc_max: int | None
+    c_max: int | None
 
 
 class WatchRetry(StrictModel):
@@ -99,6 +112,8 @@ class ResourceStatus(StrictModel):
     notices: tuple[StatusNotice, ...] = ()
     # Der Worker wartet nach einem Fehler der Statusverbindung (ab v0.4.4); sonst None.
     watch_retry: WatchRetry | None = None
+    # Werte des ARC auf Groß (ab v0.5.1); None, solange keine Zeile watch 3 vorliegt.
+    target_zfs: TargetZfs | None = None
 
 
 NOT_CHECKED = ResourceStatus(source=UNKNOWN, target=UNKNOWN, vm=UNKNOWN, checked_at=None)
@@ -114,3 +129,5 @@ class StatusSnapshot(ResourceStatus):
     actions: ActionsSnapshot
     # Wächter auf Klein (Konzept 3.6, ab v0.5.0).
     source_guard: SourceGuardStatus
+    # Probelauf und Sync (Konzept 4.3, ab v0.5.1).
+    sync: SyncStatus

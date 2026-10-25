@@ -14,6 +14,7 @@ import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 
 from twinraid.shared.actions import ActionName, ActionOutcome, Trigger
@@ -46,6 +47,8 @@ class LogEntry:
     trigger: Trigger
     result: str
     part_of: ActionName | None = None
+    # Grund aus einer festen Liste, etwa bei target_refused (Konzept 5.3, ab v0.5.1).
+    reason: str | None = None
 
     def to_json(self) -> str:
         data: dict[str, str] = {
@@ -57,6 +60,8 @@ class LogEntry:
         }
         if self.part_of is not None:
             data["part_of"] = self.part_of.value
+        if self.reason is not None:
+            data["reason"] = self.reason
         return json.dumps(data, separators=(",", ":"))
 
 
@@ -78,12 +83,21 @@ class ActionLog:
         trigger: Trigger,
         result: ActionOutcome | str,
         part_of: ActionName | None = None,
+        reason: StrEnum | None = None,
     ) -> None:
         """Schreibt einen Eintrag. Ein Schreibfehler stoppt nie die Aktion selbst."""
-        entry = LogEntry(self._clock(), action_id, action, trigger, str(result), part_of)
+        code = reason.value if reason is not None else None
+        entry = LogEntry(self._clock(), action_id, action, trigger, str(result), part_of, code)
         via = f" (part of {part_of.value})" if part_of is not None else ""
+        why = f" ({code})" if code is not None else ""
         logger.info(
-            "action %s %s by %s%s: %s", action_id, action.value, trigger.value, via, entry.result
+            "action %s %s by %s%s: %s%s",
+            action_id,
+            action.value,
+            trigger.value,
+            via,
+            entry.result,
+            why,
         )
         try:
             self._append(entry.to_json() + "\n")

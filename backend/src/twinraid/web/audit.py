@@ -43,6 +43,12 @@ class AuditAction(StrEnum):
     VM_START = "vm_start"
     VM_STOP = "vm_stop"
     VM_FORCE_STOP = "vm_force_stop"
+    # Ab v0.5.1 (Konzept 5.3): Probelauf und Sync, dazu twinraid-admin sync-check.
+    SYNC_DRY_RUN = "sync_dry_run"
+    SYNC_START = "sync_start"
+    SYNC_CANCEL = "sync_cancel"
+    SYNC_CONFIRM_DELETIONS = "sync_confirm_deletions"
+    CLI_SYNC_CHECK = "cli_sync_check"
 
 
 class AuditResult(StrEnum):

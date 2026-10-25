@@ -8,15 +8,20 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import EXAMPLE_CONFIG
+from tests.support.jobs import FakeJobs
 from tests.support.watch import StubWatch, report
 from twinraid.config import TwinRaidConfig, load_config
 from twinraid.integrations.control import ActionError, RealControl
-from twinraid.integrations.jobs import NoJobs
-from twinraid.integrations.mocks.jobs import MockJobSwitch
 from twinraid.integrations.mocks.lab import MockLab, fault_flag, set_flag, tour_flag
 from twinraid.integrations.ssh import SshPower, SshTarget
 from twinraid.integrations.status import RealStatusProvider
-from twinraid.shared.actions import ActionBlocker, ActionName, ActionOutcome, ActionStep
+from twinraid.shared.actions import (
+    SYNC_ACTIONS,
+    ActionBlocker,
+    ActionName,
+    ActionOutcome,
+    ActionStep,
+)
 from twinraid.shared.mode import RunMode
 from twinraid.shared.status import ResourceInfo, ResourceState, StatusReason
 from twinraid.worker.action_log import ActionLog
@@ -68,7 +73,7 @@ class Setup:
         self.time = time
         self.lab = lab or MockLab(tmp_path, monotonic=time.monotonic, clock=time.clock)
         self.monitor = StatusMonitor(self.lab, clock=time.clock)
-        self.jobs = MockJobSwitch(tmp_path / "mock-job-running")
+        self.jobs = FakeJobs()
         self.log_path = tmp_path / "actions.jsonl"
         self.actions = ActionCoordinator(
             self.lab,
@@ -102,7 +107,9 @@ class Setup:
         await self.settle()
 
     def availability(self) -> dict[ActionName, ActionBlocker | None]:
-        return self.actions.snapshot(self.monitor.current())[1].availability
+        """Groß und VM; den Probelauf prüft tests/sync/test_coordinator.py."""
+        availability = self.actions.snapshot(self.monitor.current())[1].availability
+        return {name: blocker for name, blocker in availability.items() if name not in SYNC_ACTIONS}
 
     def last(self, resource: str) -> ActionOutcome | None:
         _, actions = self.actions.snapshot(self.monitor.current())
@@ -813,7 +820,7 @@ class RealSetup:
         self.actions = ActionCoordinator(
             control,
             self.monitor,
-            NoJobs(),
+            FakeJobs(),
             config,
             RunMode.REAL,
             ActionLog(tmp_path / "actions.jsonl", clock=self.time.clock),

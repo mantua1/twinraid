@@ -4,6 +4,10 @@ import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
+from twinraid.integrations.guard_orders import GuardOrderError
+from twinraid.integrations.mocks.guard_jobs import GIB, MIB
 from twinraid.integrations.mocks.lab import fault_flag, set_flag, tour_flag
 from twinraid.integrations.mocks.source_guard import (
     GUARD_SCENARIO,
@@ -12,9 +16,20 @@ from twinraid.integrations.mocks.source_guard import (
     MockSourceGuard,
 )
 from twinraid.integrations.mocks.status import STEP_SECONDS
+from twinraid.shared.actions import ActionOutcome
 from twinraid.shared.source_guard import (
+    GuardBlocker,
+    GuardCheckResult,
+    GuardConfirmReason,
     GuardContainerState,
+    GuardDatasetProblem,
+    GuardDetails,
     GuardError,
+    GuardJob,
+    GuardJobResult,
+    GuardJobState,
+    GuardOrder,
+    GuardOrderResult,
     GuardRestart,
     GuardRunEnd,
     GuardSelfDataset,
@@ -186,3 +201,189 @@ def test_tour_ends_with_the_flag(tmp_path: Path) -> None:
     assert guard.report().status.state is GuardState.NOT_MOUNTED
     set_flag(tour_flag(tmp_path), False)
     assert guard.report().status.state is GuardState.ACTIVE
+
+
+# --- Aufträge und Job des Probelaufs (Konzept 6.4, ab v0.5.1) ---------------------------------
+
+SHARES = ("appdata", "dokumente")
+
+
+async def _no_sleep(_seconds: float) -> None:
+    return None
+
+
+def _job_guard(tmp_path: Path, now: list[datetime], ticks: list[float]) -> MockSourceGuard:
+    return MockSourceGuard(
+        tmp_path,
+        monotonic=lambda: ticks[0],
+        clock=lambda: now[0],
+        sleep=_no_sleep,
+        datasets=SHARES,
+    )
+
+
+def _details(guard: MockSourceGuard) -> GuardDetails:
+    details = guard.report().status.details
+    assert details is not None
+    return details
+
+
+async def _prepared(guard: MockSourceGuard, ticks: list[float]) -> GuardJob:
+    assert await guard.order(GuardOrder.SNAPSHOT) is GuardOrderResult.CREATED
+    assert await guard.order(GuardOrder.PREPARE) is GuardOrderResult.PREPARING
+    ticks[0] += 6
+    job = _details(guard).job
+    assert job is not None
+    return job
+
+
+@pytest.mark.anyio
+async def test_datasets_follow_the_shares(tmp_path: Path) -> None:
+    details = _details(_job_guard(tmp_path, [NOW], [0.0]))
+    assert [item.name for item in details.zfs.datasets] == list(SHARES)
+    assert details.version == 2
+    assert (details.target_configured, details.target_key, details.target_known_host) == (
+        True,
+        True,
+        True,
+    )
+    assert details.last_seq == 0
+    assert details.job is None
+    assert details.target_check is None
+
+
+@pytest.mark.anyio
+async def test_dry_run_orders(tmp_path: Path) -> None:
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    assert await guard.order(GuardOrder.PREPARE) is GuardOrderResult.NO_JOB
+    assert await guard.order(GuardOrder.SNAPSHOT) is GuardOrderResult.CREATED
+    details = _details(guard)
+    assert details.last_seq == 2
+    assert details.last_order is not None
+    assert (details.last_order.seq, details.last_order.order) == (2, GuardOrder.SNAPSHOT)
+    job = details.job
+    assert job is not None
+    assert (job.id, job.state, job.snapshot) == (
+        2,
+        GuardJobState.SNAPSHOT,
+        "twinraid-20261019T120002Z",
+    )
+    assert [item.name for item in job.datasets] == list(SHARES)
+    assert await guard.order(GuardOrder.SNAPSHOT) is GuardOrderResult.JOB_OPEN
+    assert await guard.order(GuardOrder.PREPARE) is GuardOrderResult.PREPARING
+    assert await guard.order(GuardOrder.PREPARE) is GuardOrderResult.WRONG_STATE
+    # prepare dauert 6 s.
+    ticks[0] = 5.9
+    job = _details(guard).job
+    assert job is not None
+    assert job.state is GuardJobState.PREPARING
+    ticks[0] = 6.0
+    details = _details(guard)
+    job = details.job
+    assert job is not None
+    assert job.state is GuardJobState.PREPARED
+    assert (job.send_ready, job.blockers, job.confirm_reasons) == (True, (), ())
+    for item in job.datasets:
+        assert (item.mode, item.base_type) == ("incremental", "snapshot")
+        assert (item.deleted, item.modified, item.added, item.renamed) == (12, 34, 56, 2)
+        assert (item.referenced, item.base_referenced, item.size) == (
+            2 * GIB,
+            21 * GIB // 10,
+            350 * MIB,
+        )
+    check = details.target_check
+    assert check is not None
+    assert check.result is GuardCheckResult.OK
+    assert check.summary is not None
+    assert (check.summary.available, check.summary.size, check.summary.reserve_percent) == (
+        600 * GIB,
+        860 * GIB,
+        15,
+    )
+    assert [(m.name, m.state, m.count) for m in check.mirrors] == [
+        (name, "mirror", 5) for name in SHARES
+    ]
+    assert await guard.order(GuardOrder.CLOSE) is GuardOrderResult.CLOSED
+    job = _details(guard).job
+    assert job is not None
+    assert (job.state, job.result) == (GuardJobState.CLOSED, GuardJobResult.CLOSED)
+    assert await guard.order(GuardOrder.CLOSE) is GuardOrderResult.NO_JOB
+    # Lauf, Freigabe und Senden kommen erst mit v0.5.2.
+    for order in (GuardOrder.BEGIN, GuardOrder.CONFIRM, GuardOrder.SEND):
+        assert await guard.order(order) is GuardOrderResult.NOT_SUPPORTED
+
+
+@pytest.mark.anyio
+async def test_job_without_answer_times_out(tmp_path: Path) -> None:
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    await guard.order(GuardOrder.SNAPSHOT)
+    now[0] = NOW + timedelta(minutes=30)
+    job = _details(guard).job
+    assert job is not None
+    assert (job.state, job.result) == (GuardJobState.CLOSED, GuardJobResult.JOB_TIMEOUT)
+
+
+@pytest.mark.parametrize(
+    ("fault", "state", "reasons", "blockers"),
+    [
+        (
+            "sync-deletions",
+            GuardJobState.AWAITING_CONFIRM,
+            (GuardConfirmReason.DELETIONS,),
+            (),
+        ),
+        (
+            "sync-empty-source",
+            GuardJobState.AWAITING_CONFIRM,
+            (GuardConfirmReason.SHRUNK,),
+            (),
+        ),
+        ("sync-target-refused", GuardJobState.PREPARED, (), (GuardBlocker.SPACE_LOW,)),
+        ("target-exists", GuardJobState.PREPARED, (), (GuardBlocker.TARGET_EXISTS,)),
+        ("target-clone", GuardJobState.PREPARED, (), (GuardBlocker.CLONE_ACTIVE,)),
+    ],
+)
+@pytest.mark.anyio
+async def test_dry_run_faults(
+    tmp_path: Path,
+    fault: str,
+    state: GuardJobState,
+    reasons: tuple[GuardConfirmReason, ...],
+    blockers: tuple[GuardBlocker, ...],
+) -> None:
+    set_flag(fault_flag(tmp_path, fault), True)
+    ticks = [0.0]
+    guard = _job_guard(tmp_path, [NOW], ticks)
+    job = await _prepared(guard, ticks)
+    assert (job.state, job.confirm_reasons, job.blockers) == (state, reasons, blockers)
+    assert job.send_ready is (not blockers)
+    check = _details(guard).target_check
+    assert check is not None
+    assert check.summary is not None
+    if fault == "sync-deletions":
+        assert [item.deleted for item in job.datasets] == [1500, 1500]
+    elif fault == "sync-empty-source":
+        assert [item.referenced for item in job.datasets] == [300 * MIB, 300 * MIB]
+    elif fault == "sync-target-refused":
+        assert check.summary.available == 20 * GIB
+    elif fault == "target-exists":
+        assert [item.problem for item in job.datasets] == [GuardDatasetProblem.TARGET_EXISTS] * 2
+        assert [mirror.state for mirror in check.mirrors] == ["foreign", "foreign"]
+    else:
+        assert check.summary.clones == 1
+
+
+@pytest.mark.anyio
+async def test_inactive_guard_takes_no_orders(tmp_path: Path) -> None:
+    _switch(tmp_path, "source-guard-inactive", NOW)
+    guard = _job_guard(tmp_path, [NOW], [0.0])
+    with pytest.raises(GuardOrderError) as caught:
+        await guard.order(GuardOrder.SNAPSHOT)
+    assert caught.value.outcome is ActionOutcome.SOURCE_GUARD_INACTIVE
+    _switch(tmp_path, "source-guard-lost", NOW)
+    fault_flag(tmp_path, "source-guard-inactive").unlink()
+    with pytest.raises(GuardOrderError) as caught:
+        await guard.order(GuardOrder.SNAPSHOT)
+    assert caught.value.outcome is ActionOutcome.SOURCE_GUARD_LOST

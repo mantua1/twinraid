@@ -5,11 +5,8 @@ from pathlib import Path
 import pytest
 
 from tests.conftest import EXAMPLE_CONFIG
-from tests.support.passwords import password_check
+from tests.support.worker import make_worker
 from twinraid.config import TwinRaidConfig, load_config
-from twinraid.integrations.mocks.jobs import MockJobSwitch
-from twinraid.integrations.mocks.lab import MockLab
-from twinraid.integrations.mocks.source_guard import MockSourceGuard
 from twinraid.integrations.source_guard import GuardReport
 from twinraid.shared.actions import ActionBlocker
 from twinraid.shared.ipc import (
@@ -17,6 +14,8 @@ from twinraid.shared.ipc import (
     ErrorResponse,
     GetStatus,
     OkResponse,
+    SyncCancel,
+    SyncConfirmDeletions,
     SyncStart,
     VmStart,
     WakeTarget,
@@ -24,10 +23,8 @@ from twinraid.shared.ipc import (
 from twinraid.shared.mode import RunMode
 from twinraid.shared.source_guard import GuardState, SourceGuardStatus
 from twinraid.shared.status import StatusNotice
-from twinraid.worker.action_log import ActionLog
 from twinraid.worker.actions import ActionCoordinator
 from twinraid.worker.handler import CommandHandler
-from twinraid.worker.monitor import StatusMonitor
 
 pytestmark = pytest.mark.anyio
 CONFIG = load_config(EXAMPLE_CONFIG)
@@ -36,17 +33,9 @@ CONFIG = load_config(EXAMPLE_CONFIG)
 async def _handler(
     tmp_path: Path, mode: RunMode = RunMode.MOCK, config: TwinRaidConfig = CONFIG
 ) -> tuple[CommandHandler, ActionCoordinator]:
-    lab = MockLab(tmp_path)
-    monitor = StatusMonitor(lab)
-    await monitor.check_once()
-    jobs = MockJobSwitch(tmp_path / "job")
-    actions = ActionCoordinator(
-        lab, monitor, jobs, config, mode, ActionLog(tmp_path / "actions.jsonl")
-    )
-    handler = CommandHandler(
-        monitor, password_check(tmp_path, None), jobs, mode, actions, MockSourceGuard(tmp_path)
-    )
-    return handler, actions
+    worker = make_worker(tmp_path, mode, password=None, config=config)
+    await worker.monitor.check_once()
+    return worker.handler, worker.actions
 
 
 async def test_accepted_then_busy(tmp_path: Path) -> None:
@@ -83,12 +72,40 @@ async def test_real_mode_with_wake_enabled(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("mode", [RunMode.MOCK, RunMode.REAL])
-async def test_sync_stays_locked(tmp_path: Path, mode: RunMode) -> None:
+async def test_sync_start_comes_with_the_next_version(tmp_path: Path, mode: RunMode) -> None:
+    """In v0.5.1 gibt es nur den Probelauf (Konzept 4.3, next_version)."""
     handler, _ = await _handler(tmp_path, mode)
     response = await handler.handle(SyncStart(command="sync_start"))
     assert isinstance(response, ErrorResponse)
-    expected = ErrorCode.NOT_AVAILABLE if mode is RunMode.REAL else ErrorCode.NOT_IMPLEMENTED
-    assert response.error is expected
+    if mode is RunMode.REAL:
+        # Im Modus real zuerst die Freischaltung (actions.sync ist aus).
+        assert response.error is ErrorCode.NOT_AVAILABLE
+        assert response.blocked_by is ActionBlocker.NOT_ENABLED
+    else:
+        assert response.error is ErrorCode.ACTION_BLOCKED
+        assert response.blocked_by is ActionBlocker.NEXT_VERSION
+    confirm = await handler.handle(
+        SyncConfirmDeletions(command="sync_confirm_deletions", job_id="a" * 32)
+    )
+    assert isinstance(confirm, ErrorResponse)
+    assert confirm.error is ErrorCode.NOT_AVAILABLE
+    assert confirm.blocked_by is ActionBlocker.NEXT_VERSION
+
+
+async def test_sync_start_with_sync_enabled_is_still_next_version(tmp_path: Path) -> None:
+    config = CONFIG.model_copy(update={"actions": CONFIG.actions.model_copy(update={"sync": True})})
+    handler, _ = await _handler(tmp_path, RunMode.REAL, config)
+    response = await handler.handle(SyncStart(command="sync_start"))
+    assert isinstance(response, ErrorResponse)
+    assert response.blocked_by is ActionBlocker.NEXT_VERSION
+
+
+async def test_cancel_without_a_running_dry_run(tmp_path: Path) -> None:
+    handler, _ = await _handler(tmp_path)
+    response = await handler.handle(SyncCancel(command="sync_cancel", job_id="b" * 32))
+    assert isinstance(response, ErrorResponse)
+    assert response.error is ErrorCode.ACTION_BLOCKED
+    assert response.blocked_by is None
 
 
 class _Guard:
