@@ -37,6 +37,8 @@ export const STATUS_NOTICES = [
   "source_connect_plugin",
   "source_flash_backup",
   "source_guard_allows_self",
+  // Kachel Groß, ab v0.5.1: keine Grenze für den ZFS-Cache eingetragen (Konzept 3.5).
+  "target_arc_unlimited",
 ] as const;
 export type StatusNotice = (typeof STATUS_NOTICES)[number];
 
@@ -164,6 +166,11 @@ export interface GuardDataset {
   present: boolean | null;
   referenced: number | null;
   compression: string | null;
+  // Ab v0.5.1: eigene Snapshots, Basis und Lesezeichen (Konzept 3.6).
+  snapshots: number | null;
+  oldest_snapshot_at: string | null;
+  base_created_at: string | null;
+  bookmark: boolean | null;
 }
 
 export interface GuardZfs {
@@ -184,6 +191,118 @@ export interface GuardLimits {
   snapshot_reserve_percent: number;
 }
 
+// Job, Prüfen und Senden, ab v0.5.1 (Konzept 3.6 und 3.7).
+export const GUARD_ORDER_RESULTS = [
+  "not_supported",
+  "config_invalid",
+  "misconfigured",
+  "request_not_a_file",
+  "docker_unavailable",
+  "opened",
+  "run_open",
+  "too_soon",
+  "extended",
+  "no_run",
+  "finished",
+  "stopped",
+  "not_running",
+  "not_allowed",
+  "denied_self",
+  "not_found",
+  "stop_failed",
+  "job_open",
+  "created",
+  "zfs_unavailable",
+  "no_datasets",
+  "dataset_missing",
+  "snapshot_low_space",
+  "snapshot_limit",
+  "snapshot_failed",
+  "preparing",
+  "no_job",
+  "wrong_state",
+  "confirmed",
+  "not_needed",
+  "sending",
+  "not_ready",
+  "closed",
+] as const;
+export type GuardOrderResult = (typeof GUARD_ORDER_RESULTS)[number];
+
+export const GUARD_CHECK_RESULTS = [
+  "ok",
+  "target_not_configured",
+  "key_missing",
+  "host_untrusted",
+  "host_key_mismatch",
+  "auth_failed",
+  "unreachable",
+  "denied",
+  "ssh_failed",
+  "bad_answer",
+] as const;
+export type GuardCheckResult = (typeof GUARD_CHECK_RESULTS)[number];
+
+export const GUARD_BLOCKERS = [
+  "target_unreachable",
+  "mirror_root_missing",
+  "mirror_conf_invalid",
+  "delegation_mismatch",
+  "receive_busy",
+  "clone_active",
+  "space_low",
+  "base_missing",
+  "target_exists",
+  "not_in_mirror_conf",
+  "self_dataset_missing",
+  "props_mismatch",
+] as const;
+export type GuardBlocker = (typeof GUARD_BLOCKERS)[number];
+
+export const GUARD_CONFIRM_REASONS = ["deletions", "shrunk", "no_diff"] as const;
+export type GuardConfirmReason = (typeof GUARD_CONFIRM_REASONS)[number];
+
+export const GUARD_DATASET_PROBLEMS = [
+  "base_missing",
+  "not_in_mirror_conf",
+  "target_exists",
+  "self_dataset_missing",
+] as const;
+export type GuardDatasetProblem = (typeof GUARD_DATASET_PROBLEMS)[number];
+
+export type MirrorState = "absent" | "mirror" | "foreign";
+
+// Ergebnis von guard.sh sync check (Konzept 3.7); Zahlen in Byte, Zeiten als ISO-Text.
+export interface GuardCheckSummary {
+  root: "ok" | "missing";
+  conf: "ok" | "missing" | "invalid";
+  deleg: "ok" | "mismatch" | "id_in_use";
+  receive: "idle" | "busy";
+  clones: number | null;
+  available: number | null;
+  size: number | null;
+  reserve_percent: number | null;
+  keep_days: number | null;
+  min_interval_minutes: number | null;
+}
+
+export interface GuardCheckMirror {
+  name: string;
+  state: MirrorState;
+  props: "ok" | "mismatch" | null;
+  count: number | null;
+  newest_created: string | null;
+  newest_received: string | null;
+  oldest_created: string | null;
+}
+
+export interface GuardCheck {
+  at: string;
+  result: GuardCheckResult;
+  summary: GuardCheckSummary | null;
+  mirrors: GuardCheckMirror[];
+}
+
 // Inhalt eines frischen Status (Herzschlag höchstens 30 s alt).
 export interface GuardDetails {
   version: number;
@@ -198,6 +317,10 @@ export interface GuardDetails {
   target_configured: boolean;
   target_port: number;
   rejected_count: number;
+  // Ab v0.5.1: Key „sync“ und bestätigter Hostkey von Groß auf Klein, letztes check.
+  target_key: boolean;
+  target_known_host: boolean;
+  target_check: GuardCheck | null;
 }
 
 export interface SourceGuardStatus {
@@ -232,6 +355,9 @@ export const ACTION_NAMES = [
   "vm_start",
   "vm_stop",
   "vm_force_stop",
+  // Ab v0.5.1 (Konzept 4.3); sync_start kommt mit v0.5.2.
+  "sync_dry_run",
+  "sync_start",
 ] as const;
 export type ActionName = (typeof ACTION_NAMES)[number];
 
@@ -249,6 +375,11 @@ export const ACTION_BLOCKERS = [
   "not_offered",
   "other_vms_running",
   "tour",
+  // Ab v0.5.1, nur für Probelauf und Sync (Konzept 4.2).
+  "source_guard_inactive",
+  "levels_mismatch",
+  "self_dataset_missing",
+  "next_version",
 ] as const;
 export type ActionBlocker = (typeof ACTION_BLOCKERS)[number];
 
@@ -288,6 +419,21 @@ export const ACTION_OUTCOMES = [
   "vm_device_busy",
   "vm_start_failed",
   "sync_running",
+  // Probelauf, ab v0.5.1 (Konzept 4.3 und 5.3).
+  "dry_run_success",
+  "cancelled",
+  "source_guard_inactive",
+  "source_guard_lost",
+  "source_guard_refused",
+  "too_soon",
+  "snapshot_low_space",
+  "snapshot_limit",
+  "prepare_failed",
+  "job_timeout",
+  "target_check_failed",
+  "target_refused",
+  "base_missing",
+  "self_dataset_missing",
   "interrupted",
   "internal_error",
 ] as const;
@@ -321,6 +467,88 @@ export interface ActionsSnapshot {
   forced_shutdown_until: string | null;
 }
 
+// Grenze des ZFS-Caches auf Groß in Byte (Konzept 3.5, ab v0.5.1); null: nicht lesbar.
+export interface TargetZfs {
+  arc_max: number | null;
+  c_max: number | null;
+}
+
+// Probelauf (Konzept 4.3, ab v0.5.1); Spiegel von backend/src/twinraid/shared/sync.py.
+export const SYNC_STEPS = [
+  "waking",
+  "waiting_for_vm_service",
+  "snapshot",
+  "preparing",
+  "closing",
+] as const;
+export type SyncStep = (typeof SYNC_STEPS)[number];
+
+// Grund zu einem Ergebnis: Eintrag aus blockers, Ergebnis von check oder eines Auftrags.
+export type SyncReason = GuardBlocker | GuardCheckResult | GuardOrderResult;
+
+export interface SyncRun {
+  kind: "dry_run";
+  job_id: string;
+  step: SyncStep;
+  started_at: string;
+}
+
+export interface SyncResult {
+  kind: "dry_run";
+  outcome: ActionOutcome;
+  reason: SyncReason | null;
+  finished_at: string;
+}
+
+export interface SyncMirror {
+  state: MirrorState;
+  props: "ok" | "mismatch" | null;
+  count: number | null;
+  newest_received: string | null;
+}
+
+export interface SyncShareReport {
+  name: string;
+  mode: "full" | "incremental" | null;
+  base_type: "snapshot" | "bookmark" | null;
+  problem: GuardDatasetProblem | null;
+  deleted: number | null;
+  modified: number | null;
+  added: number | null;
+  renamed: number | null;
+  referenced: number | null;
+  base_referenced: number | null;
+  size: number | null;
+  mirror: SyncMirror | null;
+}
+
+export interface SyncReport {
+  prepared_at: string;
+  snapshot: string;
+  awaiting_confirm: boolean;
+  confirm_reasons: GuardConfirmReason[];
+  send_ready: boolean;
+  blockers: GuardBlocker[];
+  check: GuardCheck | null;
+  shares: SyncShareReport[];
+}
+
+// Die drei Ebenen: twinraid.yaml, source-guard.conf (Klein), mirror.conf (Groß).
+export interface SyncLevels {
+  configured: string[];
+  // null: unbekannt.
+  source: string[] | null;
+  target: string[] | null;
+  target_checked_at: string | null;
+}
+
+export interface SyncStatus {
+  running: SyncRun | null;
+  last: SyncResult | null;
+  report: SyncReport | null;
+  levels: SyncLevels;
+}
+
 export interface StatusSnapshot {
   source: ResourceInfo;
   target: ResourceInfo;
@@ -337,6 +565,10 @@ export interface StatusSnapshot {
   watch_retry: WatchRetry | null;
   // Wächter auf Klein (ab v0.5.0).
   source_guard: SourceGuardStatus;
+  // Grenze des ZFS-Caches auf Groß aus vm-watch (ab v0.5.1); null ohne Statuszeile.
+  target_zfs: TargetZfs | null;
+  // Probelauf, letztes Ergebnis, Bericht und die drei Ebenen (ab v0.5.1).
+  sync: SyncStatus;
 }
 
 export interface AppInfo {
@@ -350,7 +582,7 @@ export interface AppInfo {
   };
   read_only: boolean;
   // Freigeschaltete Aktionen; im Simulationsmodus alle.
-  actions: { wake: boolean; vm: boolean; shutdown: boolean };
+  actions: { wake: boolean; vm: boolean; shutdown: boolean; sync_dry_run: boolean; sync: boolean };
   vm_shutdown_timeout_minutes: number;
 }
 
@@ -382,6 +614,10 @@ export const AUDIT_ACTIONS = [
   "cli_init_ssh_keys",
   "cli_trust_host_key",
   ...ACTION_NAMES,
+  // Ab v0.5.1 (Konzept 5.3).
+  "sync_cancel",
+  "sync_confirm_deletions",
+  "cli_sync_check",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

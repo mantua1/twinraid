@@ -46,7 +46,8 @@ describe("actions", () => {
     expect(button(vm, "Herunterfahren")).toBeDisabled();
     expect(within(vm).queryByRole("button", { name: "Erzwingen" })).toBeNull();
     // Selbsterklärende Gründe (Server aus) brauchen keinen Hinweis.
-    expect(screen.queryByTestId("action-hint")).toBeNull();
+    expect(within(target).queryByTestId("action-hint")).toBeNull();
+    expect(within(vm).queryByTestId("action-hint")).toBeNull();
   });
 
   it("wakes the target with the CSRF token and without a dialog", async () => {
@@ -373,7 +374,7 @@ describe("actions", () => {
       info: {
         ...INFO,
         mode: "real",
-        actions: { wake: false, vm: true, shutdown: false },
+        actions: { wake: false, vm: true, shutdown: false, sync_dry_run: true, sync: false },
       },
     });
     await user.click(screen.getByRole("button", { name: "Einstellungen" }));

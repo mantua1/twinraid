@@ -12,9 +12,14 @@ import pytest
 from tests.conftest import REPO_ROOT
 from twinraid.shared.actions import ActionBlocker, ActionName, ActionOutcome, ActionStep
 from twinraid.shared.source_guard import (
+    GuardBlocker,
+    GuardCheckResult,
+    GuardConfirmReason,
     GuardContainerState,
+    GuardDatasetProblem,
     GuardError,
     GuardErrorDetail,
+    GuardOrderResult,
     GuardRestart,
     GuardRunEnd,
     GuardSelfDataset,
@@ -23,6 +28,7 @@ from twinraid.shared.source_guard import (
     GuardStatusProblem,
 )
 from twinraid.shared.status import StatusNotice, StatusReason
+from twinraid.shared.sync import SyncStep
 
 TYPES = REPO_ROOT / "frontend" / "src" / "api" / "types.ts"
 
@@ -53,6 +59,12 @@ def _frontend_list(name: str) -> list[str]:
         ("GUARD_RUN_ENDS", GuardRunEnd),
         ("GUARD_RESTARTS", GuardRestart),
         ("GUARD_SELF_DATASETS", GuardSelfDataset),
+        ("GUARD_ORDER_RESULTS", GuardOrderResult),
+        ("GUARD_CHECK_RESULTS", GuardCheckResult),
+        ("GUARD_BLOCKERS", GuardBlocker),
+        ("GUARD_CONFIRM_REASONS", GuardConfirmReason),
+        ("GUARD_DATASET_PROBLEMS", GuardDatasetProblem),
+        ("SYNC_STEPS", SyncStep),
     ],
 )
 def test_lists_match(name: str, enum: type[StrEnum]) -> None:

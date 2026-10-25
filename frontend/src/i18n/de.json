@@ -66,7 +66,8 @@
       "vm_name_mismatch": "Die VM aus power.conf auf {{target}} heißt anders als gaming_vm.unraid_vm_name. Bitte die UUID in power.conf prüfen.",
       "source_connect_plugin": "Auf {{target}} ist das Plugin Unraid Connect installiert. Dort liegt auf dem Boot-Medium der Key „sync“ (ab v0.5.1); mit Flash Backup läge eine unverschlüsselte Kopie davon in der Cloud von Unraid.",
       "source_flash_backup": "Flash Backup von Unraid Connect ist auf {{target}} aktiv.",
-      "source_guard_allows_self": "Die Erlaubnisliste des Wächters auf {{target}} enthält den Container von TwinRaid. source-guard.conf prüfen: TwinRaid wird nie angehalten."
+      "source_guard_allows_self": "Die Erlaubnisliste des Wächters auf {{target}} enthält den Container von TwinRaid. source-guard.conf prüfen: TwinRaid wird nie angehalten.",
+      "target_arc_unlimited": "Auf {{target}} ist keine Grenze für den ZFS-Cache eingetragen. Trage sie in Unraid unter Settings → Disk Settings ein."
     }
   },
   "dashboard": {
@@ -90,9 +91,7 @@
     },
     "sync": {
       "title": "Sync",
-      "description": "Spiegelung vom Quell- zum Zielserver.",
-      "empty": "Noch kein Sync-Lauf.",
-      "running": "Ein Kopierjob läuft."
+      "description": "Spiegelung vom Quell- zum Zielserver."
     },
     "history": {
       "title": "Verlauf",
@@ -166,7 +165,11 @@
       "title": "Verbindung zu {{name}}",
       "description": "So spricht TwinRaid mit dem Server.",
       "ssh": "Status und VM-Aktionen laufen per SSH über guard.sh auf {{name}} (Keys „status“ und „power“). Einen API-Key von Unraid braucht TwinRaid nicht.",
-      "webgui": "Die WebGUI dient nur der Online-Prüfung (Verbindungsaufbau auf webgui.port); ob Unraid dort HTTPS nutzt, spielt keine Rolle."
+      "webgui": "Die WebGUI dient nur der Online-Prüfung (Verbindungsaufbau auf webgui.port); ob Unraid dort HTTPS nutzt, spielt keine Rolle.",
+      "arc": "Grenze des ZFS-Caches",
+      "arcValue": "zfs_arc_max {{max}} · wirksam (c_max) {{effective}}",
+      "arcUnset": "nicht eingetragen (Settings → Disk Settings)",
+      "arcUnknown": "unbekannt (Server aus oder noch keine Statuszeile)"
     },
     "actions": {
       "title": "Aktionen",
@@ -177,8 +180,27 @@
       "groups": {
         "wake": "Wecken (wake)",
         "vm": "VM starten, herunterfahren, erzwingen (vm)",
-        "shutdown": "Server herunterfahren (shutdown)"
+        "shutdown": "Server herunterfahren (shutdown)",
+        "sync_dry_run": "Nur Probelauf (sync_dry_run)",
+        "sync": "Sync, ab v0.5.2; erlaubt auch den Probelauf (sync)"
       }
+    },
+    "sync": {
+      "title": "Spiegel",
+      "description": "Die drei Ebenen müssen dieselben Shares nennen: twinraid.yaml, source-guard.conf auf {{source}} und mirror.conf auf {{target}}. Den Stand von {{target}} kennt TwinRaid aus dem letzten Probelauf.",
+      "share": "Share",
+      "yes": "ja",
+      "no": "nein",
+      "unknown": "?",
+      "noCheck": "Noch keine Prüfung von {{target}}; sie kommt mit dem ersten Probelauf.",
+      "checkAt": "Letzte Prüfung von {{target}}: {{time}} – {{result}}",
+      "summary": "{{free}} von {{size}} frei · Reserve {{reserve}} % · Aufbewahrung {{keep}} Tage · Delegation {{deleg}} · Empfang {{receive}} · Klone {{clones}}",
+      "mirror": "Spiegel",
+      "state": "Zustand",
+      "snapshots": "Snapshots",
+      "newest": "neuester Empfang",
+      "oldest": "ältester",
+      "props": "Eigenschaften"
     }
   },
   "audit": {
@@ -201,7 +223,12 @@
       "vm_start": "VM starten",
       "vm_stop": "VM herunterfahren",
       "vm_force_stop": "VM erzwingen",
-      "shutdown_target_force_vm": "VM erzwingen und Server herunterfahren"
+      "shutdown_target_force_vm": "VM erzwingen und Server herunterfahren",
+      "sync_dry_run": "Probelauf",
+      "sync_start": "Sync starten",
+      "sync_cancel": "Probelauf abbrechen",
+      "sync_confirm_deletions": "Löschungen freigeben",
+      "cli_sync_check": "Sync-Prüfung (CLI)"
     },
     "results": {
       "success": "erfolgreich",
@@ -251,7 +278,9 @@
       "vm_start": "Starten",
       "vm_stop": "Herunterfahren",
       "vm_force_stop": "Erzwingen",
-      "shutdown_target_force_vm": "Erzwingen und danach Server herunterfahren"
+      "shutdown_target_force_vm": "Erzwingen und danach Server herunterfahren",
+      "sync_dry_run": "Nur Probelauf",
+      "sync_start": "Jetzt synchronisieren"
     },
     "names": {
       "wake_target": "Server wecken",
@@ -259,7 +288,9 @@
       "vm_start": "VM starten",
       "vm_stop": "VM herunterfahren",
       "vm_force_stop": "VM erzwingen",
-      "shutdown_target_force_vm": "VM erzwingen und Server herunterfahren"
+      "shutdown_target_force_vm": "VM erzwingen und Server herunterfahren",
+      "sync_dry_run": "Probelauf",
+      "sync_start": "Sync"
     },
     "steps": {
       "waking": "Magic Packet gesendet, der Server startet …",
@@ -282,7 +313,11 @@
       "force_not_yet": "erst nach Ablauf der Wartezeit nach „Herunterfahren“ möglich",
       "tour": "im Rundlauf der Simulation nicht verfügbar",
       "not_offered": "nur kurz nach einem an der VM gescheiterten Herunterfahren des Servers möglich",
-      "other_vms_running": "Auf {{target}} laufen noch weitere VMs: {{vms}}. Bitte fahre sie zuerst über die Unraid-Oberfläche herunter. Zur Sicherheit schaltet TwinRaid den Server nicht aus, solange andere VMs laufen, damit keine Daten verloren gehen."
+      "other_vms_running": "Auf {{target}} laufen noch weitere VMs: {{vms}}. Bitte fahre sie zuerst über die Unraid-Oberfläche herunter. Zur Sicherheit schaltet TwinRaid den Server nicht aus, solange andere VMs laufen, damit keine Daten verloren gehen.",
+      "source_guard_inactive": "der Wächter auf {{source}} ist nicht aktiv oder ZFS ist dort nicht verfügbar",
+      "levels_mismatch": "sync.shares in twinraid.yaml passt nicht zu den Zeilen dataset in source-guard.conf auf {{source}}",
+      "self_dataset_missing": "appdata wird gespiegelt, aber das eigene Dataset mainpool/appdata/twinraid fehlt (Test Z4 in docs/EINRICHTUNG.md)",
+      "next_version": "kommt mit v0.5.2"
     },
     "outcomes": {
       "success": "erfolgreich",
@@ -311,7 +346,21 @@
       "vm_memory_low": "Auf dem Server ist nicht genug Arbeitsspeicher frei, um die VM zu starten.",
       "vm_device_busy": "Ein durchgereichtes Gerät der VM, etwa die Grafikkarte, wird gerade von einer anderen VM benutzt.",
       "vm_start_failed": "Unraid konnte die VM nicht starten; den Grund nennt das libvirt-Log.",
-      "sync_running": "Der Server wurde nicht ausgeschaltet, weil gerade ein Sync empfangen wird."
+      "sync_running": "Der Server wurde nicht ausgeschaltet, weil gerade ein Sync empfangen wird.",
+      "dry_run_success": "Probelauf abgeschlossen; Senden wäre möglich.",
+      "cancelled": "abgebrochen",
+      "source_guard_inactive": "Der Wächter war nicht aktiv.",
+      "source_guard_lost": "Der Wächter hat nicht rechtzeitig geantwortet oder ist neu gestartet.",
+      "source_guard_refused": "Der Wächter hat abgelehnt.",
+      "too_soon": "Zu kurz nach dem letzten Snapshot; der Wächter legt höchstens alle 30 Minuten einen an.",
+      "snapshot_low_space": "Zu wenig Platz auf mainpool für einen neuen Snapshot (Reserve laut source-guard.conf).",
+      "snapshot_limit": "Zu viele eigene Snapshots (höchstens 50 je Dataset); ältere laufen nach snapshot_keep_days ab.",
+      "prepare_failed": "Die Prüfung auf dem Quellserver ist fehlgeschlagen; Einzelheiten im Syslog (twinraid-source-guard).",
+      "job_timeout": "Die Prüfung hat zu lange gedauert; der Job wurde geschlossen.",
+      "target_check_failed": "Der Zielserver hat die Prüfung (check) nicht beantwortet.",
+      "target_refused": "Der Zielserver würde den Empfang ablehnen.",
+      "base_missing": "Für einen inkrementellen Strom fehlt die Basis auf dem Quellserver.",
+      "self_dataset_missing": "appdata würde nicht gesendet, weil das eigene Dataset von TwinRaid fehlt."
     },
     "last": "Zuletzt: {{action}} – {{outcome}} ({{time}})",
     "hint": "{{actions}}: {{reason}}",
@@ -359,8 +408,6 @@
     "validUntil": "gültig bis {{time}}"
   },
   "guard": {
-    "active_one": "Wächter: aktiv · Herzschlag vor {{age}} s · {{count}} Container freigegeben",
-    "active_other": "Wächter: aktiv · Herzschlag vor {{age}} s · {{count}} Container freigegeben",
     "notMounted": "Wächter nicht eingerichtet. Die Schritte stehen in docs/EINRICHTUNG.md.",
     "inactive": "Wächter nicht aktiv.",
     "inactiveSince": "Wächter nicht aktiv seit {{time}}.",
@@ -413,7 +460,7 @@
       "too_large": "status.json ist größer als 64 KiB.",
       "bad_json": "status.json ist kein gültiges JSON.",
       "schema": "status.json hat nicht den erwarteten Aufbau.",
-      "protocol_mismatch": "Der Wächter spricht ein anderes Protokoll; source-guard.sh passend zu dieser Version von TwinRaid kopieren.",
+      "protocol_mismatch": "Der Wächter spricht ein anderes Protokoll; source-guard.sh Version 2 nach /boot/config/twinraid/ kopieren und mit source-guard.sh restart neu starten.",
       "heartbeat_future": "Der Herzschlag liegt in der Zukunft; die Uhrzeit des Servers prüfen."
     },
     "run_one": "{{count}} Container angehalten ({{names}}), spätestens wieder an um {{time}}.",
@@ -457,7 +504,7 @@
     },
     "settings": {
       "title": "Wächter auf {{name}}",
-      "description": "Hält auf {{name}} freigegebene Container für den Sync an und startet sie wieder. TwinRaid liest nur seinen Status; was erlaubt ist, steht in source-guard.conf auf {{name}}.",
+      "description": "Hält auf {{name}} freigegebene Container für den Sync an, legt Snapshots an und prüft das Senden. TwinRaid gibt nur Aufträge und liest seinen Status; was erlaubt ist, steht in source-guard.conf auf {{name}}.",
       "noDetails": "Kein aktueller Status des Wächters.",
       "version": "Version",
       "startedAt": "Läuft seit",
@@ -465,17 +512,129 @@
       "limitsValue": "Lauf höchstens {{max}} min · Herzschlag {{heartbeat}} s · docker stop {{stop}} s · Pause zwischen Läufen {{pause}} min",
       "maxDeletions": "Löschgrenze",
       "snapshots": "Snapshots auf {{name}}",
-      "snapshotsValue": "{{days}} Tage aufbewahren · Reserve {{reserve}} % (ab v0.5.1)",
+      "snapshotsValue": "{{days}} Tage aufbewahren · Reserve {{reserve}} %",
       "target": "Ziel für das Senden",
       "targetConfigured": "eingetragen (SSH-Port {{port}})",
-      "targetMissing": "nicht eingetragen (erst ab v0.5.1 nötig)",
+      "targetMissing": "nicht eingetragen (target_host in source-guard.conf)",
       "allowed": "Freigegebene Container",
       "none": "keine",
       "datasets": "Datasets",
       "datasetValue": "{{size}} · Kompression {{compression}}",
       "datasetMissing": "fehlt",
       "datasetUnknown": "unbekannt",
-      "rejected": "Abgelehnte Aufträge"
-    }
+      "rejected": "Abgelehnte Aufträge",
+      "heartbeat": "Letzter Herzschlag",
+      "heartbeatValue_one": "vor {{count}} Sekunde",
+      "heartbeatValue_other": "vor {{count}} Sekunden",
+      "key": "Key „sync“",
+      "keyPresent": "vorhanden",
+      "keyMissing": "fehlt (source-guard.sh init-key)",
+      "knownHost": "Hostkey von {{target}}",
+      "knownHostPresent": "bestätigt",
+      "knownHostMissing": "nicht bestätigt (source-guard.sh trust-target)",
+      "datasetSnapshots_one": "{{count}} eigener Snapshot",
+      "datasetSnapshots_other": "{{count}} eigene Snapshots",
+      "datasetBase": "Basis vom {{time}}",
+      "datasetNoBase": "noch keine Basis",
+      "datasetBookmark": "mit Lesezeichen"
+    },
+    "active_one": "Wächter: aktiv · {{count}} Container freigegeben",
+    "active_other": "Wächter: aktiv · {{count}} Container freigegeben",
+    "activeHint": "Status wird alle 5 s geprüft."
+  },
+  "sync": {
+    "schedule": "Zeitplan aus (ab Phase 6).",
+    "noRun": "Noch kein Probelauf.",
+    "running": "Probelauf läuft: {{step}}",
+    "last": "Letzter Probelauf ({{time}}): {{outcome}}",
+    "reason": "Grund: {{reason}}",
+    "cancel": "Abbrechen",
+    "cancelFailed": "Abbrechen hat nicht geklappt. Bitte erneut versuchen.",
+    "targetOfflineNoWake": "{{target}} ist aus, und Wecken ist nicht freigeschaltet (actions.wake)",
+    "steps": {
+      "waking": "{{target}} wird geweckt …",
+      "waiting_for_vm_service": "Wartet, bis {{target}} bereit ist …",
+      "snapshot": "Snapshot auf {{source}} wird angelegt …",
+      "preparing": "Änderungen werden gezählt und {{target}} geprüft …",
+      "closing": "Job wird geschlossen …"
+    },
+    "report": {
+      "title": "Ergebnis des Probelaufs vom {{time}}",
+      "share": "Share",
+      "deleted": "gelöscht",
+      "modified": "geändert",
+      "added": "neu",
+      "renamed": "umbenannt",
+      "size": "Größe",
+      "mirror": "Spiegel auf {{target}}",
+      "full": "vollständig (erster Lauf)",
+      "incremental": "inkrementell",
+      "incrementalBookmark": "inkrementell vom Lesezeichen",
+      "mirrorValue_one": "{{state}} · {{count}} Snapshot",
+      "mirrorValue_other": "{{state}} · {{count}} Snapshots",
+      "unknown": "unbekannt",
+      "sendReady": "Senden wäre möglich.",
+      "blocked": "Senden wäre gesperrt:",
+      "confirm": "Ein echter Sync würde vorher nach einer Freigabe fragen:",
+      "free": "{{target}}: {{free}} von {{size}} frei, Reserve {{reserve}} %."
+    },
+    "mirrorStates": {
+      "absent": "noch keiner",
+      "mirror": "vorhanden",
+      "foreign": "fremdes Dataset"
+    },
+    "problems": {
+      "base_missing": "Basis fehlt",
+      "not_in_mirror_conf": "nicht in mirror.conf",
+      "target_exists": "fremdes Dataset auf dem Ziel",
+      "self_dataset_missing": "eigenes Dataset von TwinRaid fehlt"
+    },
+    "confirmReasons": {
+      "deletions": "Mehr Löschungen als max_deletions in source-guard.conf.",
+      "shrunk": "Ein Share ist auf weniger als die Hälfte geschrumpft.",
+      "no_diff": "Die Änderungen lassen sich nicht zählen (Strom vom Lesezeichen)."
+    },
+    "blockers": {
+      "target_unreachable": "{{target}} hat die Prüfung nicht beantwortet.",
+      "mirror_root_missing": "Auf {{target}} fehlt die Share twinraid-mirror im Pool mainpool.",
+      "mirror_conf_invalid": "mirror.conf auf {{target}} fehlt oder ist ungültig.",
+      "delegation_mismatch": "Die Rechte für den Empfang (zfs allow) auf {{target}} stimmen nicht; Befehl aus docs/EINRICHTUNG.md.",
+      "receive_busy": "Auf {{target}} läuft gerade ein Empfang.",
+      "clone_active": "Auf {{target}} besteht ein Klon eines Spiegels (Notbetrieb?).",
+      "space_low": "Auf {{target}} ist zu wenig Platz (Reserve laut mirror.conf).",
+      "base_missing": "Für einen Share fehlt die Basis auf {{source}}.",
+      "target_exists": "Auf {{target}} liegt an der Stelle eines Spiegels ein fremdes Dataset. Ansehen und von Hand entfernen (docs/EINRICHTUNG.md).",
+      "not_in_mirror_conf": "Ein Share fehlt in mirror.conf auf {{target}}.",
+      "self_dataset_missing": "Das eigene Dataset von TwinRaid fehlt; appdata würde nicht gesendet.",
+      "props_mismatch": "Ein Spiegel auf {{target}} ist gesperrt (props-mismatch); Schritte in docs/WIEDERHERSTELLUNG.md, Abschnitt „Spiegel gesperrt“."
+    },
+    "check": {
+      "ok": "beantwortet",
+      "target_not_configured": "kein Ziel in source-guard.conf eingetragen (target_host)",
+      "key_missing": "Key „sync“ fehlt auf {{source}} (source-guard.sh init-key)",
+      "host_untrusted": "Hostkey von {{target}} nicht bestätigt (source-guard.sh trust-target)",
+      "host_key_mismatch": "Hostkey von {{target}} hat sich geändert; prüfen und neu bestätigen",
+      "auth_failed": "{{target}} lehnt den Key „sync“ ab (Zeile in authorized_keys prüfen)",
+      "unreachable": "SSH auf {{target}} nicht erreichbar",
+      "denied": "guard.sh auf {{target}} lehnt ab (Version 3 kopiert?)",
+      "ssh_failed": "SSH-Verbindung fehlgeschlagen",
+      "bad_answer": "unerwartete Antwort von guard.sh (Version 3 kopiert?)"
+    },
+    "orders": {
+      "job_open": "auf {{source}} ist noch ein Job offen",
+      "zfs_unavailable": "ZFS ist auf {{source}} nicht verfügbar",
+      "no_datasets": "in source-guard.conf steht kein dataset",
+      "dataset_missing": "ein Dataset aus source-guard.conf fehlt auf {{source}}",
+      "snapshot_failed": "zfs snapshot ist fehlgeschlagen",
+      "run_open": "auf {{source}} ist noch ein Lauf offen",
+      "no_job": "der Job ist verschwunden",
+      "wrong_state": "der Job ist in einem anderen Zustand",
+      "not_supported": "source-guard.sh ist zu alt (Version 2 kopieren)",
+      "config_invalid": "source-guard.conf ist ungültig",
+      "misconfigured": "der Wächter ist falsch eingerichtet",
+      "request_not_a_file": "die Auftragsdatei ist unbrauchbar",
+      "docker_unavailable": "Docker ist auf {{source}} nicht erreichbar"
+    },
+    "orderOther": "Ergebnis des Wächters: {{code}}"
   }
 }

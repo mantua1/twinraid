@@ -44,12 +44,8 @@ function StateLines({ guard, source }: { guard: SourceGuardStatus; source: strin
   const lines: string[] = [];
   switch (guard.state) {
     case "active":
-      lines.push(
-        t("guard.active", {
-          age: guard.heartbeat_age_seconds ?? 0,
-          count: guard.details?.allowed.length ?? 0,
-        }),
-      );
+      // Ohne laufendes Alter des Herzschlags (D1): Es steht unter Einstellungen → Wächter.
+      lines.push(t("guard.active", { count: guard.details?.allowed.length ?? 0 }));
       break;
     case "not_mounted":
       lines.push(t("guard.notMounted"));
@@ -101,6 +97,11 @@ function StateLines({ guard, source }: { guard: SourceGuardStatus; source: strin
       {lines.map((line) => (
         <p key={line}>{line}</p>
       ))}
+      {guard.state === "active" && (
+        <p className="text-xs text-muted-foreground" data-testid="guard-active-hint">
+          {t("guard.activeHint")}
+        </p>
+      )}
     </div>
   );
 }

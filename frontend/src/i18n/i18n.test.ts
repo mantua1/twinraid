@@ -8,7 +8,11 @@ import {
   AUDIT_ACTIONS,
   AUDIT_RESULTS,
   CA_CHANGE_REASONS,
+  GUARD_BLOCKERS,
+  GUARD_CHECK_RESULTS,
+  GUARD_CONFIRM_REASONS,
   GUARD_CONTAINER_STATES,
+  GUARD_DATASET_PROBLEMS,
   GUARD_ERROR_DETAILS,
   GUARD_ERRORS,
   GUARD_RESTARTS,
@@ -20,6 +24,7 @@ import {
   RESOURCE_STATES,
   STATUS_NOTICES,
   STATUS_REASONS,
+  SYNC_STEPS,
 } from "@/api/types";
 
 import de from "./de.json";
@@ -131,6 +136,32 @@ describe("action texts", () => {
     for (const outcome of ACTION_OUTCOMES) {
       expect(german.has(`actions.outcomes.${outcome}`), outcome).toBe(true);
     }
+  });
+});
+
+describe("sync texts", () => {
+  const german = flatten(de);
+
+  it("cover every code of the dry run (Konzept 4.3)", () => {
+    const lists: [string, readonly string[]][] = [
+      ["sync.steps", SYNC_STEPS],
+      ["sync.blockers", GUARD_BLOCKERS],
+      ["sync.check", GUARD_CHECK_RESULTS],
+      ["sync.confirmReasons", GUARD_CONFIRM_REASONS],
+      ["sync.problems", GUARD_DATASET_PROBLEMS],
+      ["sync.mirrorStates", ["absent", "mirror", "foreign"]],
+    ];
+    for (const [prefix, codes] of lists) {
+      for (const code of codes) {
+        expect(german.has(`${prefix}.${code}`), `${prefix}.${code}`).toBe(true);
+      }
+    }
+  });
+
+  it("tell the user which guard to copy after a protocol change", () => {
+    expect(german.get("guard.statusProblems.protocol_mismatch")).toContain(
+      "source-guard.sh Version 2",
+    );
   });
 });
 
