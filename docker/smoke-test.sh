@@ -5,7 +5,7 @@
 # nötigen Capabilities, Rechte der Prozesse und Dateien, nur HTTPS (HTTP wird
 # abgewiesen), CA und Serverzertifikat samt Fingerabdrücken (die CA ist der
 # einzige Vertrauensanker), Healthcheck, Login mit Session und CSRF, Live-Datenstrom,
-# simulierten Kopierjob, Aktionen in der Simulation samt Aktionslog des Workers,
+# Probelauf in der Simulation, Aktionen in der Simulation samt Aktionslog des Workers,
 # Sperre nach Fehlversuchen samt "unlock", keine
 # /api-Route ohne Login, keine Konfigurationswerte in öffentlichen Dateien,
 # Netzfilter, Host-Prüfung, Security-Header, Neustart, "renew-cert" mit und ohne
@@ -228,8 +228,10 @@ check() {
 check twinraid-worker Uid 0
 check twinraid-worker Gid 10001
 check twinraid-worker Groups ""
-check twinraid-worker CapEff 0000000000000004
-check twinraid-worker CapBnd 0000000000000004
+# Ab v0.5.1 ohne DAC_READ_SEARCH: Der Worker liest nur Dateien, die root gehören oder für
+# alle lesbar sind (Konzept 5.4); der ganze Starttest läuft mit diesem Worker.
+check twinraid-worker CapEff 0000000000000000
+check twinraid-worker CapBnd 0000000000000000
 check twinraid-worker CapAmb 0000000000000000
 check twinraid-worker NoNewPrivs 1
 check twinraid-web Uid 10001
@@ -358,15 +360,6 @@ expect_equal "downloaded CA is the served CA (DER)" \
   "$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).digest().hex(":").upper())' "${ca_download}")" "${ca_fp}"
 events="$(curl -s -N --max-time 4 --cacert "${CERT}" -b "${JAR}" "${BASE}/api/events" || true)"
 expect_contains "live stream delivers the status" "${events}" "event: status"
-expect_contains "simulated copy job can be switched on" "$(docker exec "${main}" twinraid-admin mock-job on 2>&1)" "now running"
-job_seen=""
-for _ in $(seq 1 10); do
-  job_seen="$(https_get -b "${JAR}" "${BASE}/api/status")"
-  [[ "${job_seen}" == *'"job_running":true'* ]] && break
-  sleep 1
-done
-expect_contains "status reports the running copy job" "${job_seen}" '"job_running":true'
-docker exec "${main}" twinraid-admin mock-job off >/dev/null
 # Aktionen in der interaktiven Simulation (Konzept 4.2 und 6.4)
 expect_equal "action without CSRF token is rejected" \
   "$(status_of -b "${JAR}" -H "${ORIGIN}" -X POST "${BASE}/api/actions/wake_target")" "403"
@@ -411,6 +404,34 @@ for _ in $(seq 1 15); do
   sleep 1
 done
 expect_contains "without the fault there is no next attempt" "${paused_status}" '"watch_retry":null'
+# Probelauf mit dem simulierten Wächter (Konzept 4.3 und 6.4, ab v0.5.1); Groß läuft schon.
+expect_equal "dry run is accepted" \
+  "$(status_of -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/actions/sync_dry_run")" "202"
+job_seen="no"
+dry_status=""
+for _ in $(seq 1 30); do
+  dry_status="$(https_get -b "${JAR}" "${BASE}/api/status")"
+  [[ "${dry_status}" == *'"job_running":true'* ]] && job_seen="yes"
+  [[ "${dry_status}" == *'"outcome":"dry_run_success"'* ]] && break
+  sleep 1
+done
+expect_equal "status reports the running copy job" "${job_seen}" "yes"
+expect_contains "simulated dry run succeeds" "${dry_status}" '"outcome":"dry_run_success"'
+expect_contains "dry run report counts the changes" "${dry_status}" '"deleted":12,"modified":34,"added":56,"renamed":2'
+expect_contains "no copy job after the dry run" "${dry_status}" '"job_running":false'
+expect_contains "action log records the dry run" \
+  "$(docker exec "${main}" twinraid-admin show-action-log 2>&1)" "sync_dry_run  dashboard: dry_run_success"
+expect_contains "audit log lists the dry run" "$(https_get -b "${JAR}" "${BASE}/api/audit")" \
+  '"action":"sync_dry_run","result":"requested"'
+expect_contains "the real sync comes with v0.5.2" \
+  "$(https_get -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/actions/sync_start")" \
+  '{"detail":"next_version"}'
+expect_equal "cancel takes only a job id of the worker" \
+  "$(status_of -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/sync/not-a-job-id/cancel")" "422"
+expect_equal "cancel without a running dry run is rejected" \
+  "$(status_of -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/sync/0123456789abcdef0123456789abcdef/cancel")" "409"
+expect_contains "sync-check only works in real mode" \
+  "$(docker exec "${main}" twinraid-admin sync-check 2>&1 || true)" "only works in real mode"
 expect_equal "logout without CSRF token is rejected" \
   "$(status_of -b "${JAR}" -H "${ORIGIN}" -X POST "${BASE}/api/auth/logout")" "403"
 expect_equal "logout with CSRF token" \
@@ -760,12 +781,15 @@ for name in ("target-api-key", "target-api-cert.sha256"):
   expect_contains "source guard without mounts is not set up" "${real_status}" '"source_guard":{"state":"not_mounted"'
   expect_contains "info reports read-only mode" \
     "$(curl -s --cacert "${real_cert}" -b "${real_jar}" "${REAL_BASE}/api/info")" '"read_only":true'
-  for command in wake_target shutdown_target shutdown_target_force_vm vm_start vm_stop vm_force_stop sync_start; do
+  for command in wake_target shutdown_target shutdown_target_force_vm vm_start vm_stop vm_force_stop sync_dry_run sync_start; do
     action='import socket,sys;s=socket.socket(socket.AF_UNIX);s.connect("/run/twinraid/worker.sock");s.sendall(("{\"command\":\""+sys.argv[1]+"\"}\n").encode());print(s.recv(300).decode())'
     expect_contains "real mode locks ${command}" \
       "$(docker exec -u 10001:10001 "${real}" "${PY}" -c "${action}" "${command}" 2>&1)" '"error":"not_available"'
   done
-  expect_contains "mock-job is refused in real mode" "$(docker exec "${real}" twinraid-admin mock-job on 2>&1 || true)" "only works in simulation mode"
+  # sync-check holt den Status als Web-Benutzer vom Worker und ändert nichts (Konzept 5.5).
+  sync_check="$(docker exec "${real}" twinraid-admin sync-check 2>&1 || true)"
+  expect_contains "sync-check reads the status of the worker" "${sync_check}" "TwinRaid sync check (read only)"
+  expect_contains "sync-check names the guard" "${sync_check}" "Source guard: not_mounted"
   expect_contains "trust-host-key explains an unreachable SSH" \
     "$(docker exec "${real}" twinraid-admin trust-host-key target --fingerprint SHA256:x 2>&1 || true)" \
     "Cannot read the SSH host key"
@@ -907,7 +931,7 @@ if [[ "${CHECK_EACH_CAP:-0}" == "1" ]]; then
     fail "KILL seems unnecessary (exit $(exit_code "${name}"))"
   fi
   docker rm -f "${name}" >/dev/null
-  echo "info  DAC_READ_SEARCH is not checked: the worker reads no shares before phase 5"
+  echo "info  DAC_READ_SEARCH is not checked: only twinraid-init needs it for an own key in /config/tls"
 fi
 
 echo
