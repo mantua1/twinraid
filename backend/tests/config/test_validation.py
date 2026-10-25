@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import yaml
 
-from tests.conftest import EXAMPLE_CONFIG
+from tests.conftest import EXAMPLE_CONFIG, REPO_ROOT
 from twinraid.config import ConfigError, TwinRaidConfig, load_config
 
 _DELETE = object()
@@ -236,9 +236,10 @@ def test_single_addresses_and_networks_can_be_mixed(tmp_path: Path) -> None:
     ]
 
 
-def test_example_has_no_warnings_except_the_schedule() -> None:
-    """Die Beispielkonfiguration nutzt keine entfallenen Schlüssel (Konzept 6.2)."""
-    config = load_config(EXAMPLE_CONFIG)
+@pytest.mark.parametrize("path", [EXAMPLE_CONFIG, REPO_ROOT / "config.dev.yaml"])
+def test_example_has_no_warnings_except_the_schedule(path: Path) -> None:
+    """Beispiel- und Entwicklungskonfiguration nutzen keine entfallenen Schlüssel (6.2)."""
+    config = load_config(path)
     assert config.sync.appdata_share is None
     assert config.sync.exclude is None
     assert config.warnings() == [
