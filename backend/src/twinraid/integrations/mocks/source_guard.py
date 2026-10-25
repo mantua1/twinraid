@@ -10,14 +10,21 @@ mit Kompression on. Fehler mit twinraid-admin mock-fault:
 
 Mit mock-tour zeigt GUARD_SCENARIO jeden Zustand, jeden Fehler und jeden Hinweis des
 Wächters mindestens einmal, im selben Takt wie der Rundlauf von Groß und VM.
+
+Ab v0.5.1 nimmt der simulierte Wächter Aufträge an wie source-guard.sh 2 (snapshot,
+prepare, close; integrations/mocks/guard_jobs.py), mit Ziel, Key und Hostkey von Groß.
 """
 
+import asyncio
+import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from twinraid.integrations.guard_orders import active_details
+from twinraid.integrations.mocks.guard_jobs import MockJobs, MockJobTimings
 from twinraid.integrations.mocks.lab import fault_flag, tour_flag
 from twinraid.integrations.mocks.status import STEP_SECONDS
 from twinraid.integrations.source_guard import GuardReport
@@ -30,6 +37,8 @@ from twinraid.shared.source_guard import (
     GuardErrorDetail,
     GuardLastRun,
     GuardLimits,
+    GuardOrder,
+    GuardOrderResult,
     GuardRestart,
     GuardRestartResult,
     GuardRun,
@@ -76,7 +85,7 @@ _ZFS = GuardZfs(
 
 def _details(started_at: datetime, **changes: object) -> GuardDetails:
     details = GuardDetails(
-        version=1,
+        version=2,
         started_at=started_at,
         allowed=(GuardContainer(name=MOCK_CONTAINER, state=GuardContainerState.RUNNING),),
         run=None,
@@ -337,12 +346,26 @@ class MockSourceGuard:
         flag_dir: Path,
         monotonic: Callable[[], float] = time.monotonic,
         clock: Callable[[], datetime] = _utc_now,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        timings: MockJobTimings | None = None,
+        datasets: tuple[str, ...] = (MOCK_DATASET,),
     ) -> None:
         self._flag_dir = flag_dir
+        # Wie sync.shares, damit die drei Ebenen in der Simulation zusammenpassen (Konzept 6.4).
+        self._datasets = datasets
         self._monotonic = monotonic
         self._clock = clock
+        self._sleep = sleep
         self._started = monotonic()
         self._started_at = clock().replace(microsecond=0)
+        self._instance = secrets.token_hex(8)
+        self._jobs = MockJobs(
+            datasets,
+            lambda name: fault_flag(flag_dir, name).exists(),
+            clock,
+            monotonic,
+            timings,
+        )
 
     def _fault_since(self, name: str) -> datetime | None:
         """Zeitpunkt, an dem der Fehler eingeschaltet wurde; None, wenn er aus ist."""
@@ -376,9 +399,39 @@ class MockSourceGuard:
                 "last_run": _start_failed_run(failed),
                 "run_allowed_at": allowed_at if allowed_at > now else None,
             }
+        self._jobs.advance()
+        changes.update(
+            zfs=_ZFS.model_copy(
+                update={
+                    "datasets": tuple(
+                        GuardDataset(name=name, present=True, referenced=2 * GIB, compression="on")
+                        for name in self._datasets
+                    )
+                }
+            ),
+            target_configured=True,
+            target_key=True,
+            target_known_host=True,
+            instance=self._instance,
+            last_seq=self._jobs.last_seq,
+            last_order=self._jobs.last_order,
+            target_check=self._jobs.check,
+            job=self._jobs.job,
+        )
         status = _active(now, self._started_at, **changes)
         if self._fault_since("source-guard-lost") is not None:
             status = status.model_copy(
                 update={"state": GuardState.ERROR, "error": GuardError.STATE_LOST}
             )
         return GuardReport(status)
+
+    # --- Aufträge (wie RealGuardChannel) ---
+
+    async def observe(self) -> GuardReport:
+        return self.report()
+
+    async def order(self, order: GuardOrder) -> GuardOrderResult:
+        active_details(self.report())
+        if order is GuardOrder.SNAPSHOT:
+            await self._sleep(self._jobs.timings.snapshot_seconds)
+        return self._jobs.apply(order)

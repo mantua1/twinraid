@@ -17,6 +17,9 @@ from twinraid.shared.ipc import (
     ProtocolError,
     ShutdownTarget,
     ShutdownTargetForceVm,
+    SyncCancel,
+    SyncDryRun,
+    SyncStart,
     VerifyPassword,
     VmForceStop,
     VmStart,
@@ -56,6 +59,8 @@ class WorkerApi(Protocol):
 
     async def request_action(self, action: ActionName) -> None: ...
 
+    async def cancel_sync(self, job_id: str) -> None: ...
+
 
 # Aktionen sind Befehle ohne Parameter aus der festen Liste (Konzept 3.2).
 _ACTION_COMMANDS: dict[ActionName, Command] = {
@@ -65,6 +70,8 @@ _ACTION_COMMANDS: dict[ActionName, Command] = {
     ActionName.VM_START: VmStart(command="vm_start"),
     ActionName.VM_STOP: VmStop(command="vm_stop"),
     ActionName.VM_FORCE_STOP: VmForceStop(command="vm_force_stop"),
+    ActionName.SYNC_DRY_RUN: SyncDryRun(command="sync_dry_run"),
+    ActionName.SYNC_START: SyncStart(command="sync_start"),
 }
 
 
@@ -118,3 +125,7 @@ class WorkerClient:
     async def request_action(self, action: ActionName) -> None:
         """Startet eine Aktion; der Worker antwortet sofort, der Ablauf läuft im Hintergrund."""
         await self.send(_ACTION_COMMANDS[action])
+
+    async def cancel_sync(self, job_id: str) -> None:
+        """Bricht den laufenden Probelauf mit dieser vom Worker vergebenen Kennung ab."""
+        await self.send(SyncCancel(command="sync_cancel", job_id=job_id))

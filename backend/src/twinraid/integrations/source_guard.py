@@ -27,12 +27,26 @@ from pydantic import ConfigDict, Field, StringConstraints, ValidationError
 
 from twinraid.shared.base import StrictModel
 from twinraid.shared.source_guard import (
+    GuardBlocker,
+    GuardCheck,
+    GuardCheckMirror,
+    GuardCheckResult,
+    GuardCheckSummary,
+    GuardConfirmReason,
     GuardContainer,
     GuardContainerState,
     GuardDataset,
+    GuardDatasetProblem,
+    GuardDatasetResult,
     GuardDetails,
     GuardError,
     GuardErrorDetail,
+    GuardJob,
+    GuardJobDataset,
+    GuardJobReason,
+    GuardJobResult,
+    GuardJobState,
+    GuardLastOrder,
     GuardLastRun,
     GuardLimits,
     GuardOrder,
@@ -59,7 +73,8 @@ READ_INTERVAL_SECONDS = 5.0
 # Aktiv heißt: Herzschlag höchstens so alt (Konzept 3.6).
 FRESH_SECONDS = 30
 MAX_STATUS_BYTES = 64 * 1024
-PROTOCOL = 1
+# Protokoll 2 ab source-guard.sh Version 2 (TwinRaid v0.5.1, Konzept 3.6).
+PROTOCOL = 2
 
 # Zeichenregeln wie im Wächter.
 ContainerName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")]
@@ -67,6 +82,8 @@ ShareName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-
 ContainerId = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 Instance = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{16}$")]
 Compression = Annotated[str, StringConstraints(pattern=r"^[a-z0-9-]{1,20}$")]
+Guid = Annotated[str, StringConstraints(pattern=r"^[0-9]{1,20}$")]
+SnapshotName = Annotated[str, StringConstraints(pattern=r"^twinraid-[0-9]{8}T[0-9]{6}Z$")]
 # Uhrzeiten als Sekunden seit 1970; Zahlen höchstens 19 Ziffern wie json_number im Wächter.
 Timestamp = Annotated[int, Field(ge=0, lt=10**11)]
 Count = Annotated[int, Field(ge=0, lt=10**19)]
@@ -108,9 +125,45 @@ class _Limits(_FileModel):
     snapshot_reserve_percent: Annotated[int, Field(ge=5, le=50)]
 
 
+class _CheckSummary(_FileModel):
+    """Zeile summary von guard.sh sync check (Konzept 3.7)."""
+
+    root: Literal["ok", "missing"]
+    conf: Literal["ok", "missing", "invalid"]
+    deleg: Literal["ok", "mismatch", "id_in_use"]
+    receive: Literal["idle", "busy"]
+    clones: Count | None
+    available: Count | None
+    size: Count | None
+    reserve_percent: Annotated[int, Field(ge=0, le=99)] | None
+    keep_days: Annotated[int, Field(ge=0, le=9999)] | None
+    min_interval_minutes: Annotated[int, Field(ge=0, le=9999)] | None
+
+
+class _CheckMirror(_FileModel):
+    name: ShareName
+    state: Literal["absent", "mirror", "foreign"]
+    props: Literal["ok", "mismatch"] | None
+    count: Count | None
+    newest_guid: Guid | None
+    newest_created: Timestamp | None
+    newest_received: Timestamp | None
+    oldest_created: Timestamp | None
+
+
+class _Check(_FileModel):
+    at: Timestamp
+    result: GuardCheckResult
+    summary: _CheckSummary | None
+    mirrors: Annotated[tuple[_CheckMirror, ...], Field(max_length=20)]
+
+
 class _Target(_FileModel):
     configured: bool
     port: Annotated[int, Field(ge=1, le=65535)]
+    key: bool
+    known_host: bool
+    check: _Check | None
 
 
 class _Allowed(_FileModel):
@@ -149,11 +202,20 @@ class _Pool(_FileModel):
     available: Count | None
 
 
+class _Base(_FileModel):
+    guid: Guid
+    created_at: Timestamp
+
+
 class _Dataset(_FileModel):
     name: ShareName
     present: bool | None
     referenced: Count | None
     compression: Compression | None
+    snapshots: Count | None
+    oldest_snapshot_at: Timestamp | None
+    base: _Base | None
+    bookmark: bool | None
 
 
 class _Zfs(_FileModel):
@@ -163,11 +225,45 @@ class _Zfs(_FileModel):
     self_dataset: GuardSelfDataset
 
 
+class _JobDataset(_FileModel):
+    name: ShareName
+    mode: Literal["full", "incremental"] | None
+    base_guid: Guid | None
+    base_type: Literal["snapshot", "bookmark"] | None
+    problem: GuardDatasetProblem | None
+    deleted: Count | None
+    modified: Count | None
+    added: Count | None
+    renamed: Count | None
+    referenced: Count | None
+    base_referenced: Count | None
+    size: Count | None
+    sent: Count | None
+    result: GuardDatasetResult | None
+
+
+class _Job(_FileModel):
+    """Job des Wächters (Konzept 3.6, „Job, Prüfen und Senden“)."""
+
+    id: Annotated[int, Field(ge=1, le=999_999_999)]
+    state: GuardJobState
+    result: GuardJobResult | None
+    reason: GuardJobReason | None
+    snapshot: SnapshotName
+    created_at: Timestamp
+    deadline: Timestamp | None
+    confirmed: bool
+    confirm_reasons: Annotated[tuple[GuardConfirmReason, ...], Field(max_length=3)]
+    send_ready: bool | None
+    blockers: Annotated[tuple[GuardBlocker, ...], Field(max_length=20)]
+    datasets: Annotated[tuple[_JobDataset, ...], Field(max_length=20)]
+
+
 class GuardFile(_FileModel):
     """state/status.json, wie write_status in source-guard.sh es schreibt."""
 
-    protocol: Literal[1]
-    version: Annotated[int, Field(ge=1, le=999)]
+    protocol: Literal[2]
+    version: Annotated[int, Field(ge=2, le=999)]
     heartbeat_at: Timestamp
     started_at: Timestamp
     instance: Instance | None
@@ -186,6 +282,7 @@ class GuardFile(_FileModel):
     run_allowed_at: Timestamp | None
     last_run: _LastRun | None
     zfs: _Zfs
+    job: _Job | None
     seq_exhausted: bool
 
 
@@ -447,6 +544,12 @@ def _details(file: GuardFile) -> GuardDetails:
                     present=item.present,
                     referenced=item.referenced,
                     compression=item.compression,
+                    snapshots=item.snapshots,
+                    oldest_snapshot_at=_maybe_time(item.oldest_snapshot_at),
+                    base_created_at=(
+                        _time(item.base.created_at) if item.base is not None else None
+                    ),
+                    bookmark=item.bookmark,
                 )
                 for item in file.zfs.datasets
             ),
@@ -456,6 +559,81 @@ def _details(file: GuardFile) -> GuardDetails:
         target_configured=file.target.configured,
         target_port=file.target.port,
         rejected_count=file.rejected.count,
+        instance=file.instance,
+        last_seq=file.last_seq,
+        last_order=(
+            GuardLastOrder(
+                seq=file.last.seq,
+                order=file.last.order,
+                result=file.last.result,
+                at=_time(file.last.at),
+            )
+            if file.last is not None
+            else None
+        ),
+        target_key=file.target.key,
+        target_known_host=file.target.known_host,
+        target_check=_check(file.target.check) if file.target.check is not None else None,
+        job=_job(file.job) if file.job is not None else None,
+    )
+
+
+def _maybe_time(seconds: int | None) -> datetime | None:
+    return _time(seconds) if seconds is not None else None
+
+
+def _check(check: _Check) -> GuardCheck:
+    summary = check.summary
+    return GuardCheck(
+        at=_time(check.at),
+        result=check.result,
+        summary=(GuardCheckSummary(**summary.model_dump()) if summary is not None else None),
+        mirrors=tuple(
+            GuardCheckMirror(
+                name=item.name,
+                state=item.state,
+                props=item.props,
+                count=item.count,
+                newest_created=_maybe_time(item.newest_created),
+                newest_received=_maybe_time(item.newest_received),
+                oldest_created=_maybe_time(item.oldest_created),
+            )
+            for item in check.mirrors
+        ),
+    )
+
+
+def _job(job: _Job) -> GuardJob:
+    return GuardJob(
+        id=job.id,
+        state=job.state,
+        result=job.result,
+        reason=job.reason,
+        snapshot=job.snapshot,
+        created_at=_time(job.created_at),
+        deadline=_maybe_time(job.deadline),
+        confirmed=job.confirmed,
+        confirm_reasons=job.confirm_reasons,
+        send_ready=job.send_ready,
+        blockers=job.blockers,
+        datasets=tuple(
+            GuardJobDataset(
+                name=item.name,
+                mode=item.mode,
+                base_type=item.base_type,
+                problem=item.problem,
+                deleted=item.deleted,
+                modified=item.modified,
+                added=item.added,
+                renamed=item.renamed,
+                referenced=item.referenced,
+                base_referenced=item.base_referenced,
+                size=item.size,
+                sent=item.sent,
+                result=item.result,
+            )
+            for item in job.datasets
+        ),
     )
 
 

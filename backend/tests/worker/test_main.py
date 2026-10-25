@@ -14,6 +14,7 @@ from tests.conftest import EXAMPLE_CONFIG
 from twinraid.config import load_config
 from twinraid.integrations.wol import BroadcastError
 from twinraid.shared.mode import RunMode
+from twinraid.sync.coordinator import SyncCoordinator
 from twinraid.worker.actions import ActionCoordinator
 from twinraid.worker.main import EXIT_STARTUP_ERROR, _serve, heartbeat, main, wake_on_lan
 from twinraid.worker.monitor import StatusMonitor
@@ -104,6 +105,10 @@ def test_signals_from_the_admin_cli(tmp_path: Path) -> None:
         async def close(self) -> None:
             calls.append("actions closed")
 
+    class Sync:
+        async def close(self) -> None:
+            calls.append("sync closed")
+
     async def run() -> None:
         server = Server()
         task = asyncio.create_task(
@@ -112,6 +117,7 @@ def test_signals_from_the_admin_cli(tmp_path: Path) -> None:
                 cast("PasswordCheck", Check()),
                 cast("StatusMonitor", Monitor()),
                 cast("ActionCoordinator", Actions()),
+                cast("SyncCoordinator", Sync()),
                 retry_status_now=lambda: calls.append("status retry"),
             )
         )
@@ -128,7 +134,8 @@ def test_signals_from_the_admin_cli(tmp_path: Path) -> None:
 
     asyncio.run(run())
     assert sorted(calls[:2]) == ["status retry", "throttle reset"]
-    assert calls[2:] == ["actions closed", "server closed"]
+    # Ein laufender Probelauf endet vor den Aktionen (interrupted im Aktionslog).
+    assert calls[2:] == ["sync closed", "actions closed", "server closed"]
 
 
 def test_wake_on_lan_is_not_used_in_simulation() -> None:

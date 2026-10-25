@@ -89,6 +89,10 @@ async def test_get_status_before_the_first_check(server: WorkerServer) -> None:
     guard = response.result.pop("source_guard")
     assert isinstance(guard, dict)
     assert guard["state"] == "active"
+    assert response.result.pop("target_zfs") is None
+    sync = response.result.pop("sync")
+    assert isinstance(sync, dict)
+    assert (sync["running"], sync["last"], sync["report"]) == (None, None, None)
     assert response.result == {
         "source": unknown,
         "target": unknown,
@@ -102,6 +106,8 @@ async def test_get_status_before_the_first_check(server: WorkerServer) -> None:
     availability = actions["availability"]
     assert isinstance(availability, dict)
     assert availability.pop("shutdown_target_force_vm") == "not_offered"
+    # Den echten Sync gibt es erst mit v0.5.2 (Konzept 4.3).
+    assert availability.pop("sync_start") == "next_version"
     assert set(availability.values()) == {"target_unknown"}
     assert actions["target"] == {"running": None, "last": None}
 
@@ -133,24 +139,29 @@ async def test_verify_password_rejects_invalid_requests(
     assert await _error_code(server.path, payload) is ErrorCode.INVALID_REQUEST
 
 
-SYNC_PAYLOADS = [
-    b'{"command":"sync_start"}\n',
-    f'{{"command":"sync_cancel","job_id":"{JOB_ID}"}}\n'.encode(),
-    f'{{"command":"sync_confirm_deletions","job_id":"{JOB_ID}"}}\n'.encode(),
-]
+CANCEL_PAYLOAD = f'{{"command":"sync_cancel","job_id":"{JOB_ID}"}}\n'.encode()
+CONFIRM_PAYLOAD = f'{{"command":"sync_confirm_deletions","job_id":"{JOB_ID}"}}\n'.encode()
 ACTION_PAYLOADS = [
     b'{"command":"wake_target"}\n',
     b'{"command":"shutdown_target"}\n',
     b'{"command":"vm_start"}\n',
     b'{"command":"vm_stop"}\n',
     b'{"command":"vm_force_stop"}\n',
-    *SYNC_PAYLOADS,
+    b'{"command":"sync_dry_run"}\n',
+    b'{"command":"sync_start"}\n',
+    CONFIRM_PAYLOAD,
 ]
 
 
-@pytest.mark.parametrize("payload", SYNC_PAYLOADS)
-async def test_sync_is_not_implemented_yet(server: WorkerServer, payload: bytes) -> None:
-    assert await _error_code(server.path, payload) is ErrorCode.NOT_IMPLEMENTED
+async def test_sync_commands_in_v0_5_1(server: WorkerServer) -> None:
+    """Probelauf ja; Sync und Freigabe erst mit v0.5.2; Abbrechen nur für einen Probelauf."""
+    start = await _raw(server.path, b'{"command":"sync_start"}\n')
+    assert isinstance(start, ErrorResponse)
+    assert (start.error, start.blocked_by) == (ErrorCode.ACTION_BLOCKED, "next_version")
+    confirm = await _raw(server.path, CONFIRM_PAYLOAD)
+    assert isinstance(confirm, ErrorResponse)
+    assert (confirm.error, confirm.blocked_by) == (ErrorCode.NOT_AVAILABLE, "next_version")
+    assert await _error_code(server.path, CANCEL_PAYLOAD) is ErrorCode.ACTION_BLOCKED
 
 
 @pytest.mark.parametrize("payload", ACTION_PAYLOADS[:5])

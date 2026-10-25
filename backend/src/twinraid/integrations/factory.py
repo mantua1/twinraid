@@ -8,8 +8,7 @@ from typing import Any
 
 from twinraid.config import TwinRaidConfig
 from twinraid.integrations.control import ActionControl, RealControl
-from twinraid.integrations.jobs import JobState, NoJobs
-from twinraid.integrations.mocks.jobs import MockJobSwitch
+from twinraid.integrations.guard_orders import GuardChannel, RealGuardChannel
 from twinraid.integrations.mocks.lab import MockLab
 from twinraid.integrations.mocks.source_guard import MockSourceGuard
 from twinraid.integrations.source_guard import RealSourceGuard, SourceGuardSource
@@ -53,6 +52,8 @@ class Integrations:
     tour_active: Callable[[], bool]
     # Wächter auf Klein (ab v0.5.0): Status für get_status.
     source_guard: SourceGuardSource
+    # Aufträge an den Wächter und frisch gelesener Status (Probelauf, ab v0.5.1).
+    guard_channel: GuardChannel
     # Aufgaben, die der Worker dauerhaft laufen lässt (Modus real: die Sitzung vm-watch und
     # das Lesen des Wächters).
     background: tuple[BackgroundTask, ...] = ()
@@ -71,7 +72,8 @@ def build_integrations(
 ) -> Integrations:
     if mode is RunMode.MOCK:
         lab = MockLab(mock_flag_dir)
-        return Integrations(lab, lab, lab.tour_active, MockSourceGuard(mock_flag_dir))
+        mock_guard = MockSourceGuard(mock_flag_dir, datasets=tuple(config.sync.shares))
+        return Integrations(lab, lab, lab.tour_active, mock_guard, mock_guard)
     watch = target_watch(config, paths)
     control = RealControl(config, watch, target_ssh(config, paths), wol)
     guard = RealSourceGuard()
@@ -80,14 +82,8 @@ def build_integrations(
         control,
         _never,
         guard,
+        RealGuardChannel(),
         background=(watch.run, guard.run),
         status_changed=watch.changed,
         retry_status_now=watch.retry_now,
     )
-
-
-def build_job_state(mode: RunMode, mock_flag: Path) -> JobState:
-    if mode is RunMode.MOCK:
-        return MockJobSwitch(mock_flag)
-    # Der echte Sync folgt in Phase 5.
-    return NoJobs()

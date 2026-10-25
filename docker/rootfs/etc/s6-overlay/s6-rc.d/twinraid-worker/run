@@ -1,6 +1,6 @@
 #!/command/with-contenv sh
 # Worker: UID 0, GID 10001 (Socket gehört so der Gruppe des Web-Prozesses),
-# Bounding-Set nur DAC_READ_SEARCH (Konzept 5.4).
+# ohne Capabilities (Konzept 5.4, ab v0.5.1).
 exec setpriv --reuid=0 --regid=10001 --clear-groups \
-    --inh-caps=-all --bounding-set=-all,+dac_read_search --no-new-privs \
+    --inh-caps=-all --bounding-set=-all --no-new-privs \
     -- /app/.venv/bin/twinraid-worker

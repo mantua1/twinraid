@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 import yaml
 
-from tests.conftest import EXAMPLE_CONFIG
+from tests.conftest import EXAMPLE_CONFIG, REPO_ROOT
 from twinraid.config import ConfigError, TwinRaidConfig, load_config
 
 _DELETE = object()
@@ -61,38 +61,18 @@ INVALID_CASES: list[tuple[str, object, str]] = [
     ("sync.shares", ["appdata", "appdata"], "duplicates"),
     ("sync.shares", ["appdata", "Appdata"], "duplicates"),
     ("sync.shares", [], "at least 1"),
-    ("sync.appdata_share", "medien2", "must be listed in shares"),
-    ("sync.appdata_share", "system", "must never be synced"),
-    # --- Pfade in exclude ---
-    ("sync.exclude", ["/appdata/twinraid"], "no leading '/'"),
-    ("sync.exclude", ["appdata/../dokumente"], "'.' or '..'"),
-    ("sync.exclude", ["appdata/./twinraid"], "'.' or '..'"),
-    ("sync.exclude", ["appdata//twinraid"], "empty parts"),
-    ("sync.exclude", ["appdata/twinraid/"], "empty parts"),
-    ("sync.exclude", ["appdata/-twinraid"], "starting with '-'"),
-    ("sync.exclude", ["-appdata/twinraid"], "starting with '-'"),
-    ("sync.exclude", ["appdata/twin\x00raid"], "control or invisible"),
-    ("sync.exclude", ["appdata/twin\nraid"], "control or invisible"),
-    ("sync.exclude", ["appdata/‮twinraid"], "control or invisible"),
-    ("sync.exclude", ["appdata/​twinraid"], "control or invisible"),
-    ("sync.exclude", ["appdata/*.tmp"], "wildcard"),
-    ("sync.exclude", ["appdata/cache?"], "wildcard"),
-    ("sync.exclude", ["appdata/[ab]"], "wildcard"),
-    ("sync.exclude", ["appdata\\twinraid"], "wildcard"),
-    ("sync.exclude", ["fotos/urlaub"], "must start with one of the configured shares"),
-    ("sync.exclude", ["appdata"], "would exclude a whole share"),
-    ("sync.exclude", [""], "must not be empty"),
-    # --- Pfade in protect_on_target ---
-    ("sync.protect_on_target", ["/appdata/_twinraid"], "no leading '/'"),
-    ("sync.protect_on_target", ["../appdata"], "'.' or '..'"),
-    ("sync.protect_on_target", ["appdata/-x"], "starting with '-'"),
-    ("sync.protect_on_target", ["appdata/\x1b[31m"], "control or invisible"),
-    ("sync.protect_on_target", ["unbekannt/x"], "must start with one of the configured shares"),
+    # --- Entfallene Schlüssel (ab v0.5.1, Konzept 6.3): nicht leere Listen sind ein Fehler ---
+    ("sync.exclude", ["appdata/twinraid"], "exclude is no longer supported since v0.5.1"),
+    ("sync.exclude", ["appdata/twinraid"], "own dataset below the share"),
+    ("sync.protect_on_target", ["appdata/_twinraid"], "protect_on_target is no longer supported"),
+    ("sync.protect_on_target", ["x"], "snapshots on the target"),
+    ("sync.exclude", "appdata", "valid list"),
+    ("sync.appdata_share", 5, "valid string"),
+    ("sync.max_deletions", "1000", "valid integer"),
     # --- Container-Namen ---
     ("sync.never_stop", ["bad name"], "invalid container name"),
     ("sync.never_stop", ["-x"], "invalid container name"),
     # --- Zahlen und Schalter ---
-    ("sync.max_deletions", -1, "greater than or equal to 0"),
     ("sync.stop_containers", "yes", "valid boolean"),
     ("sync.schedule.enabled", 1, "valid boolean"),
     # --- Zeitplan: Wochentage ---
@@ -198,13 +178,15 @@ INVALID_CASES: list[tuple[str, object, str]] = [
     ("actions.wake", "yes", "valid boolean"),
     ("actions.vm", 1, "valid boolean"),
     ("actions.shutdown", None, "valid boolean"),
-    ("actions.sync", True, "actions.sync: unknown key"),
+    ("actions.sync", "yes", "valid boolean"),
+    ("actions.sync_dry_run", 1, "valid boolean"),
+    ("actions.sync_now", True, "actions.sync_now: unknown key"),
     ("actions", ["wake"], "valid dictionary"),
     # --- Unbekannte und fehlende Schlüssel ---
     ("web.prot", 8443, "web.prot: unknown key"),
     ("sync.schedule.cron", "0 3 * * 0", "sync.schedule.cron: unknown key"),
     ("extra", 1, "extra: unknown key"),
-    ("sync.max_deletions", _DELETE, "sync.max_deletions: required key is missing"),
+    ("sync.stop_containers", _DELETE, "sync.stop_containers: required key is missing"),
     ("servers.target.mac", _DELETE, "servers.target.mac: required key is missing"),
 ]
 
@@ -254,19 +236,52 @@ def test_single_addresses_and_networks_can_be_mixed(tmp_path: Path) -> None:
     ]
 
 
-def test_valid_paths_with_spaces_and_umlauts(tmp_path: Path) -> None:
-    data = _with("sync.exclude", ["appdata/twinraid", "medien/Meine Bilder/Ü-Ordner"])
+@pytest.mark.parametrize("path", [EXAMPLE_CONFIG, REPO_ROOT / "config.dev.yaml"])
+def test_example_has_no_warnings_except_the_schedule(path: Path) -> None:
+    """Beispiel- und Entwicklungskonfiguration nutzen keine entfallenen Schlüssel (6.2)."""
+    config = load_config(path)
+    assert config.sync.appdata_share is None
+    assert config.sync.exclude is None
+    assert config.warnings() == [
+        "sync.schedule.enabled is true, but schedules are carried out only from phase 6 on; "
+        "the schedule is not run."
+    ]
+
+
+def test_removed_keys_of_older_configs_only_warn(tmp_path: Path) -> None:
+    """Eine Konfiguration aus v0.5.0 mit leeren Listen startet (bis Version 1.0, Konzept 6.3)."""
+    data = _example()
+    data["sync"].update(
+        appdata_share="appdata", max_deletions=1000, exclude=[], protect_on_target=[]
+    )
+    data["sync"]["schedule"]["enabled"] = False
     config = _load(tmp_path, data)
-    assert config.sync.exclude[1] == "medien/Meine Bilder/Ü-Ordner"
+    assert config.warnings() == [
+        "sync.appdata_share is ignored since v0.5.1; remove it.",
+        "sync.max_deletions is ignored since v0.5.1; the limit is max_deletions in "
+        "source-guard.conf on the source server. Remove it here.",
+        "sync.exclude (empty) is ignored since v0.5.1; remove it.",
+        "sync.protect_on_target (empty) is ignored since v0.5.1; remove it.",
+    ]
+    # Auch ein Name, der nicht in shares steht, stoppt den Container nicht mehr.
+    data["sync"]["appdata_share"] = "nicht-da"
+    assert _load(tmp_path, data).sync.appdata_share == "nicht-da"
 
 
 def test_empty_lists_are_allowed(tmp_path: Path) -> None:
     data = _example()
-    data["sync"]["exclude"] = []
-    data["sync"]["protect_on_target"] = []
     data["sync"]["never_stop"] = []
+    data["sync"]["schedule"]["enabled"] = False
     config = _load(tmp_path, data)
-    assert config.sync.exclude == []
+    assert config.sync.never_stop == []
+    assert config.warnings() == []
+
+
+def test_sync_actions_default_to_off(tmp_path: Path) -> None:
+    data = _example()
+    del data["actions"]
+    config = _load(tmp_path, data)
+    assert (config.actions.sync_dry_run, config.actions.sync) == (False, False)
 
 
 def test_schedule_from_example() -> None:

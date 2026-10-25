@@ -64,7 +64,6 @@ def test_sensitive_values_cover_all_kinds() -> None:
         "canary-source-name-7q",  # Servername
         "canary-vm-unraid-7q",  # VM-Name in Unraid
         "canaryshare7q",  # Share
-        "canaryapp7q/canaryexclude7q",  # Pfad
         "canarycontainer7q",  # Container
         "10.77.31.50",  # IP im Zertifikat
         "canary-host-7q.home.arpa",  # Hostname im Zertifikat

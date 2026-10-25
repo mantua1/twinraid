@@ -53,7 +53,6 @@ Danach im Browser: <https://127.0.0.1:8443>. Die Zertifikatswarnung einmal best�
 Die Simulation ist interaktiv: Groß und die VM starten ausgeschaltet, die Buttons wirken mit festen Wartezeiten (Groß bootet 20 s, der VM-Dienst braucht weitere 10 s). Weitere Schalter im zweiten Terminal (`off` schaltet jeweils wieder aus):
 
 ```bash
-./scripts/dev-admin.sh mock-job on                # laufenden Kopierjob vortäuschen
 ./scripts/dev-admin.sh mock-tour on               # Rundlauf durch alle Zustände und Ursachen
 ./scripts/dev-admin.sh mock-fault vm-hang on      # VM reagiert nicht auf Herunterfahren
 ./scripts/dev-admin.sh mock-fault ssh-denied on   # guard.sh lehnt ab
@@ -67,6 +66,14 @@ Die Simulation ist interaktiv: Groß und die VM starten ausgeschaltet, die Butto
 ./scripts/dev-admin.sh mock-fault source-guard-inactive on  # Wächter auf Klein läuft nicht
 ./scripts/dev-admin.sh mock-fault source-guard-lost on  # Wächter hat seinen Zustand verloren
 ./scripts/dev-admin.sh mock-fault source-guard-start-failed on  # Container startet nach dem Lauf nicht
+./scripts/dev-admin.sh mock-fault sync-deletions on      # Probelauf: viele Löschungen (Freigabe nötig)
+./scripts/dev-admin.sh mock-fault sync-empty-source on   # Probelauf: Quelle fast leer (Freigabe nötig)
+./scripts/dev-admin.sh mock-fault sync-target-refused on # Probelauf: zu wenig Platz auf Groß
+./scripts/dev-admin.sh mock-fault target-exists on       # Probelauf: fremdes Dataset an der Stelle des Spiegels
+./scripts/dev-admin.sh mock-fault target-clone on        # Probelauf: Klon eines Spiegels auf Groß
+./scripts/dev-admin.sh mock-fault vm-device-busy on      # VM-Start: Grafikkarte von einer anderen VM belegt
+./scripts/dev-admin.sh mock-fault vm-memory-low on       # VM-Start: zu wenig Arbeitsspeicher auf Groß
+./scripts/dev-admin.sh mock-fault arc-unlimited on       # keine Grenze für den ZFS-Cache auf Groß
 ./scripts/dev-admin.sh show-action-log            # Aktionslog des Workers
 ```
 

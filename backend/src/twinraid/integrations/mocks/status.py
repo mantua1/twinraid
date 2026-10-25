@@ -16,6 +16,7 @@ from twinraid.shared.status import (
     ResourceStatus,
     StatusNotice,
     StatusReason,
+    TargetZfs,
     WatchRetry,
 )
 
@@ -40,6 +41,12 @@ def _unknown(reason: StatusReason) -> tuple[ResourceInfo, ResourceInfo, Resource
     return (_ON, _ON, _vm(reason), ())
 
 
+GIB = 1024**3
+# Grenze des ZFS-Caches auf Groß (Konzept 6.4): 3,2 GiB; bei arc-unlimited ist keine
+# eingetragen (arc_max 0), und OpenZFS wählt c_max selbst.
+MOCK_ARC_MAX = 32 * GIB // 10
+MOCK_C_MAX_UNLIMITED = 15 * GIB
+
 # (Klein, Groß, VM, Hinweise) je Schritt.
 SCENARIO: tuple[tuple[ResourceInfo, ResourceInfo, ResourceInfo, tuple[StatusNotice, ...]], ...] = (
     (
@@ -56,7 +63,7 @@ SCENARIO: tuple[tuple[ResourceInfo, ResourceInfo, ResourceInfo, tuple[StatusNoti
     ),
     _unknown(StatusReason.WATCH_CONNECTING),
     _unknown(StatusReason.VM_SERVICE_UNAVAILABLE),
-    (_ON, _ON, _OFF, _NONE),
+    (_ON, _ON, _OFF, (StatusNotice.TARGET_ARC_UNLIMITED,)),
     (_ON, _ON, ResourceInfo(state=ResourceState.STARTING), _NONE),
     (_ON, _ON, _ON, _NONE),
     (
@@ -120,6 +127,13 @@ class MockStatusProvider:
 
     async def get_status(self) -> ResourceStatus:
         source, target, vm, notices = SCENARIO[self.step()]
+        # Werte des ARC kommen mit jeder Zeile von vm-watch, also nur bei bekannter VM.
+        zfs = None
+        if target.state is ResourceState.ONLINE and vm.state is not ResourceState.UNKNOWN:
+            if StatusNotice.TARGET_ARC_UNLIMITED in notices:
+                zfs = TargetZfs(arc_max=0, c_max=MOCK_C_MAX_UNLIMITED)
+            else:
+                zfs = TargetZfs(arc_max=MOCK_ARC_MAX, c_max=MOCK_ARC_MAX)
         return ResourceStatus(
             source=source,
             target=target,
@@ -127,4 +141,5 @@ class MockStatusProvider:
             checked_at=self._clock(),
             notices=notices,
             watch_retry=self._retry(vm.reason),
+            target_zfs=zfs,
         )

@@ -20,6 +20,14 @@ class ActionName(StrEnum):
     VM_START = "vm_start"
     VM_STOP = "vm_stop"
     VM_FORCE_STOP = "vm_force_stop"
+    # Ab v0.5.1 (Konzept 4.3, „Probelauf in TwinRaid“): Probelauf über den Wächter; der
+    # echte Sync ist in v0.5.1 noch gesperrt (next_version).
+    SYNC_DRY_RUN = "sync_dry_run"
+    SYNC_START = "sync_start"
+
+
+# Aktionen der Ressource „Sync“ (Konzept 4.2); die übrigen betreffen Groß und die VM.
+SYNC_ACTIONS: frozenset[ActionName] = frozenset({ActionName.SYNC_DRY_RUN, ActionName.SYNC_START})
 
 
 class ActionGroup(StrEnum):
@@ -52,6 +60,13 @@ class ActionBlocker(StrEnum):
     OTHER_VMS_RUNNING = "other_vms_running"
     # Simulationsmodus: Der feste Rundlauf ist eingeschaltet (twinraid-admin mock-tour).
     TOUR = "tour"
+    # Ab v0.5.1, Sync und Probelauf (Konzept 4.2 und 4.3): Wächter nicht aktiv oder sein
+    # ZFS-Teil nicht bereit; sync.shares passt nicht zu den Datasets des Wächters; appdata
+    # ohne eigenes Dataset von TwinRaid; der echte Sync kommt erst mit v0.5.2.
+    SOURCE_GUARD_INACTIVE = "source_guard_inactive"
+    LEVELS_MISMATCH = "levels_mismatch"
+    SELF_DATASET_MISSING = "self_dataset_missing"
+    NEXT_VERSION = "next_version"
 
 
 class ActionStep(StrEnum):
@@ -96,6 +111,29 @@ class ActionOutcome(StrEnum):
     VM_RUNNING = "vm_running"
     # Groß wurde nicht ausgeschaltet, weil weitere VMs liefen (ab v0.4.2).
     OTHER_VMS_RUNNING = "other_vms_running"
+    # Ab v0.5.1 (guard.sh Version 3, Konzept 3.5): VM-Start abgelehnt, weil zu wenig
+    # Arbeitsspeicher frei ist oder ein durchgereichtes Gerät belegt ist; andere Fehler von
+    # virsh start; poweroff abgelehnt, weil ein Empfang läuft.
+    VM_MEMORY_LOW = "vm_memory_low"
+    VM_DEVICE_BUSY = "vm_device_busy"
+    VM_START_FAILED = "vm_start_failed"
+    SYNC_RUNNING = "sync_running"
+    # Probelauf ab v0.5.1 (Konzept 4.3, „Probelauf in TwinRaid“, und 5.3). Bei
+    # target_refused, target_check_failed und source_guard_refused nennt reason den Grund.
+    DRY_RUN_SUCCESS = "dry_run_success"
+    CANCELLED = "cancelled"
+    SOURCE_GUARD_INACTIVE = "source_guard_inactive"
+    SOURCE_GUARD_LOST = "source_guard_lost"
+    SOURCE_GUARD_REFUSED = "source_guard_refused"
+    TOO_SOON = "too_soon"
+    SNAPSHOT_LOW_SPACE = "snapshot_low_space"
+    SNAPSHOT_LIMIT = "snapshot_limit"
+    PREPARE_FAILED = "prepare_failed"
+    JOB_TIMEOUT = "job_timeout"
+    TARGET_CHECK_FAILED = "target_check_failed"
+    TARGET_REFUSED = "target_refused"
+    BASE_MISSING = "base_missing"
+    SELF_DATASET_MISSING = "self_dataset_missing"
     # Der Worker wurde beendet, während die Aktion lief (nur im Aktionslog).
     INTERRUPTED = "interrupted"
     INTERNAL_ERROR = "internal_error"

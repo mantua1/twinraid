@@ -1,0 +1,29 @@
+{
+ "objects": {
+  "mainpool": {
+   "type": "filesystem",
+   "props": {
+    "mountpoint": ["/mnt/mainpool", "local"],
+    "used": ["107374182400", "-"],
+    "available": ["966367641600", "-"]
+   },
+   "mounted": true,
+   "txg": 1
+  },
+  "mainpool/twinraid-mirror": {
+   "type": "filesystem",
+   "props": {"available": ["966367641600", "-"]},
+   "mounted": true,
+   "txg": 2
+  }
+ },
+ "allow": {
+  "mainpool/twinraid-mirror": [
+   "---- Permissions on mainpool/twinraid-mirror -------------------------",
+   "Local+Descendent permissions:",
+   "\tuser (unknown: 64000) acltype,atime,canmount,checksum,compression,copies,create,dedup,devices,exec,mount,mountpoint,primarycache,quota,readonly,receive:append,recordsize,refquota,refreservation,reservation,secondarycache,setuid,sharenfs,sharesmb,snapdir,sync,userprop,xattr"
+  ]
+ },
+ "denied": [],
+ "txg": 10
+}

@@ -41,8 +41,7 @@ def sensitive_values(
 
     sync = config.sync
     values.update(sync.shares)
-    values.add(sync.appdata_share)
-    values.update(sync.exclude)
-    values.update(sync.protect_on_target)
+    if sync.appdata_share is not None:
+        values.add(sync.appdata_share)
     values.update(sync.never_stop)
     return frozenset(values)

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from twinraid.shared.actions import ActionName, ActionOutcome, Trigger
+from twinraid.shared.source_guard import GuardBlocker
 from twinraid.worker.action_log import (
     STARTED,
     ActionLog,
@@ -54,6 +55,23 @@ def test_entries_have_fixed_fields(tmp_path: Path) -> None:
             "result": "vm_not_configured",
         },
     ]
+
+
+def test_reason_only_when_given(tmp_path: Path) -> None:
+    """Ab v0.5.1: der Grund bei target_refused, target_check_failed und source_guard_refused."""
+    log = _log(tmp_path)
+    log.record(
+        "0a1b2c3d",
+        ActionName.SYNC_DRY_RUN,
+        Trigger.DASHBOARD,
+        ActionOutcome.TARGET_REFUSED,
+        reason=GuardBlocker.SPACE_LOW,
+    )
+    log.record("0a1b2c3d", ActionName.SYNC_DRY_RUN, Trigger.DASHBOARD, ActionOutcome.CANCELLED)
+    entries = [json.loads(line) for line in (tmp_path / "actions.jsonl").read_text().splitlines()]
+    assert entries[0]["reason"] == "space_low"
+    assert entries[0]["result"] == "target_refused"
+    assert "reason" not in entries[1]
 
 
 def test_file_is_private(tmp_path: Path) -> None:

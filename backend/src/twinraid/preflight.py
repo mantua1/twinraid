@@ -27,11 +27,13 @@ def main() -> int:
 
     path = config_path(os.environ)
     try:
-        load_config(path)
+        config = load_config(path)
     except ConfigError as exc:
         logger.error("%s", exc.render())
         logger.error(_NOT_STARTING)
         return 1
+    for warning in config.warnings():
+        logger.warning("%s", warning)
 
     log_mock_banner(logger, mode)
     logger.info("preflight checks passed (mode=%s, config=%s)", mode.value, path)

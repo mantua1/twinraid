@@ -61,12 +61,24 @@ def _function(name: str) -> str:
     return text[start : text.index("\n}\n", start)]
 
 
-def test_lock_after_properties_from_the_stream() -> None:
-    """Eigenschaften aus dem Strom: aushängen, dann canmount=noauto, dann Ablehnung."""
+def test_lock_after_properties_from_the_stream_or_missing_values() -> None:
+    """received-properties (2) und props-not-applied (4): sperren, dann ablehnen, nie einhängen.
+
+    Konzept 3.7: Fehlt ein fester Wert nach dem Empfang, sperrt guard.sh wie bei Eigenschaften
+    aus dem Strom; die Prüfung ist Pflicht nach jedem Empfang.
+    """
+    lock = _function("lock_mirror")
+    assert lock.index("zfs unmount --") < lock.index('zfs set -- canmount=noauto "$1"')
     function = _function("verify_and_mount")
-    lock = function.index('zfs set -- canmount=noauto "${target}"')
-    assert function.index("zfs unmount --") < lock < function.index("return 2")
-    assert function.index("return 2") < function.index("zfs mount --")
+    received = function.index('RECEIVED_FOUND="$(received_properties')
+    fixed = function.index('if ! mirror_properties_ok "${target}"; then')
+    mount = function.index("zfs mount --")
+    assert received < function.index("return 2") < fixed < function.index("return 4") < mount
+    assert function.count('lock_mirror "${target}"') == 2
+    # Die Zeile mit absichtlich fehlendem Recht muss genau so gesperrt werden.
+    missing = _function("check_missing_right")
+    assert "((rc == 4))" in missing
+    assert '"$(value_of canmount "${missing}")" == noauto' in missing
 
 
 def test_no_samba_share_on_unraid_target() -> None:
@@ -118,12 +130,48 @@ def test_script_never_destroys_recursively() -> None:
 
 
 def test_receive_with_force_only_as_unprivileged_user() -> None:
-    """Die einzige Stelle mit -F prüft receive:append als Benutzer ohne root."""
+    """-F steht nur in den Gegenproben, als UID 64000 auf eigenen Test-Datasets."""
     lines = SCRIPT.read_text().splitlines()
-    forced = [i for i, line in enumerate(lines) if "zfs receive" in line and " -F" in line]
-    assert len(forced) == 1
-    assert "setpriv --reuid" in lines[forced[0] - 1]
-    assert '"${deleg}"' in lines[forced[0]]
+    forced = [line for line in lines if "zfs receive" in line and " -F" in line]
+    assert len(forced) == 2
+    for line in forced:
+        assert "as_receiver zfs receive -u -F -- " in line, line
+    assert '"${deleg}"' in forced[0]
+    assert '"${mirror}"' in forced[1]
+
+
+def test_receiver_as_in_the_concept() -> None:
+    """Empfang ohne root wie guard.sh: UID/GID 64000, nie nobody (Konzept 3.7, E27)."""
+    text = SCRIPT.read_text()
+    assert "readonly RECV_UID=64000\n" in text
+    assert "readonly RECV_GID=64000\n" in text
+    assert "readonly RECV_BASE_PERMS=receive:append,create,mount\n" in text
+    receiver = _function("as_receiver")
+    for flag in (
+        '--reuid "${RECV_UID}"',
+        '--regid "${RECV_GID}"',
+        "--clear-groups",
+        "--inh-caps=-all",
+        "--bounding-set=-all",
+        "--no-new-privs",
+    ):
+        assert flag in receiver, flag
+    # Kein anderer Benutzer für setpriv oder zfs allow.
+    assert text.count("setpriv --reuid") == 1
+    assert "id -u" not in text
+    for line in text.splitlines():
+        # Meldungen mit einem Befehl zum Abschreiben sind kein Aufruf.
+        if line.lstrip().startswith('stop "'):
+            continue
+        if "zfs allow -u" in line or "zfs unallow -u" in line:
+            assert '-u "${RECV_UID}"' in line, line
+    # Mit der Delegation für guard.sh erbte das Test-Dataset alle Rechte (Konzept 5.6).
+    prepare = text.split("prepare_target() {", 1)[1].split("\n}\n", 1)[0]
+    assert prepare.index('zfs allow -- "${MIRROR_ROOT}"') < prepare.index("zfs create")
+    assert "zfs unallow -u ${RECV_UID} ${MIRROR_ROOT}" in prepare
+    concept = CONCEPT.read_text()
+    assert "UID und GID 64000" in concept
+    assert "Nie verwendet wird `nobody` (99)" in concept
 
 
 def test_fixed_paths() -> None:

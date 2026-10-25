@@ -65,6 +65,12 @@ class VmForceStop(StrictModel):
     command: Literal["vm_force_stop"]
 
 
+class SyncDryRun(StrictModel):
+    """„Nur Probelauf“ (Konzept 4.3, Entscheidung E19, ab v0.5.1)."""
+
+    command: Literal["sync_dry_run"]
+
+
 class SyncStart(StrictModel):
     command: Literal["sync_start"]
 
@@ -88,6 +94,7 @@ Command = Annotated[
     | VmStart
     | VmStop
     | VmForceStop
+    | SyncDryRun
     | SyncStart
     | SyncCancel
     | SyncConfirmDeletions,
@@ -106,6 +113,7 @@ COMMAND_NAMES: frozenset[str] = frozenset(
         "vm_start",
         "vm_stop",
         "vm_force_stop",
+        "sync_dry_run",
         "sync_start",
         "sync_cancel",
         "sync_confirm_deletions",
@@ -115,8 +123,11 @@ COMMAND_NAMES: frozenset[str] = frozenset(
 
 # Befehle mit Außenwirkung (Konzept 4.2 und 6.4).
 ACTION_COMMANDS: frozenset[str] = COMMAND_NAMES - {"get_status", "verify_password"}
-# Der Sync folgt in Phase 5; bis dahin sind diese Befehle gesperrt.
-SYNC_COMMANDS: frozenset[str] = frozenset({"sync_start", "sync_cancel", "sync_confirm_deletions"})
+# Befehle der Ressource „Sync“ (ab v0.5.1); sync_start und sync_confirm_deletions lehnt der
+# Worker bis v0.5.2 ab (next_version).
+SYNC_COMMANDS: frozenset[str] = frozenset(
+    {"sync_dry_run", "sync_start", "sync_cancel", "sync_confirm_deletions"}
+)
 
 
 class ErrorCode(StrEnum):

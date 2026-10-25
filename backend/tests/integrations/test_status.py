@@ -11,9 +11,8 @@ from tests.conftest import EXAMPLE_CONFIG
 from tests.support.watch import StubWatch, report
 from twinraid.config import TwinRaidConfig, load_config
 from twinraid.integrations.control import RealControl
-from twinraid.integrations.factory import build_integrations, build_job_state
-from twinraid.integrations.jobs import NoJobs
-from twinraid.integrations.mocks.jobs import MockJobSwitch
+from twinraid.integrations.factory import build_integrations
+from twinraid.integrations.guard_orders import RealGuardChannel
 from twinraid.integrations.mocks.lab import MockLab
 from twinraid.integrations.mocks.source_guard import GUARD_SCENARIO, MockSourceGuard
 from twinraid.integrations.mocks.status import (
@@ -33,6 +32,7 @@ from twinraid.shared.status import (
     ResourceState,
     StatusNotice,
     StatusReason,
+    TargetZfs,
     WatchRetry,
 )
 
@@ -191,6 +191,31 @@ async def test_notices(value: WatchReport, notices: tuple[StatusNotice, ...]) ->
     assert status.notices == notices
 
 
+@pytest.mark.parametrize(
+    ("arc_max", "c_max", "notices"),
+    [
+        (4 * 1024**3, 4 * 1024**3, ()),
+        # 0: In Unraid ist keine Grenze eingetragen (Konzept 3.5, „Grenze des ARC“).
+        (0, 15 * 1024**3, (StatusNotice.TARGET_ARC_UNLIMITED,)),
+        # „-“ (ZFS nicht geladen) und „?“ (nicht lesbar) ergeben keinen Hinweis.
+        (None, None, ()),
+    ],
+)
+async def test_arc_values_from_the_session(
+    arc_max: int | None, c_max: int | None, notices: tuple[StatusNotice, ...]
+) -> None:
+    watch = StubWatch()
+    watch.show(report(arc_max=arc_max, c_max=c_max))
+    status = await _provider(watch, target_up=True).get_status()
+    assert status.target_zfs == TargetZfs(arc_max=arc_max, c_max=c_max)
+    assert status.notices == notices
+
+
+async def test_no_arc_values_without_a_session() -> None:
+    status = await _provider(StubWatch(), target_up=False).get_status()
+    assert status.target_zfs is None
+
+
 async def test_no_name_check_without_unraid_vm_name() -> None:
     config = CONFIG.model_copy(
         update={"gaming_vm": CONFIG.gaming_vm.model_copy(update={"unraid_vm_name": None})}
@@ -285,17 +310,6 @@ async def test_mock_scenario_shows_the_next_attempt() -> None:
     assert seen_paused == {True, False}
 
 
-def test_mock_job_switch(tmp_path: Path) -> None:
-    switch = MockJobSwitch(tmp_path / "mock-job-running")
-    assert switch.is_running() is False
-    switch.set_running(True)
-    assert switch.is_running() is True
-    assert (tmp_path / "mock-job-running").stat().st_mode & 0o777 == 0o600
-    switch.set_running(False)
-    switch.set_running(False)
-    assert switch.is_running() is False
-
-
 def test_factory_by_mode(tmp_path: Path) -> None:
     paths = DataPaths(tmp_path)
     mock = build_integrations(RunMode.MOCK, CONFIG, paths, tmp_path, None)
@@ -304,20 +318,17 @@ def test_factory_by_mode(tmp_path: Path) -> None:
     assert mock.background == ()
     assert mock.status_changed is None
     assert isinstance(mock.source_guard, MockSourceGuard)
+    # Der simulierte Wächter nimmt auch die Aufträge des Probelaufs an.
+    assert mock.guard_channel is mock.source_guard
     real = build_integrations(RunMode.REAL, CONFIG, paths, tmp_path, None)
     assert isinstance(real.status, RealStatusProvider)
     assert isinstance(real.control, RealControl)
     # Im Modus real laufen die Sitzung vm-watch und das Lesen des Wächters im Hintergrund.
     assert isinstance(real.source_guard, RealSourceGuard)
+    assert isinstance(real.guard_channel, RealGuardChannel)
     assert len(real.background) == 2
     assert real.status_changed is not None
     # Den Rundlauf gibt es nur in der Simulation.
     (tmp_path / "mock-tour").touch()
     assert mock.tour_active() is True
     assert real.tour_active() is False
-    assert isinstance(build_job_state(RunMode.MOCK, tmp_path / "flag"), MockJobSwitch)
-    # Im Modus real läuft bis Phase 5 nie ein Kopierjob, auch wenn die Datei existiert.
-    (tmp_path / "flag").touch()
-    real_jobs = build_job_state(RunMode.REAL, tmp_path / "flag")
-    assert isinstance(real_jobs, NoJobs)
-    assert real_jobs.is_running() is False

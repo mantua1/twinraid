@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from tests.conftest import EXAMPLE_CONFIG
 from tests.support.fake_ssh import FakeSsh
+from tests.support.worker import make_worker
 from twinraid import admin_cli
 from twinraid.init import main as init_main
 from twinraid.integrations.ssh import (
@@ -26,9 +27,13 @@ from twinraid.integrations.ssh import (
     key_fingerprint,
     parse_host_key,
 )
-from twinraid.shared.actions import ActionName, Trigger
+from twinraid.shared.actions import ActionName, ActionOutcome, Trigger
 from twinraid.shared.passwords import PasswordStore, VerifyOutcome
+from twinraid.shared.source_guard import GuardBlocker
+from twinraid.shared.status import StatusSnapshot
 from twinraid.shared.tls import certificate_info, read_runtime
+from twinraid.sync.check_report import sync_check_lines
+from twinraid.web.worker_client import WorkerUnavailableError
 from twinraid.worker.action_log import ActionLog
 
 GOOD_PASSWORD = "ein-gutes-neues-passwort"
@@ -211,22 +216,10 @@ def test_api_commands_are_gone(env: Path, command: str) -> None:
 # --- Simulierter Kopierjob ----------------------------------------------------------------
 
 
-def test_mock_job_switch(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    socket_dir = env / "run"
-    socket_dir.mkdir()
-    monkeypatch.setenv("TWINRAID_WORKER_SOCKET", str(socket_dir / "worker.sock"))
-    assert admin_cli.main(["mock-job", "on"]) == 0
-    assert (socket_dir / "mock-job-running").exists()
-    assert admin_cli.main(["mock-job", "off"]) == 0
-    assert not (socket_dir / "mock-job-running").exists()
-
-
-def test_mock_job_only_in_simulation(
-    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("TWINRAID_MODE", "real")
-    assert admin_cli.main(["mock-job", "on"]) == 1
-    assert "only works in simulation mode" in capsys.readouterr().err
+def test_mock_job_is_gone(env: Path) -> None:
+    """Ab v0.5.1 setzt der simulierte Probelauf „Kopierjob läuft“ (Konzept 4.1 und 5.5)."""
+    with pytest.raises(SystemExit):
+        admin_cli.main(["mock-job", "on"])
 
 
 # --- SSH-Keys „status“ und „power“, Hostkey von Groß (Konzept 5.5 und 5.6) -------------
@@ -355,7 +348,7 @@ class FakeGuard:
         monkeypatch.setattr(admin_cli, "scan_host_key", scan)
         monkeypatch.setattr(admin_cli, "guard_client", client)
 
-    def answer(self, status: str = "2 status", power: str = "2 power") -> None:
+    def answer(self, status: str = "3 status", power: str = "3 power") -> None:
         """Antwort von guard.sh auf "check" je Key."""
         self.ssh.behave(
             by_key={
@@ -390,7 +383,7 @@ def test_trust_host_key_and_test_the_guard(
     assert guard.scanned == [("192.168.10.11", 22)]
     out = capsys.readouterr().out
     assert guard.fingerprint in out
-    assert "OK: guard.sh answers (twinraid-guard 2 status ok)" in out
+    assert "OK: guard.sh answers (twinraid-guard 3 status ok)" in out
     # Nur der Key „status“ existiert (Nur Statusanzeige); der Test schickt nur "check".
     assert guard.keys_used() == ["ssh-status"]
     assert [call[-1] for call in guard.ssh.calls()] == ["check"]
@@ -403,8 +396,8 @@ def test_trust_host_key_tests_both_keys(
     assert admin_cli.main(["init-ssh-keys", "--key", "power"]) == 0
     assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 0
     out = capsys.readouterr().out
-    assert "OK: guard.sh answers (twinraid-guard 2 status ok)" in out
-    assert "OK: guard.sh answers (twinraid-guard 2 power ok)" in out
+    assert "OK: guard.sh answers (twinraid-guard 3 status ok)" in out
+    assert "OK: guard.sh answers (twinraid-guard 3 power ok)" in out
     assert sorted(guard.keys_used()) == ["ssh-power", "ssh-status"]
 
 
@@ -464,9 +457,9 @@ def test_guard_test_finds_an_outdated_guard(
     env: Path, guard: FakeGuard, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert admin_cli.main(["init-ssh-keys", "--key", "power"]) == 0
-    guard.answer(power="1 power")
+    guard.answer(power="2 power")
     assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 1
-    assert "guard.sh on Unraid Groß is version 1; TwinRaid needs version 2" in (
+    assert "guard.sh on Unraid Groß is version 2; TwinRaid needs version 3" in (
         capsys.readouterr().err
     )
 
@@ -475,7 +468,7 @@ def test_guard_test_finds_swapped_lines(
     env: Path, guard: FakeGuard, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert admin_cli.main(["init-ssh-keys"]) == 0
-    guard.answer(status="2 power")
+    guard.answer(status="3 power")
     assert admin_cli.main(["trust-host-key", "target", "--fingerprint", guard.fingerprint]) == 1
     assert "The line for the key 'status' runs guard.sh in mode 'power'" in (
         capsys.readouterr().err
@@ -608,12 +601,20 @@ def test_show_action_log(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
     # Ergebnisse aus v0.4.2 und früher bleiben lesbar.
     log.record("0a1b2c3d", ActionName.VM_START, Trigger.DASHBOARD, "api_forbidden")
     log.record("1a1b2c3d", ActionName.VM_START, Trigger.DASHBOARD, "vm_not_configured")
-    assert admin_cli.main(["show-action-log", "--lines", "3"]) == 0
+    log.record(
+        "2a1b2c3d",
+        ActionName.SYNC_DRY_RUN,
+        Trigger.DASHBOARD,
+        ActionOutcome.TARGET_REFUSED,
+        reason=GuardBlocker.SPACE_LOW,
+    )
+    assert admin_cli.main(["show-action-log", "--lines", "4"]) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == 3
+    assert len(lines) == 4
     assert lines[0].endswith("0a1b2c3d  wake_target  automatic (part of vm_start): success")
     assert lines[1].endswith("0a1b2c3d  vm_start  dashboard: api_forbidden")
     assert lines[2].endswith("1a1b2c3d  vm_start  dashboard: vm_not_configured")
+    assert lines[3].endswith("2a1b2c3d  sync_dry_run  dashboard: target_refused (space_low)")
 
 
 def test_mock_tour_and_faults(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -642,3 +643,55 @@ def test_simulation_switches_only_in_mock_mode(
 ) -> None:
     monkeypatch.setenv("TWINRAID_MODE", "real")
     assert admin_cli.main(command) == 1
+
+
+# --- sync-check (Konzept 5.5, ab v0.5.1) ------------------------------------------------
+
+
+class _StatusClient:
+    """Ersetzt WorkerClient: liefert einen Status wie get_status des Workers."""
+
+    snapshot: StatusSnapshot | None = None
+
+    def __init__(self, _socket: Path) -> None:
+        pass
+
+    async def get_status(self) -> StatusSnapshot:
+        if self.snapshot is None:
+            raise WorkerUnavailableError("worker not running")
+        return self.snapshot
+
+
+def test_sync_check_only_in_real_mode(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert admin_cli.main(["sync-check"]) == 1
+    assert "only works in real mode" in capsys.readouterr().err
+
+
+def test_sync_check_prints_the_status_of_the_worker(
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _real_config(env, monkeypatch)
+    worker_dir = env / "worker"
+    worker_dir.mkdir()
+    snapshot = make_worker(worker_dir).handler.snapshot()
+    monkeypatch.setattr(_StatusClient, "snapshot", snapshot)
+    monkeypatch.setattr(admin_cli, "WorkerClient", _StatusClient)
+    assert admin_cli.main(["sync-check"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out == sync_check_lines(snapshot)
+    # Der Status geht durch die Pipe zum Elternprozess; nichts wird verändert.
+    assert out[0] == "TwinRaid sync check (read only)"
+    with _db(env) as db:
+        assert db.execute("SELECT action FROM audit_log").fetchall() == [("cli_sync_check",)]
+
+
+def test_sync_check_without_worker(
+    env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _real_config(env, monkeypatch)
+    monkeypatch.setattr(_StatusClient, "snapshot", None)
+    monkeypatch.setattr(admin_cli, "WorkerClient", _StatusClient)
+    assert admin_cli.main(["sync-check"]) == 1
+    assert "is TwinRaid running?" in capsys.readouterr().err
+    # Ohne Ergebnis kein Eintrag im Audit-Log (die Datenbank entsteht erst mit einem).
+    assert not (env / "data" / "web" / "web.sqlite").exists()

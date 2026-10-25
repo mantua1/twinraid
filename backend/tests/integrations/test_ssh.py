@@ -96,6 +96,9 @@ def test_fixed_argument_list(target: SshTarget) -> None:
         (3, "twinraid-guard: refused other-vms-running", ActionOutcome.OTHER_VMS_RUNNING),
         (3, "twinraid-guard: refused vm-state-unknown", ActionOutcome.VM_SERVICE_UNAVAILABLE),
         (3, "twinraid-guard: refused watch-busy", ActionOutcome.WATCH_INTERRUPTED),
+        (3, "twinraid-guard: refused memory-low", ActionOutcome.VM_MEMORY_LOW),
+        (3, "twinraid-guard: refused device-busy", ActionOutcome.VM_DEVICE_BUSY),
+        (3, "twinraid-guard: refused sync-running", ActionOutcome.SYNC_RUNNING),
         (3, "twinraid-guard: refused something-new", ActionOutcome.REMOTE_FAILED),
         (3, "", ActionOutcome.REMOTE_FAILED),
         (124, "", ActionOutcome.REMOTE_FAILED),
@@ -134,8 +137,8 @@ def test_classify_success_and_closed_connection() -> None:
 async def test_requests_reach_the_guard(target: SshTarget, fake: FakeSsh) -> None:
     """Jede Anfrage ist ein fester Text ohne Parameter; die VM kennt nur Groß."""
     power = SshPower(target, fake.binary)
-    fake.behave(stdout="twinraid-guard 2 power ok\n")
-    assert await power.check() == "twinraid-guard 2 power ok"
+    fake.behave(stdout="twinraid-guard 3 power ok\n")
+    assert await power.check() == "twinraid-guard 3 power ok"
     fake.behave()
     await power.vm_start()
     await power.vm_shutdown()
@@ -149,8 +152,8 @@ async def test_requests_reach_the_guard(target: SshTarget, fake: FakeSsh) -> Non
 
 @pytest.mark.anyio
 async def test_status_client_only_checks(target: SshTarget, fake: FakeSsh) -> None:
-    fake.behave(stdout="twinraid-guard 2 status ok\nextra\n")
-    assert await GuardClient(target, fake.binary).check() == "twinraid-guard 2 status ok"
+    fake.behave(stdout="twinraid-guard 3 status ok\nextra\n")
+    assert await GuardClient(target, fake.binary).check() == "twinraid-guard 3 status ok"
     assert not hasattr(GuardClient, "poweroff")
 
 
@@ -160,6 +163,29 @@ async def test_guard_refusal(target: SshTarget, fake: FakeSsh) -> None:
     with pytest.raises(SshError) as excinfo:
         await SshPower(target, fake.binary).poweroff()
     assert excinfo.value.outcome is ActionOutcome.OTHER_VMS_RUNNING
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("exit_code", "stderr", "outcome"),
+    [
+        (1, "", ActionOutcome.VM_START_FAILED),
+        (124, "", ActionOutcome.VM_START_FAILED),
+        (3, "twinraid-guard: refused something-new\n", ActionOutcome.VM_START_FAILED),
+        (3, "twinraid-guard: refused memory-low\n", ActionOutcome.VM_MEMORY_LOW),
+        (3, "twinraid-guard: refused device-busy\n", ActionOutcome.VM_DEVICE_BUSY),
+        (3, "twinraid-guard: refused vm-state-unknown\n", ActionOutcome.VM_SERVICE_UNAVAILABLE),
+        (2, "twinraid-guard: denied\n", ActionOutcome.SSH_DENIED),
+    ],
+)
+async def test_vm_start_failures(
+    target: SshTarget, fake: FakeSsh, exit_code: int, stderr: str, outcome: ActionOutcome
+) -> None:
+    """Andere Fehler von virsh start heißen vm_start_failed statt remote_failed (Konzept 3.5)."""
+    fake.behave(exit_code=exit_code, stderr=stderr)
+    with pytest.raises(SshError) as excinfo:
+        await SshPower(target, fake.binary).vm_start()
+    assert excinfo.value.outcome is outcome
 
 
 @pytest.mark.anyio

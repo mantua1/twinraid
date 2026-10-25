@@ -46,7 +46,8 @@ describe("actions", () => {
     expect(button(vm, "Herunterfahren")).toBeDisabled();
     expect(within(vm).queryByRole("button", { name: "Erzwingen" })).toBeNull();
     // Selbsterklärende Gründe (Server aus) brauchen keinen Hinweis.
-    expect(screen.queryByTestId("action-hint")).toBeNull();
+    expect(within(target).queryByTestId("action-hint")).toBeNull();
+    expect(within(vm).queryByTestId("action-hint")).toBeNull();
   });
 
   it("wakes the target with the CSRF token and without a dialog", async () => {
@@ -275,7 +276,7 @@ describe("actions", () => {
     };
     const { vm } = await openDashboard({ status });
     expect(await within(vm).findByTestId("action-result")).toHaveTextContent(
-      "guard.sh auf dem Server hat den Befehl abgelehnt (guard.sh Version 2 kopiert, Zeilen in authorized_keys richtig?).",
+      "guard.sh auf dem Server hat den Befehl abgelehnt (guard.sh Version 3 kopiert, Zeilen in authorized_keys richtig?).",
     );
   });
 
@@ -373,7 +374,7 @@ describe("actions", () => {
       info: {
         ...INFO,
         mode: "real",
-        actions: { wake: false, vm: true, shutdown: false },
+        actions: { wake: false, vm: true, shutdown: false, sync_dry_run: true, sync: false },
       },
     });
     await user.click(screen.getByRole("button", { name: "Einstellungen" }));
@@ -641,6 +642,36 @@ describe("other running VMs", () => {
     await user.click(screen.getByRole("button", { name: "Englisch" }));
     expect(within(target).getByTestId("other-vms")).toHaveTextContent(
       "Other running VMs: Test-VM, Linux",
+    );
+  });
+
+  it("names them after a start failed at a busy device, grey once they are off", async () => {
+    const busy = {
+      running: null,
+      last: {
+        action: "vm_start" as const,
+        outcome: "vm_device_busy" as const,
+        finished_at: "2026-10-19T12:05:00Z",
+      },
+    };
+    const status: StatusSnapshot = {
+      ...STATUS_VM_RUNNING,
+      vm: { state: "offline", reason: null },
+      other_vms_running: ["Test-VM"],
+      actions: actionsSnapshot({ ...STATUS_VM_RUNNING.actions.availability }, { vm: busy }),
+    };
+    const { vm } = await openDashboard({ status });
+    const result = await within(vm).findByTestId("action-result");
+    expect(result).toHaveTextContent(
+      "Zuletzt: VM starten – Ein durchgereichtes Gerät der VM, etwa die Grafikkarte, wird gerade von einer anderen VM benutzt.",
+    );
+    expect(within(vm).getByTestId("action-hint-current")).toHaveTextContent(
+      "Weitere laufende VMs: Test-VM",
+    );
+    emit({ ...status, other_vms_running: [] });
+    expect(within(vm).queryByTestId("action-hint-current")).toBeNull();
+    expect(within(vm).getByTestId("action-result").querySelector("p")).toHaveClass(
+      "text-muted-foreground",
     );
   });
 

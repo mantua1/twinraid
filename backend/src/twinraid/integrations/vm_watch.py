@@ -49,7 +49,8 @@ _HEX = r"(?:[0-9a-f]{2}){1,256}"
 _LINE = re.compile(
     rf"watch (?P<version>[0-9]{{1,4}}) vm=(?P<vm>[A-Z_]{{1,32}}) name=(?P<name>-|{_HEX}) "
     rf"others=(?P<others>\?|[0-9]{{1,4}}) names=(?P<names>-|{_HEX}(?:,{_HEX}){{0,19}}) "
-    r"connect=(?P<connect>present|absent) flash_backup=(?P<flash>active|inactive|unknown)",
+    r"connect=(?P<connect>present|absent) flash_backup=(?P<flash>active|inactive|unknown) "
+    r"arc_max=(?P<arc_max>-|\?|[0-9]{1,20}) c_max=(?P<c_max>-|\?|[0-9]{1,20})",
     re.ASCII,
 )
 _VERSION = re.compile(r"watch ([0-9]{1,4}) ", re.ASCII)
@@ -90,10 +91,20 @@ class WatchReport:
     connect_plugin: bool
     # active, inactive oder unknown
     flash_backup: str
+    # Grenze des ZFS-Caches auf Groß in Byte (ab Version 3): zfs_arc_max aus Unraid (0: keine
+    # eingetragen) und die wirksame Obergrenze c_max; None, wenn ZFS nicht geladen oder der
+    # Wert nicht lesbar ist (Konzept 3.5, "Grenze des ARC").
+    arc_max: int | None
+    c_max: int | None
 
 
 def _decode(hex_text: str) -> str:
     return bytes.fromhex(hex_text).decode("utf-8", errors="replace")
+
+
+def _bytes(value: str) -> int | None:
+    """Byte aus der Statuszeile; "-" (ZFS nicht geladen) und "?" (nicht lesbar) sind None."""
+    return int(value) if value.isdigit() else None
 
 
 def parse_line(raw: bytes) -> WatchReport:
@@ -130,6 +141,8 @@ def parse_line(raw: bytes) -> WatchReport:
         others=others,
         connect_plugin=match["connect"] == "present",
         flash_backup=match["flash"],
+        arc_max=_bytes(match["arc_max"]),
+        c_max=_bytes(match["c_max"]),
     )
 
 
