@@ -28,7 +28,10 @@ from pydantic import ConfigDict, Field, StringConstraints, ValidationError
 from twinraid.shared.base import StrictModel
 from twinraid.shared.source_guard import (
     GuardBlocker,
+    GuardCheck,
+    GuardCheckMirror,
     GuardCheckResult,
+    GuardCheckSummary,
     GuardConfirmReason,
     GuardContainer,
     GuardContainerState,
@@ -38,9 +41,12 @@ from twinraid.shared.source_guard import (
     GuardDetails,
     GuardError,
     GuardErrorDetail,
+    GuardJob,
+    GuardJobDataset,
     GuardJobReason,
     GuardJobResult,
     GuardJobState,
+    GuardLastOrder,
     GuardLastRun,
     GuardLimits,
     GuardOrder,
@@ -538,6 +544,12 @@ def _details(file: GuardFile) -> GuardDetails:
                     present=item.present,
                     referenced=item.referenced,
                     compression=item.compression,
+                    snapshots=item.snapshots,
+                    oldest_snapshot_at=_maybe_time(item.oldest_snapshot_at),
+                    base_created_at=(
+                        _time(item.base.created_at) if item.base is not None else None
+                    ),
+                    bookmark=item.bookmark,
                 )
                 for item in file.zfs.datasets
             ),
@@ -547,6 +559,81 @@ def _details(file: GuardFile) -> GuardDetails:
         target_configured=file.target.configured,
         target_port=file.target.port,
         rejected_count=file.rejected.count,
+        instance=file.instance,
+        last_seq=file.last_seq,
+        last_order=(
+            GuardLastOrder(
+                seq=file.last.seq,
+                order=file.last.order,
+                result=file.last.result,
+                at=_time(file.last.at),
+            )
+            if file.last is not None
+            else None
+        ),
+        target_key=file.target.key,
+        target_known_host=file.target.known_host,
+        target_check=_check(file.target.check) if file.target.check is not None else None,
+        job=_job(file.job) if file.job is not None else None,
+    )
+
+
+def _maybe_time(seconds: int | None) -> datetime | None:
+    return _time(seconds) if seconds is not None else None
+
+
+def _check(check: _Check) -> GuardCheck:
+    summary = check.summary
+    return GuardCheck(
+        at=_time(check.at),
+        result=check.result,
+        summary=(GuardCheckSummary(**summary.model_dump()) if summary is not None else None),
+        mirrors=tuple(
+            GuardCheckMirror(
+                name=item.name,
+                state=item.state,
+                props=item.props,
+                count=item.count,
+                newest_created=_maybe_time(item.newest_created),
+                newest_received=_maybe_time(item.newest_received),
+                oldest_created=_maybe_time(item.oldest_created),
+            )
+            for item in check.mirrors
+        ),
+    )
+
+
+def _job(job: _Job) -> GuardJob:
+    return GuardJob(
+        id=job.id,
+        state=job.state,
+        result=job.result,
+        reason=job.reason,
+        snapshot=job.snapshot,
+        created_at=_time(job.created_at),
+        deadline=_maybe_time(job.deadline),
+        confirmed=job.confirmed,
+        confirm_reasons=job.confirm_reasons,
+        send_ready=job.send_ready,
+        blockers=job.blockers,
+        datasets=tuple(
+            GuardJobDataset(
+                name=item.name,
+                mode=item.mode,
+                base_type=item.base_type,
+                problem=item.problem,
+                deleted=item.deleted,
+                modified=item.modified,
+                added=item.added,
+                renamed=item.renamed,
+                referenced=item.referenced,
+                base_referenced=item.base_referenced,
+                size=item.size,
+                sent=item.sent,
+                result=item.result,
+            )
+            for item in job.datasets
+        ),
     )
 
 

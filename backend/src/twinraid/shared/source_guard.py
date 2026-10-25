@@ -8,6 +8,7 @@ stehen nie im Log.
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from twinraid.shared.base import StrictModel
 
@@ -187,6 +188,17 @@ class GuardJobState(StrEnum):
     CLOSED = "closed"
 
 
+OPEN_JOB_STATES: frozenset[GuardJobState] = frozenset(
+    {
+        GuardJobState.SNAPSHOT,
+        GuardJobState.PREPARING,
+        GuardJobState.PREPARED,
+        GuardJobState.AWAITING_CONFIRM,
+        GuardJobState.SENDING,
+    }
+)
+
+
 class GuardJobResult(StrEnum):
     OK = "ok"
     CLOSED = "closed"
@@ -333,6 +345,12 @@ class GuardDataset(StrictModel):
     present: bool | None
     referenced: int | None
     compression: str | None
+    # Ab Version 2: eigene Snapshots (Anzahl, ältester), Zeit der Basis mit Hold und ob
+    # ein eigenes Lesezeichen da ist. None: unbekannt.
+    snapshots: int | None = None
+    oldest_snapshot_at: datetime | None = None
+    base_created_at: datetime | None = None
+    bookmark: bool | None = None
 
 
 class GuardZfs(StrictModel):
@@ -341,6 +359,88 @@ class GuardZfs(StrictModel):
     pool_available: int | None
     datasets: tuple[GuardDataset, ...]
     self_dataset: GuardSelfDataset
+
+
+class GuardCheckSummary(StrictModel):
+    """Zeile summary von guard.sh sync check (Konzept 3.7); None: „-“ oder „?“."""
+
+    root: Literal["ok", "missing"]
+    conf: Literal["ok", "missing", "invalid"]
+    deleg: Literal["ok", "mismatch", "id_in_use"]
+    receive: Literal["idle", "busy"]
+    clones: int | None
+    available: int | None
+    size: int | None
+    reserve_percent: int | None
+    keep_days: int | None
+    min_interval_minutes: int | None
+
+
+class GuardCheckMirror(StrictModel):
+    """Zeile mirror von guard.sh sync check; GUIDs braucht nur der Wächter."""
+
+    name: str
+    state: Literal["absent", "mirror", "foreign"]
+    props: Literal["ok", "mismatch"] | None
+    count: int | None
+    newest_created: datetime | None
+    newest_received: datetime | None
+    oldest_created: datetime | None
+
+
+class GuardCheck(StrictModel):
+    """Letztes guard.sh sync check, das der Wächter über SSH gefragt hat (ab Version 2)."""
+
+    at: datetime
+    result: GuardCheckResult
+    summary: GuardCheckSummary | None
+    mirrors: tuple[GuardCheckMirror, ...]
+
+
+class GuardJobDataset(StrictModel):
+    name: str
+    mode: Literal["full", "incremental"] | None
+    base_type: Literal["snapshot", "bookmark"] | None
+    problem: GuardDatasetProblem | None
+    deleted: int | None
+    modified: int | None
+    added: int | None
+    renamed: int | None
+    referenced: int | None
+    base_referenced: int | None
+    size: int | None
+    sent: int | None
+    result: GuardDatasetResult | None
+
+
+class GuardJob(StrictModel):
+    """Job des Wächters (Konzept 3.6, „Job, Prüfen und Senden“)."""
+
+    id: int
+    state: GuardJobState
+    result: GuardJobResult | None
+    reason: GuardJobReason | None
+    snapshot: str
+    created_at: datetime
+    deadline: datetime | None
+    confirmed: bool
+    confirm_reasons: tuple[GuardConfirmReason, ...]
+    send_ready: bool | None
+    blockers: tuple[GuardBlocker, ...]
+    datasets: tuple[GuardJobDataset, ...]
+
+    @property
+    def open(self) -> bool:
+        return self.state in OPEN_JOB_STATES
+
+
+class GuardLastOrder(StrictModel):
+    """Feld last: der zuletzt ausgeführte Auftrag."""
+
+    seq: int
+    order: GuardOrder
+    result: GuardOrderResult
+    at: datetime
 
 
 class GuardLimits(StrictModel):
@@ -368,6 +468,15 @@ class GuardDetails(StrictModel):
     target_configured: bool
     target_port: int
     rejected_count: int
+    # Ab Version 2: Instanz und Auftragsnummer (für Aufträge aus TwinRaid, Konzept 3.6), letzter
+    # Auftrag, Key „sync“ und Hostkey von Groß vorhanden, letztes check und Job.
+    instance: str | None = None
+    last_seq: int = 0
+    last_order: GuardLastOrder | None = None
+    target_key: bool = False
+    target_known_host: bool = False
+    target_check: GuardCheck | None = None
+    job: GuardJob | None = None
 
 
 class SourceGuardStatus(StrictModel):

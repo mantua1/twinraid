@@ -1,7 +1,6 @@
 """Status des Wächters lesen und auswerten (Konzept 3.6, „Lesen in TwinRaid“)."""
 
 import copy
-import json
 import logging
 import os
 import re
@@ -13,6 +12,19 @@ from typing import Any
 import pytest
 
 from tests.conftest import REPO_ROOT
+from tests.support.guard_status import (
+    GUID,
+    HEARTBEAT,
+    NOW,
+    OTHER_ID,
+    OWN_ID,
+    STATUS,
+    changed,
+    guard_paths,
+    mount_line,
+    mountinfo,
+    raw,
+)
 from twinraid.integrations.source_guard import (
     MAX_STATUS_BYTES,
     GuardObservation,
@@ -53,235 +65,13 @@ from twinraid.shared.status import StatusNotice
 pytestmark = pytest.mark.anyio
 
 SCRIPT = REPO_ROOT / "host-scripts" / "source-guard.sh"
-NOW = datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC)
-HEARTBEAT = int(NOW.timestamp()) - 4
-OWN_ID = "a" * 64
-OTHER_ID = "b" * 64
-GUID = "1234567890123456789"
-SNAPSHOT = "twinraid-20261019T115900Z"
-
-# Wie write_status in source-guard.sh (Protokoll 2): Lauf offen, letzter Lauf, ZFS in
-# Ordnung, letztes check von Groß, ein vorbereiteter Job.
-STATUS: dict[str, Any] = {
-    "protocol": 2,
-    "version": 2,
-    "heartbeat_at": HEARTBEAT,
-    "started_at": HEARTBEAT - 3600,
-    "instance": "0123456789abcdef",
-    "error": None,
-    "error_detail": None,
-    "config_line": None,
-    "last_seq": 7,
-    "last": {
-        "seq": 7,
-        "order": "stop",
-        "container": "twinraid-testcontainer",
-        "result": "stopped",
-        "at": HEARTBEAT - 30,
-    },
-    "rejected": {"count": 2, "last_at": HEARTBEAT - 600},
-    "host": {"connect": "absent", "flash_backup": "inactive"},
-    "limits": {
-        "max_stop_minutes": 20,
-        "heartbeat_timeout_seconds": 120,
-        "stop_timeout_seconds": 60,
-        "min_run_interval_minutes": 30,
-        "max_deletions": 1000,
-        "snapshot_keep_days": 7,
-        "snapshot_reserve_percent": 15,
-    },
-    "target": {
-        "configured": True,
-        "port": 22,
-        "key": True,
-        "known_host": True,
-        "check": {
-            "at": HEARTBEAT - 20,
-            "result": "ok",
-            "summary": {
-                "root": "ok",
-                "conf": "ok",
-                "deleg": "ok",
-                "receive": "idle",
-                "clones": 0,
-                "available": 10**12,
-                "size": 2 * 10**12,
-                "reserve_percent": 15,
-                "keep_days": 30,
-                "min_interval_minutes": 10,
-            },
-            "mirrors": [
-                {
-                    "name": "twinraidtest",
-                    "state": "mirror",
-                    "props": "ok",
-                    "count": 3,
-                    "newest_guid": GUID,
-                    "newest_created": HEARTBEAT - 90000,
-                    "newest_received": HEARTBEAT - 89000,
-                    "oldest_created": HEARTBEAT - 900000,
-                },
-                {
-                    "name": "dokumente",
-                    "state": "absent",
-                    "props": None,
-                    "count": None,
-                    "newest_guid": None,
-                    "newest_created": None,
-                    "newest_received": None,
-                    "oldest_created": None,
-                },
-            ],
-        },
-    },
-    "allowed": [
-        {"name": "twinraid-testcontainer", "id": OTHER_ID, "state": "stopped"},
-        {"name": "stopped-one", "id": None, "state": "missing"},
-    ],
-    "run": {
-        "opened_at": HEARTBEAT - 60,
-        "heartbeat_deadline": HEARTBEAT + 60,
-        "max_deadline": HEARTBEAT + 1140,
-        "stopped": [{"name": "twinraid-testcontainer", "id": OTHER_ID}],
-    },
-    "run_allowed_at": None,
-    "last_run": {
-        "opened_at": HEARTBEAT - 7200,
-        "closed_at": HEARTBEAT - 7000,
-        "reason": "deadman_heartbeat",
-        "containers": [{"name": "twinraid-testcontainer", "id": OTHER_ID, "result": "started"}],
-    },
-    "zfs": {
-        "state": "ok",
-        "pool": {"used": 100, "available": 900},
-        "datasets": [
-            {
-                "name": "twinraidtest",
-                "present": True,
-                "referenced": 4096,
-                "compression": "on",
-                "snapshots": 4,
-                "oldest_snapshot_at": HEARTBEAT - 500000,
-                "base": {"guid": GUID, "created_at": HEARTBEAT - 90000},
-                "bookmark": True,
-            },
-            {
-                "name": "dokumente",
-                "present": True,
-                "referenced": 8192,
-                "compression": "lz4",
-                "snapshots": 1,
-                "oldest_snapshot_at": HEARTBEAT - 60,
-                "base": None,
-                "bookmark": False,
-            },
-        ],
-        "self_dataset": "found",
-    },
-    "job": {
-        "id": 5,
-        "state": "awaiting_confirm",
-        "result": None,
-        "reason": None,
-        "snapshot": SNAPSHOT,
-        "created_at": HEARTBEAT - 60,
-        "deadline": HEARTBEAT + 1700,
-        "confirmed": False,
-        "confirm_reasons": ["deletions"],
-        "send_ready": True,
-        "blockers": [],
-        "datasets": [
-            {
-                "name": "twinraidtest",
-                "mode": "incremental",
-                "base_guid": GUID,
-                "base_type": "snapshot",
-                "problem": None,
-                "deleted": 1200,
-                "modified": 3,
-                "added": 0,
-                "renamed": 1,
-                "referenced": 4096,
-                "base_referenced": 6000,
-                "size": 70000,
-                "sent": None,
-                "result": None,
-            },
-            {
-                "name": "dokumente",
-                "mode": "full",
-                "base_guid": None,
-                "base_type": None,
-                "problem": None,
-                "deleted": None,
-                "modified": None,
-                "added": None,
-                "renamed": None,
-                "referenced": 8192,
-                "base_referenced": None,
-                "size": 9000,
-                "sent": None,
-                "result": None,
-            },
-        ],
-    },
-    "seq_exhausted": False,
-}
-
-
-def _raw(data: dict[str, Any]) -> bytes:
-    return json.dumps(data, separators=(",", ":")).encode()
-
-
-def _changed(path: str, value: Any) -> dict[str, Any]:  # noqa: ANN401 - beliebiger JSON-Wert
-    data = copy.deepcopy(STATUS)
-    target = data
-    keys = path.split(".")
-    for key in keys[:-1]:
-        target = target[int(key)] if isinstance(target, list) else target[key]
-    if isinstance(target, list):
-        target[int(keys[-1])] = value
-    else:
-        target[keys[-1]] = value
-    return data
-
-
-# --- mountinfo -----------------------------------------------------------------------------
-
-
-def _line(number: int, root: str, target: str, options: str = "rw,nosuid") -> str:
-    return f"{number} 1 0:{number} {root} {target} {options} shared:1 - tmpfs tmpfs rw"
-
-
-def _mountinfo(base: Path, *, state: str | None = "ro", request: str | None = "rw") -> str:
-    lines = [
-        _line(20, "/", "/", "ro,relatime"),
-        _line(21, f"/containers/{OWN_ID}/hostname", "/etc/hostname"),
-        _line(22, f"/containers/{OWN_ID}/hosts", "/etc/hosts"),
-        _line(23, f"/containers/{OWN_ID}/resolv.conf", "/etc/resolv.conf"),
-    ]
-    if state is not None:
-        lines.append(_line(30, "/twinraid-source-guard/state", f"{base}/state", f"{state},nosuid"))
-    if request is not None:
-        lines.append(_line(31, "/request", f"{base}/request", f"{request},nosuid"))
-    return "\n".join(lines) + "\n"
-
-
-def _paths(tmp_path: Path, mountinfo: str | None = None) -> GuardPaths:
-    base = tmp_path / "source-guard"
-    (base / "state").mkdir(parents=True, exist_ok=True)
-    if not (base / "request").exists():
-        (base / "request").write_bytes(b"")
-    info = tmp_path / "mountinfo"
-    info.write_text(mountinfo if mountinfo is not None else _mountinfo(base))
-    return GuardPaths(base=base, mountinfo=info)
 
 
 def test_parse_mountinfo_unescapes_and_takes_the_topmost_mount() -> None:
     text = "\n".join(
         [
-            _line(30, "/a", "/srv/worker/source-guard/state", "rw"),
-            _line(31, "/b\\040c", "/srv/worker/source-guard/state", "ro,nosuid"),
+            mount_line(30, "/a", "/srv/worker/source-guard/state", "rw"),
+            mount_line(31, "/b\\040c", "/srv/worker/source-guard/state", "ro,nosuid"),
             "garbage line",
         ]
     )
@@ -292,14 +82,14 @@ def test_parse_mountinfo_unescapes_and_takes_the_topmost_mount() -> None:
 
 
 def test_own_container_id() -> None:
-    text = _mountinfo(Path("/srv/worker/source-guard"))
+    text = mountinfo(Path("/srv/worker/source-guard"))
     assert own_container_id(text) == OWN_ID
     # Ohne Docker-Einbindungen oder mit zwei verschiedenen IDs: unbekannt.
-    assert own_container_id(_line(20, "/", "/")) is None
-    mixed = text + _line(24, f"/containers/{OTHER_ID}/hostname", "/etc/hostname") + "\n"
+    assert own_container_id(mount_line(20, "/", "/")) is None
+    mixed = text + mount_line(24, f"/containers/{OTHER_ID}/hostname", "/etc/hostname") + "\n"
     assert own_container_id(mixed) is None
     # Ein Pfad, der nur so ähnlich aussieht, zählt nicht.
-    assert own_container_id(_line(21, f"/x/{OWN_ID}/hostname", "/etc/hostname")) is None
+    assert own_container_id(mount_line(21, f"/x/{OWN_ID}/hostname", "/etc/hostname")) is None
 
 
 @pytest.mark.parametrize(
@@ -315,14 +105,14 @@ def test_own_container_id() -> None:
 def test_check_mounts(
     tmp_path: Path, state: str | None, request_mount: str | None, problem: GuardSetupProblem | None
 ) -> None:
-    paths = _paths(tmp_path)
-    mounts = parse_mountinfo(_mountinfo(paths.base, state=state, request=request_mount))
+    paths = guard_paths(tmp_path)
+    mounts = parse_mountinfo(mountinfo(paths.base, state=state, request=request_mount))
     assert check_mounts(paths, mounts) is problem
 
 
 def test_request_as_directory_or_symlink(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    mounts = parse_mountinfo(_mountinfo(paths.base))
+    paths = guard_paths(tmp_path)
+    mounts = parse_mountinfo(mountinfo(paths.base))
     paths.request.unlink()
     paths.request.mkdir()
     assert check_mounts(paths, mounts) is GuardSetupProblem.REQUEST_IS_DIRECTORY
@@ -337,7 +127,7 @@ def test_request_as_directory_or_symlink(tmp_path: Path) -> None:
 
 
 def test_parse_valid_status() -> None:
-    file = parse_status(_raw(STATUS))
+    file = parse_status(raw(STATUS))
     assert file.heartbeat_at == HEARTBEAT
     assert file.allowed[1].id is None
     assert file.zfs.datasets[0].compression == "on"
@@ -370,8 +160,8 @@ def test_status_syntax(raw: bytes, problem: GuardStatusProblem) -> None:
 
 
 def test_duplicate_key_deep_inside_is_rejected() -> None:
-    raw = _raw(STATUS).replace(b'"present":true', b'"present":true,"present":false')
-    assert _problem(raw) is GuardStatusProblem.BAD_JSON
+    doubled = raw(STATUS).replace(b'"present":true', b'"present":true,"present":false')
+    assert _problem(doubled) is GuardStatusProblem.BAD_JSON
 
 
 @pytest.mark.parametrize(
@@ -441,42 +231,42 @@ def test_duplicate_key_deep_inside_is_rejected() -> None:
     ],
 )
 def test_schema_rejects(path: str, value: Any) -> None:  # noqa: ANN401 - beliebiger JSON-Wert
-    assert _problem(_raw(_changed(path, value))) is GuardStatusProblem.SCHEMA
+    assert _problem(raw(changed(path, value))) is GuardStatusProblem.SCHEMA
 
 
 def test_schema_rejects_missing_fields_and_long_lists() -> None:
     data = copy.deepcopy(STATUS)
     del data["zfs"]["self_dataset"]
-    assert _problem(_raw(data)) is GuardStatusProblem.SCHEMA
+    assert _problem(raw(data)) is GuardStatusProblem.SCHEMA
     data = copy.deepcopy(STATUS)
     data["allowed"] = [STATUS["allowed"][0]] * 51
-    assert _problem(_raw(data)) is GuardStatusProblem.SCHEMA
+    assert _problem(raw(data)) is GuardStatusProblem.SCHEMA
     data = copy.deepcopy(STATUS)
     data["zfs"]["datasets"] = [STATUS["zfs"]["datasets"][0]] * 21
-    assert _problem(_raw(data)) is GuardStatusProblem.SCHEMA
+    assert _problem(raw(data)) is GuardStatusProblem.SCHEMA
     data = copy.deepcopy(STATUS)
     data["job"]["datasets"] = [STATUS["job"]["datasets"][0]] * 21
-    assert _problem(_raw(data)) is GuardStatusProblem.SCHEMA
+    assert _problem(raw(data)) is GuardStatusProblem.SCHEMA
     data = copy.deepcopy(STATUS)
     data["target"]["check"]["mirrors"] = [STATUS["target"]["check"]["mirrors"][0]] * 21
-    assert _problem(_raw(data)) is GuardStatusProblem.SCHEMA
+    assert _problem(raw(data)) is GuardStatusProblem.SCHEMA
     data = copy.deepcopy(STATUS)
     del data["job"]
-    assert _problem(_raw(data)) is GuardStatusProblem.SCHEMA
+    assert _problem(raw(data)) is GuardStatusProblem.SCHEMA
 
 
 def test_schema_accepts_empty_parts() -> None:
     """Ohne Job, ohne check und ohne Snapshots (gerade gestartet, Groß nie gefragt)."""
-    data = _changed("job", None)
+    data = changed("job", None)
     data["target"]["check"] = None
     data["zfs"]["datasets"][0].update(
         snapshots=None, oldest_snapshot_at=None, base=None, bookmark=None
     )
-    assert parse_status(_raw(data)).job is None
-    unreachable = _changed(
+    assert parse_status(raw(data)).job is None
+    unreachable = changed(
         "target.check", {"at": HEARTBEAT, "result": "unreachable", "summary": None, "mirrors": []}
     )
-    file = parse_status(_raw(unreachable))
+    file = parse_status(raw(unreachable))
     assert file.target.check is not None
     assert file.target.check.result is GuardCheckResult.UNREACHABLE
 
@@ -485,15 +275,15 @@ def test_schema_accepts_empty_parts() -> None:
 
 
 def test_read_without_mounts(tmp_path: Path) -> None:
-    paths = _paths(tmp_path, _line(20, "/", "/"))
+    paths = guard_paths(tmp_path, mount_line(20, "/", "/"))
     observation = read_observation(paths)
     assert observation.mounted is False
     assert evaluate(observation, NOW).status.state is GuardState.NOT_MOUNTED
 
 
 def test_read_valid_status(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    paths.status_file.write_bytes(_raw(STATUS))
+    paths = guard_paths(tmp_path)
+    paths.status_file.write_bytes(raw(STATUS))
     observation = read_observation(paths)
     assert observation.file is not None
     assert observation.own_id == OWN_ID
@@ -502,7 +292,7 @@ def test_read_valid_status(tmp_path: Path) -> None:
 
 
 def test_read_missing_status_keeps_the_last_heartbeat(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
+    paths = guard_paths(tmp_path)
     observation = read_observation(paths, last_heartbeat=HEARTBEAT - 100)
     report = evaluate(observation, NOW)
     assert report.status.state is GuardState.INACTIVE
@@ -516,9 +306,9 @@ def _read_problem(paths: GuardPaths) -> GuardStatusProblem | None:
 
 
 def test_status_file_attacks(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
+    paths = guard_paths(tmp_path)
     target = tmp_path / "elsewhere.json"
-    target.write_bytes(_raw(STATUS))
+    target.write_bytes(raw(STATUS))
     paths.status_file.symlink_to(target)
     assert _read_problem(paths) is GuardStatusProblem.NOT_REGULAR
     paths.status_file.unlink()
@@ -531,7 +321,7 @@ def test_status_file_attacks(tmp_path: Path) -> None:
     paths.status_file.rmdir()
     paths.status_file.write_bytes(b" " * (MAX_STATUS_BYTES + 1))
     assert _read_problem(paths) is GuardStatusProblem.TOO_LARGE
-    paths.status_file.write_bytes(_raw(STATUS) + b" " * (MAX_STATUS_BYTES - len(_raw(STATUS))))
+    paths.status_file.write_bytes(raw(STATUS) + b" " * (MAX_STATUS_BYTES - len(raw(STATUS))))
     assert _read_problem(paths) is None
     paths.status_file.chmod(0)
     if os.geteuid() != 0:
@@ -539,7 +329,7 @@ def test_status_file_attacks(tmp_path: Path) -> None:
 
 
 def test_invalid_status_keeps_the_last_heartbeat(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
+    paths = guard_paths(tmp_path)
     paths.status_file.write_bytes(b"{")
     report = evaluate(read_observation(paths, last_heartbeat=HEARTBEAT), NOW)
     assert report.status.state is GuardState.INVALID_STATUS
@@ -551,8 +341,8 @@ def test_invalid_status_keeps_the_last_heartbeat(tmp_path: Path) -> None:
 
 def test_misconfigured_wins_over_a_valid_status(tmp_path: Path) -> None:
     base = tmp_path / "source-guard"
-    paths = _paths(tmp_path, _mountinfo(base, state="rw"))
-    paths.status_file.write_bytes(_raw(STATUS))
+    paths = guard_paths(tmp_path, mountinfo(base, state="rw"))
+    paths.status_file.write_bytes(raw(STATUS))
     report = evaluate(read_observation(paths), NOW)
     assert report.status.state is GuardState.MISCONFIGURED
     assert report.status.setup_problem is GuardSetupProblem.STATE_WRITABLE
@@ -564,7 +354,7 @@ def test_misconfigured_wins_over_a_valid_status(tmp_path: Path) -> None:
 
 def test_directory_case(tmp_path: Path) -> None:
     """Docker legte ein Verzeichnis an: Hinweis „Wächter starten, dann TwinRaid neu starten“."""
-    paths = _paths(tmp_path)
+    paths = guard_paths(tmp_path)
     paths.request.unlink()
     paths.request.mkdir()
     status = evaluate(read_observation(paths), NOW).status
@@ -576,7 +366,7 @@ def test_directory_case(tmp_path: Path) -> None:
 
 
 def _observation(data: dict[str, Any], own_id: str | None = OWN_ID) -> GuardObservation:
-    file = parse_status(_raw(data))
+    file = parse_status(raw(data))
     return GuardObservation(
         mounted=True, file=file, last_heartbeat=file.heartbeat_at, own_id=own_id
     )
@@ -606,7 +396,7 @@ def test_active_status_details() -> None:
 
 @pytest.mark.parametrize(("offset", "state"), [(30, GuardState.ACTIVE), (31, GuardState.INACTIVE)])
 def test_heartbeat_age_limit(offset: int, state: GuardState) -> None:
-    data = _changed("heartbeat_at", int(NOW.timestamp()) - offset)
+    data = changed("heartbeat_at", int(NOW.timestamp()) - offset)
     status = evaluate(_observation(data), NOW).status
     assert status.state is state
     if state is GuardState.INACTIVE:
@@ -617,16 +407,16 @@ def test_heartbeat_age_limit(offset: int, state: GuardState) -> None:
 
 
 def test_heartbeat_in_the_future() -> None:
-    soon = evaluate(_observation(_changed("heartbeat_at", int(NOW.timestamp()) + 30)), NOW)
+    soon = evaluate(_observation(changed("heartbeat_at", int(NOW.timestamp()) + 30)), NOW)
     assert soon.status.state is GuardState.ACTIVE
     assert soon.status.heartbeat_age_seconds == 0
-    later = evaluate(_observation(_changed("heartbeat_at", int(NOW.timestamp()) + 31)), NOW)
+    later = evaluate(_observation(changed("heartbeat_at", int(NOW.timestamp()) + 31)), NOW)
     assert later.status.state is GuardState.INVALID_STATUS
     assert later.status.status_problem is GuardStatusProblem.HEARTBEAT_FUTURE
 
 
 def test_guard_error() -> None:
-    data = _changed("error", "config_invalid")
+    data = changed("error", "config_invalid")
     data["error_detail"] = "bad_value"
     data["config_line"] = 7
     status = evaluate(_observation(data), NOW).status
@@ -636,13 +426,13 @@ def test_guard_error() -> None:
     assert status.config_line == 7
     assert status.details is not None
     # Die Zeile gilt nur für config_invalid.
-    other = _changed("error", "docker_unavailable")
+    other = changed("error", "docker_unavailable")
     other["config_line"] = 3
     assert evaluate(_observation(other), NOW).status.config_line is None
 
 
 def test_notices_only_from_a_fresh_status() -> None:
-    data = _changed("host", {"connect": "present", "flash_backup": "active"})
+    data = changed("host", {"connect": "present", "flash_backup": "active"})
     data["allowed"][0]["id"] = OWN_ID
     fresh = evaluate(_observation(data), NOW)
     assert fresh.notices == (
@@ -658,14 +448,14 @@ def test_notices_only_from_a_fresh_status() -> None:
 async def test_real_source_guard_logs_only_codes(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    paths = _paths(tmp_path)
+    paths = guard_paths(tmp_path)
     now = [NOW]
     guard = RealSourceGuard(paths, clock=lambda: now[0])
     assert guard.report().status.state is GuardState.INACTIVE
     caplog.set_level(logging.INFO, logger="twinraid.integrations.source_guard")
-    data = _changed("error", "config_invalid")
+    data = changed("error", "config_invalid")
     data["error_detail"] = "allow_contains_twinraid"
-    paths.status_file.write_bytes(_raw(data))
+    paths.status_file.write_bytes(raw(data))
     await guard.refresh()
     await guard.refresh()
     assert guard.report().status.state is GuardState.ERROR
@@ -686,7 +476,7 @@ async def test_real_source_guard_logs_only_codes(
 async def test_real_source_guard_survives_read_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    guard = RealSourceGuard(_paths(tmp_path), clock=lambda: NOW)
+    guard = RealSourceGuard(guard_paths(tmp_path), clock=lambda: NOW)
 
     def broken(*_args: object) -> GuardObservation:
         raise RuntimeError("boom")
@@ -797,3 +587,43 @@ def test_prepare_and_send_codes_match_the_script() -> None:
     assert 'JD_RESULT[i]="${JOB_RESULT}"' in send
     results |= set(re.findall(r"\bJOB_RESULT=([a-z_]+)", send)) - {"ok"}
     assert results == _values(GuardDatasetResult)
+
+
+def test_details_of_protocol_2() -> None:
+    """Ziel, check, Job und Snapshots je Dataset kommen aus dem Status; GUIDs nicht."""
+    details = evaluate(_observation(STATUS), NOW).status.details
+    assert details is not None
+    assert details.instance == "0123456789abcdef"
+    assert details.last_seq == 7
+    assert details.last_order is not None
+    assert (details.last_order.seq, details.last_order.result) == (7, GuardOrderResult.STOPPED)
+    assert (details.target_key, details.target_known_host) == (True, True)
+    dataset = details.zfs.datasets[0]
+    assert dataset.snapshots == 4
+    assert dataset.oldest_snapshot_at == datetime.fromtimestamp(HEARTBEAT - 500000, UTC)
+    assert dataset.base_created_at == datetime.fromtimestamp(HEARTBEAT - 90000, UTC)
+    assert dataset.bookmark is True
+    check = details.target_check
+    assert check is not None
+    assert check.result is GuardCheckResult.OK
+    assert check.summary is not None
+    assert check.summary.available == 10**12
+    assert [mirror.state for mirror in check.mirrors] == ["mirror", "absent"]
+    assert check.mirrors[0].newest_received == datetime.fromtimestamp(HEARTBEAT - 89000, UTC)
+    job = details.job
+    assert job is not None
+    assert job.open is True
+    assert job.state is GuardJobState.AWAITING_CONFIRM
+    assert job.confirm_reasons == (GuardConfirmReason.DELETIONS,)
+    assert job.datasets[0].deleted == 1200
+    assert job.datasets[1].mode == "full"
+    # GUIDs braucht nur der Wächter; sie gelangen nie in den Status von TwinRaid.
+    assert GUID not in details.model_dump_json()
+
+
+def test_details_without_job_and_check() -> None:
+    data = changed("job", None)
+    data["target"]["check"] = None
+    details = evaluate(_observation(data), NOW).status.details
+    assert details is not None
+    assert (details.job, details.target_check) == (None, None)
