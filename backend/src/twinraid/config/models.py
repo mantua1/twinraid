@@ -23,7 +23,6 @@ from twinraid.config.validators import (
     validate_display_text,
     validate_host_address,
     validate_hostname,
-    validate_relative_path,
     validate_share_name,
     validate_time_of_day,
     validate_time_zone,
@@ -33,7 +32,6 @@ from twinraid.config.validators import (
 from twinraid.shared.base import StrictModel
 
 ShareName = Annotated[StrictStr, AfterValidator(validate_share_name)]
-RelativePath = Annotated[StrictStr, AfterValidator(validate_relative_path)]
 ContainerName = Annotated[StrictStr, AfterValidator(validate_container_name)]
 DisplayText = Annotated[StrictStr, AfterValidator(validate_display_text)]
 VmName = Annotated[StrictStr, AfterValidator(validate_vm_name)]
@@ -152,14 +150,18 @@ class ScheduleConfig(StrictModel):
 
 class SyncConfig(StrictModel):
     shares: Annotated[list[ShareName], Field(min_length=1)]
-    appdata_share: ShareName
-    exclude: list[RelativePath]
-    protect_on_target: list[RelativePath]
-    max_deletions: Annotated[StrictInt, Field(ge=0)]
     stop_containers: StrictBool
     never_stop: list[ContainerName]
     copy_templates: StrictBool
     schedule: ScheduleConfig
+    # Entfallen mit v0.5.1 (E25, Konzept 6.3): Bis Version 1.0 werden appdata_share,
+    # max_deletions und leere Listen mit einer Warnung im Startlog ignoriert, damit eine
+    # ältere Konfiguration den Container nicht stoppt. Nicht leere exclude oder
+    # protect_on_target sind ein Fehler, weil sie einen Schutz vortäuschen würden.
+    appdata_share: StrictStr | None = None
+    max_deletions: StrictInt | None = None
+    exclude: list[StrictStr] | None = None
+    protect_on_target: list[StrictStr] | None = None
 
     @model_validator(mode="after")
     def _check_consistency(self) -> Self:
@@ -167,28 +169,37 @@ class SyncConfig(StrictModel):
         duplicates = sorted({s for s in self.shares if folded.count(s.casefold()) > 1})
         if duplicates:
             raise ValueError(f"shares contains duplicates: {', '.join(duplicates)}")
-        if self.appdata_share not in self.shares:
-            raise ValueError(f"appdata_share {self.appdata_share!r} must be listed in shares")
-
-        shares = set(self.shares)
-        for field_name, paths in (
-            ("exclude", self.exclude),
-            ("protect_on_target", self.protect_on_target),
-        ):
-            for path in paths:
-                first = path.split("/", 1)[0]
-                if first not in shares:
-                    raise ValueError(
-                        f"{field_name} entry {path!r} must start with one of the configured "
-                        f"shares ({', '.join(self.shares)})"
-                    )
-        for path in self.exclude:
-            if "/" not in path:
-                raise ValueError(
-                    f"exclude entry {path!r} would exclude a whole share; "
-                    "remove it from shares instead"
-                )
+        if self.exclude:
+            raise ValueError(
+                "exclude is no longer supported since v0.5.1: a folder stays out of the "
+                "mirror only as its own dataset below the share (concept 4.5); remove the key"
+            )
+        if self.protect_on_target:
+            raise ValueError(
+                "protect_on_target is no longer supported since v0.5.1: older states stay "
+                "in the snapshots on the target (concept 4.5); remove the key"
+            )
         return self
+
+    def warnings(self) -> list[str]:
+        """Hinweise für das Startlog: entfallene Schlüssel und der Zeitplan (Konzept 6.3, 4.8)."""
+        notes: list[str] = []
+        if self.appdata_share is not None:
+            notes.append("sync.appdata_share is ignored since v0.5.1; remove it.")
+        if self.max_deletions is not None:
+            notes.append(
+                "sync.max_deletions is ignored since v0.5.1; the limit is max_deletions in "
+                "source-guard.conf on the source server. Remove it here."
+            )
+        for name in ("exclude", "protect_on_target"):
+            if getattr(self, name) is not None:
+                notes.append(f"sync.{name} (empty) is ignored since v0.5.1; remove it.")
+        if self.schedule.enabled:
+            notes.append(
+                "sync.schedule.enabled is true, but schedules are carried out only from "
+                "phase 6 on; the schedule is not run."
+            )
+        return notes
 
 
 class ActionsConfig(StrictModel):
@@ -200,6 +211,10 @@ class ActionsConfig(StrictModel):
     wake: StrictBool = False
     vm: StrictBool = False
     shutdown: StrictBool = False
+    # Ab v0.5.1 (Entscheidung E19): „Nur Probelauf“ schreibt nie nach Groß; sync erlaubt
+    # auch den Probelauf und wirkt für den echten Sync ab v0.5.2.
+    sync_dry_run: StrictBool = False
+    sync: StrictBool = False
 
 
 class TwinRaidConfig(StrictModel):
@@ -208,3 +223,7 @@ class TwinRaidConfig(StrictModel):
     gaming_vm: GamingVmConfig
     sync: SyncConfig
     actions: ActionsConfig = Field(default_factory=ActionsConfig)
+
+    def warnings(self) -> list[str]:
+        """Hinweise für das Startlog; sie verhindern den Start nicht."""
+        return self.sync.warnings()
