@@ -11,7 +11,7 @@ Weboberfläche in einem einzigen Docker-Container, die zwei Unraid-Server steuer
 
 ## Lokale Entwicklung
 
-Voraussetzungen: [uv](https://docs.astral.sh/uv/), Node.js 24 (über nvm), Docker (rootless genügt).
+Voraussetzungen: [uv](https://docs.astral.sh/uv/), Node.js 26 (über nvm), Docker (rootless genügt).
 
 ### Backend prüfen
 

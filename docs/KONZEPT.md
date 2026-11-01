@@ -1418,7 +1418,7 @@ Punkte, die bewusst nicht in Phase 5 umgesetzt werden (festgehalten am 21.10.202
 ## 11. Entwicklungsumgebung
 
 - Entwicklungs-PC: Linux Mint 22.3 (Basis Ubuntu 24.04 „noble“).
-- Python 3.14, von `uv` verwaltet (`backend/.python-version`). Node.js 24 LTS über nvm.
+- Python 3.14, von `uv` verwaltet (`backend/.python-version`). Node.js 26 LTS über nvm.
 - **Docker im Rootless-Modus:** Docker-Kontext `rootless`, Socket `/run/user/1000/docker.sock`. Die Gruppe `docker` ist bewusst nicht eingerichtet. Docker-Befehle laufen ohne `sudo` gegen den Rootless-Daemon.
 - Folgen für lokale Container-Tests:
   - root im Container entspricht dem eigenen Benutzer auf dem Host. Andere UIDs im Container, etwa 10001, werden auf Hilfs-UIDs des Hosts (subuid) abgebildet. Gemountete Dateien wie die Konfiguration müssen deshalb für alle lesbar sein (`o+r`).
