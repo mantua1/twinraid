@@ -590,6 +590,30 @@ async def test_cancel_while_the_snapshot_order_is_open(tmp_path: Path) -> None:
     assert guard.job.state is GuardJobState.CLOSED
 
 
+async def test_cancel_while_closing_keeps_the_result(tmp_path: Path) -> None:
+    """Die Prüfung ist fertig: Ein Abbruch ändert das Ergebnis nicht mehr (Konzept 4.3)."""
+    guard = ScriptedGuard(hold=GuardOrder.CLOSE)
+    worker = _worker(tmp_path, guard)
+    await _online(worker)
+    assert await worker.actions.request(ActionName.SYNC_DRY_RUN) is None
+    running = worker.sync.snapshot().running
+    for _ in range(300):
+        running = worker.sync.snapshot().running
+        if running is not None and running.step is SyncStep.CLOSING:
+            break
+        await asyncio.sleep(0.01)
+    assert running is not None
+    assert running.step is SyncStep.CLOSING
+    assert worker.sync.cancel(running.job_id) is True
+    await _done(worker)
+    last = worker.sync.snapshot().last
+    assert last is not None
+    assert last.outcome is ActionOutcome.DRY_RUN_SUCCESS
+    assert worker.sync.snapshot().report is not None
+    assert _log(tmp_path)[-1]["result"] == "dry_run_success"
+    assert GuardOrder.CLOSE in guard.orders
+
+
 async def test_cancel_while_waking(tmp_path: Path) -> None:
     worker = _worker(tmp_path, lab_timings=LabTimings(boot_seconds=60))
     await worker.monitor.check_once()

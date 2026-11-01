@@ -9,7 +9,8 @@
 # Sperre nach Fehlversuchen samt "unlock", keine
 # /api-Route ohne Login, keine Konfigurationswerte in öffentlichen Dateien,
 # Netzfilter, Host-Prüfung, Security-Header, Neustart, "renew-cert" mit und ohne
-# neue CA, den Modus real nur lesend und den Startabbruch bei Fehlern.
+# neue CA, den Modus real nur lesend, den Worker ohne Capabilities am nachgebauten Wächter
+# und den Startabbruch bei Fehlern.
 #
 # Aufruf aus dem Repo-Hauptordner:
 #   docker/smoke-test.sh [IMAGE]          Standard-Image: twinraid:dev
@@ -25,6 +26,7 @@ INSPECT_SCRIPT="$(cat "${REPO_DIR}/docker/smoke/inspect_processes.py")"
 CONTENT_SCRIPT="$(cat "${REPO_DIR}/docker/smoke/check_public_content.py")"
 ROUTES_SCRIPT="$(cat "${REPO_DIR}/docker/smoke/list_routes.py")"
 CERT_SCRIPT="$(cat "${REPO_DIR}/docker/smoke/inspect_certificate.py")"
+FAKE_GUARD="${REPO_DIR}/docker/smoke/fake_source_guard.py"
 PY=/app/.venv/bin/python
 PORT="${SMOKE_PORT:-18443}"
 BASE="https://127.0.0.1:${PORT}"
@@ -80,6 +82,11 @@ expect_not_contains() {
 
 cleanup() {
   local ids volumes networks
+  # Mit normalem Docker gehören die Dateien des nachgebauten Wächters wirklich root.
+  if [[ -d "${WORKDIR}/guard/strict" ]]; then
+    docker run --rm --user 0:0 --network none -v "${WORKDIR}/guard:/guard" --entrypoint rm \
+      "${IMAGE}" -rf /guard/strict
+  fi
   ids="$(docker ps -aq --filter "name=${PREFIX}")"
   if [[ -n "${ids}" ]]; then
     # shellcheck disable=SC2086
@@ -820,38 +827,7 @@ mkdir -p "${guard_root}/ok/state" "${guard_root}/rw/state" "${guard_root}/dir/st
 : >"${guard_root}/rw/request"
 # Rootless: Dateien müssen für die Hilfs-UIDs lesbar sein (Konzept 11).
 chmod -R a+rX "${guard_root}"
-write_guard_status() {
-  python3 - "$1/state/status.json" <<'PY'
-import json, os, sys, time
-
-now = int(time.time())
-status = {
-    "protocol": 2, "version": 2, "heartbeat_at": now, "started_at": now - 60,
-    "instance": "0123456789abcdef", "error": None, "error_detail": None, "config_line": None,
-    "last_seq": 0, "last": None, "rejected": {"count": 0, "last_at": None},
-    "host": {"connect": "absent", "flash_backup": "inactive"},
-    "limits": {"max_stop_minutes": 20, "heartbeat_timeout_seconds": 120,
-               "stop_timeout_seconds": 60, "min_run_interval_minutes": 30,
-               "max_deletions": 1000, "snapshot_keep_days": 7, "snapshot_reserve_percent": 15},
-    "target": {"configured": False, "port": 22, "key": False, "known_host": False,
-               "check": None},
-    "allowed": [{"name": "twinraid-testcontainer", "id": None, "state": "missing"}],
-    "run": None, "run_allowed_at": None, "last_run": None,
-    "zfs": {"state": "unavailable", "pool": None,
-            "datasets": [{"name": "twinraidtest", "present": None, "referenced": None,
-                          "compression": None, "snapshots": None,
-                          "oldest_snapshot_at": None, "base": None, "bookmark": None}],
-            "self_dataset": "unknown"},
-    "job": None,
-    "seq_exhausted": False,
-}
-tmp = sys.argv[1] + ".tmp"
-with open(tmp, "w", encoding="ascii") as handle:
-    json.dump(status, handle, separators=(",", ":"))
-os.chmod(tmp, 0o644)
-os.replace(tmp, sys.argv[1])
-PY
-}
+write_guard_status() { python3 "${FAKE_GUARD}" once "$1"; }
 # get_status über den Worker-Socket als Web-Benutzer; gibt Zustand, Problem und Container aus.
 guard_probe='import json,socket
 s=socket.socket(socket.AF_UNIX);s.connect("/run/twinraid/worker.sock")
@@ -908,6 +884,57 @@ fi
 for case in ok rw dir; do
   docker rm -f "${PREFIX}-guard-${case}" >/dev/null
 done
+
+# --- 16c. Worker ohne Capabilities am Wächter (Konzept 5.4, ab v0.5.1) ---------------------------
+# Ein nachgebauter Wächter läuft als root in einem eigenen Container, mit denselben Pfaden wie der
+# TwinRaid-Container. Statusordner 0700, status.json 0600 und Auftragsdatei 0600 gehören root und
+# sind strenger als beim echten Wächter (0755, 0644). Sie zeigen, dass der Worker nur als Besitzer
+# zugreift und dafür kein DAC_READ_SEARCH braucht. Der Auftrag ist das close für einen offenen Job,
+# den der Worker nach seinem Start schließt (Konzept 3.6, „TwinRaid startet neu“).
+guard_strict="${guard_root}/strict"
+mkdir -p "${guard_strict}"
+docker run -d --name "${PREFIX}-fake-guard" --user 0:0 --network none \
+  -v "${guard_strict}:/guard" --entrypoint "${PY}" "${IMAGE}" \
+  -c "$(cat "${FAKE_GUARD}")" serve /guard >/dev/null
+for _ in $(seq 1 20); do
+  [[ -e "${guard_strict}/request" ]] && break
+  sleep 0.5
+done
+strict="${PREFIX}-guard-strict"
+start "${strict}" "" "${real_config}" -e TWINRAID_MODE=real \
+  -v "${guard_strict}/request:/srv/worker/source-guard/request:rw" \
+  -v "${guard_strict}/state:/srv/worker/source-guard/state:ro"
+strict_perm() { docker exec "${strict}" stat -c '%a %u' "/srv/worker/source-guard/$1"; }
+strict_probe='import json,socket
+s=socket.socket(socket.AF_UNIX);s.connect("/run/twinraid/worker.sock")
+s.sendall(b"{\"command\":\"get_status\"}\n")
+data=b""
+while not data.endswith(b"\n"):
+    chunk=s.recv(65536)
+    if not chunk:
+        break
+    data+=chunk
+g=json.loads(data)["result"]["source_guard"]
+d=g["details"] or {}
+last=d.get("last_order") or {}
+print(g["state"],last.get("order"),last.get("result"),(d.get("job") or {}).get("state"))'
+strict_seen=""
+for _ in $(seq 1 40); do
+  strict_seen="$(docker exec -u 10001:10001 "${strict}" "${PY}" -c "${strict_probe}" 2>/dev/null || true)"
+  [[ "${strict_seen}" == "active close closed closed" ]] && break
+  sleep 1
+done
+expect_equal "worker reads the status and its order reaches the guard" "${strict_seen}" \
+  "active close closed closed"
+expect_contains "worker gets the answer to its order" "$(docker logs "${strict}" 2>&1)" \
+  "closed an open job of the source guard after the start: closed"
+expect_equal "guard status folder is 0700 root" "$(strict_perm state)" "700 0"
+expect_equal "status.json is 0600 root" "$(strict_perm state/status.json)" "600 0"
+expect_equal "order file is 0600 root" "$(strict_perm request)" "600 0"
+procs="$(docker exec "${strict}" python3 -c "${INSPECT_SCRIPT}")"
+check twinraid-worker CapEff 0000000000000000
+check twinraid-worker CapBnd 0000000000000000
+docker rm -f "${strict}" >/dev/null
 
 # --- 17. Optional: Jede Capability ist nötig ------------------------------------------------------
 if [[ "${CHECK_EACH_CAP:-0}" == "1" ]]; then
