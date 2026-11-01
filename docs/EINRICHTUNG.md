@@ -1480,14 +1480,17 @@ stat -c '%U:%G %a %n' \
 
 | Pfad | Erwartet | Warum |
 |---|---|---|
-| `config` | für alle lesbar und betretbar: Rechte enden auf `5` oder `7` | Worker und Web-Prozess lesen hier als „alle anderen“, wenn der Ordner nicht root gehört |
+| `config` | für alle lesbar und betretbar: Rechte enden auf `5` oder `7`, richtig ist `755` | Worker und Web-Prozess lesen hier als „alle anderen“, wenn der Ordner nicht root gehört |
 | `twinraid.yaml` | für alle lesbar: Rechte enden auf `4`, `5`, `6` oder `7` | ebenso |
 | `data` | `root:root 755` | sonst startet TwinRaid nicht (5.9 im Konzept) |
-| `data/secrets` | `root:root 700` | Key und Passwort-Hash; nur root liest sie |
+| `data/secrets` | `root:<beliebige Gruppe> 700` | Key und Passwort-Hash; nur root liest sie |
 | `…/in/request` | `root:root 600` | Auftragsdatei des Wächters |
 | `…/state` | `root:root 755` | Status des Wächters |
 
 Weicht etwas ab, erst beheben (bei `data` und `secrets`: Abschnitt 17, „Rechte des Datenordners zurückgesetzt“).
+
+- **Gruppe von `data/secrets`:** Sie bleibt vom Anlegen im Container und erscheint auf dem Host oft als `UNKNOWN` (10001). Das ist unbedenklich; es zählen nur der Besitzer root und die Rechte `700`.
+- **`config` mit `777`:** Das funktioniert, richtig ist aber `755`. Unraid setzt `appdata` oft auf `777`, zum Beispiel über *New Permissions*. Korrigieren mit `chmod 755 /mnt/user/appdata/twinraid/config`.
 
 > **Skripte nie direkt nach `/boot/config/twinraid/` laden.** Erst nach `/tmp`, dann die SHA-256 vergleichen, dann kopieren und mit `mv` ersetzen. Die laufende Sitzung `vm-watch` (`guard.sh`) und der laufende Wächter lesen ihr Skript während der Ausführung nach; `mv` lässt ihnen die alte Datei. Sie bekommen die neue erst beim nächsten Start.
 
