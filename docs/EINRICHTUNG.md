@@ -1452,6 +1452,14 @@ grep -n -E '^ *(exclude|protect_on_target|appdata_share|max_deletions):' twinrai
 
 Die Kopie brauchst du nur für den Rückweg in 15.2: 0.5.0 verlangt diese Schlüssel. Zeigt `grep` Zeilen, die Datei mit `nano twinraid.yaml` öffnen und diese Schlüssel löschen, **samt der Listeneinträge darunter** (Zeilen, die mit `-` beginnen). Speichern mit `Strg+O`, `Enter`, beenden mit `Strg+X`. Danach zeigt derselbe `grep`-Befehl nichts mehr.
 
+**Pflichtschlüssel unter `sync` prüfen.** Unter `sync` müssen `stop_containers`, `never_stop` und `copy_templates` stehen, in der Datei und in der Kopie für den Rückweg. Fehlt einer, startet der Container nicht. Das Log von `twinraid.preflight` nennt dann den Schlüssel, zum Beispiel `sync.stop_containers: required key is missing`.
+
+```bash
+grep -c -E '^ +(stop_containers|never_stop|copy_templates):' twinraid.yaml twinraid.yaml.vor-0.5.1
+```
+
+Beide Zeilen der Ausgabe müssen auf `:3` enden. Zeigt eine Zeile weniger, die betreffende Datei mit `nano` öffnen und den fehlenden Schlüssel unter `sync:` ergänzen, genauso eingerückt wie `shares:`. Die Werte aus `config.example.yaml` sind `stop_containers: true`, `never_stop: []` und `copy_templates: false`. Danach den `grep`-Befehl wiederholen.
+
 **Das Update direkt danach einspielen (15.2).** TwinRaid liest die Datei nur beim Start: Es läuft weiter, aber 0.5.0 startet mit der geänderten Datei nicht mehr, etwa nach einem Neustart von Klein.
 
 ### 15.2 Test G10: Update in der richtigen Reihenfolge
@@ -1563,7 +1571,10 @@ Rechte `stat` wie vorher.
 
    ```bash
    cp -p /mnt/user/appdata/twinraid/config/twinraid.yaml.vor-0.5.1 /mnt/user/appdata/twinraid/config/twinraid.yaml
+   grep -c -E '^ +(stop_containers|never_stop|copy_templates):' /mnt/user/appdata/twinraid/config/twinraid.yaml
    ```
+
+   Erwartet: `3`. Bei einer kleineren Zahl fehlt ein Pflichtschlüssel, und 0.5.0 startet nicht. Dann den Schlüssel wie in 15.1 ergänzen.
 
 2. **Klein:** Reiter **Docker** → Symbol *TwinRaid* → **Edit** → **Repository** `ghcr.io/mantua1/twinraid:0.5.0` → **Apply**.
 3. **Groß:** `guard.sh` Version 2 zurückholen:
