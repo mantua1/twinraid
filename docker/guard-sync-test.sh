@@ -270,7 +270,13 @@ receive twinraidtest -i @c "${SRC}/twinraidtest@d"
 expect_refused "locked mirror refuses" props-mismatch
 expect_contains "check: props=mismatch" "$(check)" "mirror twinraidtest state=mirror props=mismatch "
 # Zurücksetzen von Hand nach props-not-applied (Konzept 3.7): Werte setzen, Sperre aufheben.
-zfs set readonly=on "${MIRROR}"
+# Wie in docs/WIEDERHERSTELLUNG.md: alle festen Werte außer canmount in einem Aufruf.
+reset_values=()
+for item in "${FIXED[@]}"; do
+  [[ "${item}" == canmount=* ]] || reset_values+=("${item}")
+done
+zfs set "${reset_values[@]}" "mountpoint=${MOUNT}" "${MIRROR}"
+expect_equal "the reset leaves the mirror unmounted" "$(where "${MIRROR}")" ""
 zfs set canmount=on "${MIRROR}"
 expect_contains "check: props=ok after the reset" "$(check)" "mirror twinraidtest state=mirror props=ok "
 receive twinraidtest -i @c "${SRC}/twinraidtest@d"
