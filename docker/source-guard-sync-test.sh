@@ -204,6 +204,9 @@ done
 printf 'nur im Kind\n' >"/mnt/${KLEIN}/twinraidtest/kind/kind.txt"
 head -c 2000000 /dev/urandom >"/mnt/${KLEIN}/dokumente/zufall.bin"
 bash "${REPO_DIR}/host-scripts/testdata.sh" create "/mnt/${KLEIN}/dokumente/testdata"
+# Der Runner hat kein setfattr; testdata.sh meldet dort xattr no, also hier von Hand.
+python3 -c 'import os,sys; os.setxattr(sys.argv[1], "user.twinraid.test", b"wert")' \
+  "/mnt/${KLEIN}/dokumente/zufall.bin"
 # Ein fremder Snapshot (ohne twinraid:created-by): der Wächter fasst ihn nie an.
 zfs snapshot "${KLEIN}/twinraidtest@manuell"
 
@@ -304,7 +307,10 @@ done
 expect_equal "content on Groß" "$(cat /mnt/mainpool/twinraid-mirror/twinraidtest/datei1.txt)" "Datei 1"
 testdata_report="$(bash "${REPO_DIR}/host-scripts/testdata.sh" verify /mnt/mainpool/twinraid-mirror/dokumente/testdata 2>&1 || true)"
 expect_contains "test data arrive unchanged" "${testdata_report}" "Keine Abweichung (Lauf 0)."
-expect_contains "with owners, xattrs and ACLs" "${testdata_report}" "xattr yes, acl yes, Besitzer yes"
+expect_contains "with owners and ACLs" "${testdata_report}" "acl yes, Besitzer yes"
+expect_equal "xattr on Groß" \
+  "$(python3 -c 'import os,sys; print(os.getxattr(sys.argv[1], "user.twinraid.test").decode())' \
+    /mnt/mainpool/twinraid-mirror/dokumente/zufall.bin)" "wert"
 expect_equal "child dataset not sent" "$(zfs list -H -o name -- "${ROOT}/twinraidtest/kind" 2>/dev/null || true)" ""
 expect_contains "received as UID 64000" "$(zpool history -l mainpool | grep 'zfs receive' | tail -1)" "[user 64000"
 first="${snap}"
@@ -355,9 +361,17 @@ order confirm confirmed
 order send sending
 wait_job "done|failed"
 expect_equal "send after confirm" "$(job state):$(job result):$(job confirmed)" "done:ok:true"
-expect_contains "changed test data arrive unchanged" \
-  "$(bash "${REPO_DIR}/host-scripts/testdata.sh" verify /mnt/mainpool/twinraid-mirror/dokumente/testdata 2>&1 || true)" \
-  "Keine Abweichung (Lauf 1)."
+# Drei Sichten: eingehängter Spiegel (Inodes aus dem ersten verify im Kernel), Snapshot
+# (eigene Inodes) und nach neuem Einhängen.
+mirror_data=/mnt/mainpool/twinraid-mirror/dokumente
+verify_mirror() { bash "${REPO_DIR}/host-scripts/testdata.sh" verify "$1" 2>&1 || true; }
+echo "info  mounted mirror after the increment: $(verify_mirror "${mirror_data}/testdata" | head -n 3 | cut -c1-200)"
+expect_contains "changed test data in the snapshot" \
+  "$(verify_mirror "${mirror_data}/.zfs/snapshot/$(job snapshot)/testdata")" "Keine Abweichung (Lauf 1)."
+zfs unmount "${ROOT}/dokumente"
+zfs mount "${ROOT}/dokumente"
+expect_contains "changed test data after mounting again" \
+  "$(verify_mirror "${mirror_data}/testdata")" "Keine Abweichung (Lauf 1)."
 
 echo "== Basis fehlt, Lesezeichen ist da"
 snap="$(job snapshot)"
