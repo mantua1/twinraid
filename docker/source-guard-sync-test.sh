@@ -18,7 +18,8 @@
 # und danach (inkrementell, Zählungen aus zfs diff), send mit neuer Basis (Hold,
 # Lesezeichen), Freigabe von Löschungen, Senden vom Lesezeichen, fremder Snapshot auf
 # Groß (base_missing), Ablehnungen von guard.sh (too-soon, receive-busy), close und
-# Neustart während einer Übertragung, Aufbewahrung auf Klein.
+# Neustart während einer Übertragung, Aufbewahrung auf Klein, Testdaten aus testdata.sh
+# kommen mit Besitzern, xattrs und ACLs unverändert an, vollständig und inkrementell.
 #
 # Aufruf aus dem Repo-Hauptordner:
 #   sudo SOURCE_GUARD_SYNC_TEST_HOST=disposable docker/source-guard-sync-test.sh
@@ -196,12 +197,13 @@ zpool create -o cachefile=none -o ashift=12 -m "/mnt/${KLEIN}" -O compression=on
   "${KLEIN}" "${WORK}/klein.img"
 zfs create "${KLEIN}/twinraidtest"
 zfs create "${KLEIN}/twinraidtest/kind"
-zfs create "${KLEIN}/dokumente"
+zfs create -o xattr=sa -o acltype=posix "${KLEIN}/dokumente"
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   printf 'Datei %s\n' "${i}" >"/mnt/${KLEIN}/twinraidtest/datei${i}.txt"
 done
 printf 'nur im Kind\n' >"/mnt/${KLEIN}/twinraidtest/kind/kind.txt"
 head -c 2000000 /dev/urandom >"/mnt/${KLEIN}/dokumente/zufall.bin"
+bash "${REPO_DIR}/host-scripts/testdata.sh" create "/mnt/${KLEIN}/dokumente/testdata"
 # Ein fremder Snapshot (ohne twinraid:created-by): der Wächter fasst ihn nie an.
 zfs snapshot "${KLEIN}/twinraidtest@manuell"
 
@@ -300,6 +302,9 @@ for name in twinraidtest dokumente; do
     "$(value guid "${KLEIN}/${name}@${snap}")"
 done
 expect_equal "content on Groß" "$(cat /mnt/mainpool/twinraid-mirror/twinraidtest/datei1.txt)" "Datei 1"
+testdata_report="$(bash "${REPO_DIR}/host-scripts/testdata.sh" verify /mnt/mainpool/twinraid-mirror/dokumente/testdata 2>&1 || true)"
+expect_contains "test data arrive unchanged" "${testdata_report}" "Keine Abweichung (Lauf 0)."
+expect_contains "with owners, xattrs and ACLs" "${testdata_report}" "xattr yes, acl yes, Besitzer yes"
 expect_equal "child dataset not sent" "$(zfs list -H -o name -- "${ROOT}/twinraidtest/kind" 2>/dev/null || true)" ""
 expect_contains "received as UID 64000" "$(zpool history -l mainpool | grep 'zfs receive' | tail -1)" "[user 64000"
 first="${snap}"
@@ -339,6 +344,7 @@ expect_equal "bookmark of the old base kept" "$(value name "${KLEIN}/twinraidtes
 
 echo "== Löschungen über max_deletions brauchen eine Freigabe"
 rm /mnt/"${KLEIN}"/twinraidtest/datei{7,8,9,10,11,12}.txt
+bash "${REPO_DIR}/host-scripts/testdata.sh" change "/mnt/${KLEIN}/dokumente/testdata"
 full_run
 expect_equal "awaiting confirm" "$(job state)" awaiting_confirm
 # Bei den kleinen Testdateien kann zusätzlich shrunk gelten.
@@ -349,6 +355,9 @@ order confirm confirmed
 order send sending
 wait_job "done|failed"
 expect_equal "send after confirm" "$(job state):$(job result):$(job confirmed)" "done:ok:true"
+expect_contains "changed test data arrive unchanged" \
+  "$(bash "${REPO_DIR}/host-scripts/testdata.sh" verify /mnt/mainpool/twinraid-mirror/dokumente/testdata 2>&1 || true)" \
+  "Keine Abweichung (Lauf 1)."
 
 echo "== Basis fehlt, Lesezeichen ist da"
 snap="$(job snapshot)"
