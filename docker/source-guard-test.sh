@@ -89,6 +89,13 @@ TEST_SCRIPT="$(template_value PostArgs)"
 
 guard() { /bin/bash "${GUARD}" "$@"; }
 
+# Pause zwischen zwei Läufen aufheben. reset-run-interval kehrt zurück, sobald der Wächter die
+# Anfrage übernommen hat; status.json schreibt er im nächsten Durchlauf, und selftest liest sie.
+lift_pause() {
+  guard reset-run-interval >/dev/null
+  wait_status run_allowed_at null 15
+}
+
 # Ein Feld aus status.json, Schlüssel mit Punkten getrennt; null für fehlende Werte.
 status_field() {
   python3 - "${STATUS}" "$1" <<'PY'
@@ -383,7 +390,7 @@ sleep 2
 expect_equal "old number is ignored" "$(status_field run)" null
 expect_not_contains "marker not in status.json" "$(cat "${STATUS}")" leakmarker4711
 expect_not_contains "marker not in syslog" "$(syslog)" leakmarker4711
-guard reset-run-interval >/dev/null
+lift_pause
 send begin
 expect_equal "valid order after the attacks" "${RESULT}" opened
 send finish
@@ -399,7 +406,7 @@ chown 0 "${REQUEST}"
 expect_wait "recovers after owner change" error null
 
 echo "== Totmannschalter (30 s)"
-guard reset-run-interval >/dev/null
+lift_pause
 send begin
 send "stop ${TEST}" 40
 expect_equal "stopped for deadman test" "${RESULT}" stopped
@@ -411,16 +418,16 @@ echo "== selftest"
 docker stop -t 1 "${APP}" >/dev/null
 out="$(guard selftest "${TEST}" 2>&1)" || true
 expect_contains "selftest refuses during the pause" "${out}" reset-run-interval
-guard reset-run-interval >/dev/null
+lift_pause
 out="$(guard selftest "${TEST}" 2>&1)" || true
 expect_contains "selftest with the test container" "${out}" "OK: angehalten und wieder gestartet."
-guard reset-run-interval >/dev/null
+lift_pause
 out="$(guard selftest "${OTHER}" 2>&1)" || true
 expect_contains "selftest with a refused container" "${out}" "OK: abgelehnt (not_allowed)"
 docker start "${APP}" >/dev/null
 
 echo "== Neustarts"
-guard reset-run-interval >/dev/null
+lift_pause
 send begin
 send "stop ${TEST}" 40
 started="$(status_field started_at)"
