@@ -1633,7 +1633,7 @@ bash /tmp/testdata.sh verify
 | `create` | `Testdaten angelegt: /mnt/mainpool/twinraidtest/testdata`, die Zahl der Einträge, `Sonderfälle: xattr yes, acl yes, Besitzer yes` und `Prüfliste: PRUEFLISTE.txt, SHA-256 …` |
 | `verify` | `Keine Abweichung (Lauf 0).` und dieselbe SHA-256 |
 
-Die SHA-256 der Prüfliste notieren; ab 0.5.2 vergleichst du damit den Spiegel auf Groß. Steht dort `acl no` oder `xattr no`, kann das Dataset das nicht, oder das Werkzeug fehlt; `verify` lässt es dann aus. Das bitte im PR festhalten. `create` legt nur neu an; für einen neuen Anfang den Ordner `/mnt/mainpool/twinraidtest/testdata` von Hand löschen.
+Die SHA-256 der Prüfliste notieren; ab 0.5.2 vergleichst du damit den Spiegel auf Groß, und zwar im Snapshot (`bash /tmp/testdata.sh verify /mnt/mainpool/twinraid-mirror/twinraidtest/.zfs/snapshot/<Name>/testdata`): Im eingehängten Spiegel kann der Kernel nach einem inkrementellen Empfang noch eine alte ACL zeigen, obwohl sie richtig angekommen ist. Steht dort `acl no` oder `xattr no`, kann das Dataset das nicht, oder das Werkzeug fehlt; `verify` lässt es dann aus. Das bitte im PR festhalten. `create` legt nur neu an; für einen neuen Anfang den Ordner `/mnt/mainpool/twinraidtest/testdata` von Hand löschen.
 
 Später erzeugt `bash /tmp/testdata.sh change` je Lauf eine bekannte Änderung: 50 Dateien gelöscht, 20 geändert, 30 neu, 10 umbenannt, dazu ein Block in einer großen Datei und einzelne Eigenschaften. Das braucht der Test mit `zfs diff` in 0.5.2; `zfs diff` zählt die betroffenen Ordner zusätzlich als geändert.
 

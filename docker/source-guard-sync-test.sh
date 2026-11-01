@@ -361,8 +361,9 @@ order confirm confirmed
 order send sending
 wait_job "done|failed"
 expect_equal "send after confirm" "$(job state):$(job result):$(job confirmed)" "done:ok:true"
-# Drei Sichten: eingehängter Spiegel (Inodes aus dem ersten verify im Kernel), Snapshot
-# (eigene Inodes) und nach neuem Einhängen.
+# Drei Sichten (Konzept 3.7, „ACLs im eingehängten Spiegel“): Der eingehängte Spiegel kann
+# eine vom ersten verify gelesene ACL noch aus dem Cache des Kernels zeigen; das meldet der
+# Test nur. Maßgeblich sind der Snapshot und der Spiegel nach neuem Einhängen.
 mirror_data=/mnt/mainpool/twinraid-mirror/dokumente
 verify_mirror() { bash "${REPO_DIR}/host-scripts/testdata.sh" verify "$1" 2>&1 || true; }
 echo "info  mounted mirror after the increment: $(verify_mirror "${mirror_data}/testdata" | head -n 3 | cut -c1-200)"

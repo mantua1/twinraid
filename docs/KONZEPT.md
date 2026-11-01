@@ -534,6 +534,8 @@ Ein Dataset, das auf Klein gelöscht und neu angelegt wurde, kann den Spiegel de
 
 **Speicher:** Ein Empfang schreibt den ganzen Strom durch den ARC; die Spiegel haben deshalb `primarycache=metadata`. Die Grenze des ARC trägt der Nutzer in Unraid ein (3.5).
 
+**ACLs im eingehängten Spiegel (Befund vom 01.11.2026):** Im CI-Test (Kernelmodul OpenZFS 2.4.1) zeigte der eingehängte Spiegel nach einem inkrementellen Empfang bei einer Datei die alte ACL, wenn sie vorher schon gelesen worden war. Inhalt, Rechte und Zeitstempel stimmten. Der neue Snapshot und der Spiegel nach neuem Einhängen zeigten die neue ACL: Die Daten sind richtig angekommen, nur der Kernel hielt den alten Wert im Cache. guard.sh hängt deshalb nichts neu ein. Prüfungen gegen die Prüfliste laufen im Snapshot unter `.zfs/snapshot/<Name>/`. Klone im Notbetrieb sind nicht betroffen, weil sie neu eingehängt werden. Ob OpenZFS 2.4.4 auf Groß sich genauso verhält, zeigt der erste echte Sync mit 0.5.2.
+
 **Grenzen bei einem Angriff**
 
 - **Übernommener TwinRaid-Container:** kann Läufe auslösen (einer zur Zeit, Abstand 30 min im Wächter, je Spiegel ein Empfang je 10 min), Löschungen freigeben wie der Button (ältere Stände bleiben in den Snapshots) und freigegebene Container auf Klein je Lauf bis zu 20 min anhalten, danach frühestens nach 30 min wieder. Er kann nicht: gespiegelte Daten lesen, nach Groß schreiben, Datasets, Ziel oder Optionen wählen, Snapshots auf Klein oder Groß löschen, andere Container anhalten oder starten, Container aktualisieren, pausieren oder ihre Logs lesen.
