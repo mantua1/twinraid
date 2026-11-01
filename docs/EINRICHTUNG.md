@@ -353,8 +353,19 @@ TwinRaid liest den Zustand der Gaming-VM per SSH: Solange Groß läuft, hält es
 
 ```bash
 mkdir -p /boot/config/twinraid
-wget -O /boot/config/twinraid/guard.sh \
+```
+
+```bash
+wget -O /tmp/guard.sh \
   https://raw.githubusercontent.com/mantua1/twinraid/v0.5.1/host-scripts/guard.sh
+sha256sum /tmp/guard.sh
+```
+
+Erwartet genau `c5f69807b76eb74af373361c47ecad3e39e718c278df10edba0e2bad40cae47f  /tmp/guard.sh`. Weicht der Wert ab, hier abbrechen und nichts kopieren. Stimmt er:
+
+```bash
+cp /tmp/guard.sh /boot/config/twinraid/guard.sh.neu
+mv /boot/config/twinraid/guard.sh.neu /boot/config/twinraid/guard.sh
 head -2 /boot/config/twinraid/guard.sh
 ```
 
@@ -965,8 +976,24 @@ Dieser Test zeigt, dass Unraid einen leeren Pfad im Template auslässt und Docke
 
    ```bash
    mkdir -p /boot/config/twinraid
-   wget -O /boot/config/twinraid/source-guard.sh \
+   ```
+
+   ```bash
+   wget -O /tmp/source-guard.sh \
      https://raw.githubusercontent.com/mantua1/twinraid/v0.5.1/host-scripts/source-guard.sh
+   sha256sum /tmp/source-guard.sh
+   ```
+
+   Erwartet genau `d4f05ada883386b365520296312f916fc57d0a283725c0b3c8d5d3ce0f85d647  /tmp/source-guard.sh`. Weicht der Wert ab, hier abbrechen und nichts kopieren. Stimmt er:
+
+   ```bash
+   cp /tmp/source-guard.sh /boot/config/twinraid/source-guard.sh.neu
+   mv /boot/config/twinraid/source-guard.sh.neu /boot/config/twinraid/source-guard.sh
+   ```
+
+   Danach die Beispielkonfiguration holen und die Kopfzeile ansehen:
+
+   ```bash
    wget -O /boot/config/twinraid/source-guard.conf \
      https://raw.githubusercontent.com/mantua1/twinraid/v0.5.1/host-scripts/source-guard.conf.example
    head -2 /boot/config/twinraid/source-guard.sh
@@ -1452,14 +1479,26 @@ stat -c '%U:%G %a %n' \
 | `…/in/request` | `root:root 600` | Auftragsdatei des Wächters |
 | `…/state` | `root:root 755` | Status des Wächters |
 
-Weicht etwas ab, erst beheben (bei `data` und `secrets`: Abschnitt 17, „Rechte des Datenordners zurückgesetzt“). Danach in **dieser Reihenfolge**:
+Weicht etwas ab, erst beheben (bei `data` und `secrets`: Abschnitt 17, „Rechte des Datenordners zurückgesetzt“).
+
+> **Skripte nie direkt nach `/boot/config/twinraid/` laden.** Erst nach `/tmp`, dann die SHA-256 vergleichen, dann kopieren und mit `mv` ersetzen. Die laufende Sitzung `vm-watch` (`guard.sh`) und der laufende Wächter lesen ihr Skript während der Ausführung nach; `mv` lässt ihnen die alte Datei. Sie bekommen die neue erst beim nächsten Start.
+
+Danach in **dieser Reihenfolge**:
 
 1. **TwinRaid aktualisieren:** Reiter **Docker** → bei *TwinRaid* **update ready** → **Update**. Die VM-Kachel zeigt jetzt „guard.sh auf dem Server ist zu alt“ und die Kachel Klein „Status des Wächters ungültig: Der Wächter spricht ein anderes Protokoll …“. Das ist für die nächsten Schritte normal.
 2. **`guard.sh` Version 3 auf Groß holen** (Unraid-Terminal von **Groß**):
 
    ```bash
-   wget -O /boot/config/twinraid/guard.sh \
+   wget -O /tmp/guard.sh \
      https://raw.githubusercontent.com/mantua1/twinraid/v0.5.1/host-scripts/guard.sh
+   sha256sum /tmp/guard.sh
+   ```
+
+   Erwartet genau `c5f69807b76eb74af373361c47ecad3e39e718c278df10edba0e2bad40cae47f  /tmp/guard.sh`. Weicht der Wert ab, hier abbrechen und nichts kopieren. Stimmt er:
+
+   ```bash
+   cp /tmp/guard.sh /boot/config/twinraid/guard.sh.neu
+   mv /boot/config/twinraid/guard.sh.neu /boot/config/twinraid/guard.sh
    head -2 /boot/config/twinraid/guard.sh
    ```
 
@@ -1474,8 +1513,16 @@ Weicht etwas ab, erst beheben (bei `data` und `secrets`: Abschnitt 17, „Rechte
 4. **`source-guard.sh` Version 2 auf Klein holen und neu starten** (Unraid-Terminal von **Klein**):
 
    ```bash
-   wget -O /boot/config/twinraid/source-guard.sh \
+   wget -O /tmp/source-guard.sh \
      https://raw.githubusercontent.com/mantua1/twinraid/v0.5.1/host-scripts/source-guard.sh
+   sha256sum /tmp/source-guard.sh
+   ```
+
+   Erwartet genau `d4f05ada883386b365520296312f916fc57d0a283725c0b3c8d5d3ce0f85d647  /tmp/source-guard.sh`. Weicht der Wert ab, hier abbrechen und nichts kopieren. Stimmt er:
+
+   ```bash
+   cp /tmp/source-guard.sh /boot/config/twinraid/source-guard.sh.neu
+   mv /boot/config/twinraid/source-guard.sh.neu /boot/config/twinraid/source-guard.sh
    head -2 /boot/config/twinraid/source-guard.sh
    bash /boot/config/twinraid/source-guard.sh restart
    bash /boot/config/twinraid/source-guard.sh status
@@ -1519,8 +1566,41 @@ Rechte `stat` wie vorher.
    ```
 
 2. **Klein:** Reiter **Docker** → Symbol *TwinRaid* → **Edit** → **Repository** `ghcr.io/mantua1/twinraid:0.5.0` → **Apply**.
-3. **Groß:** `guard.sh` Version 2 zurückholen, mit `v0.5.0` im Pfad, wie oben in Punkt 2.
-4. **Klein:** `source-guard.sh` Version 1 zurückholen, mit `v0.5.0` im Pfad, wie oben in Punkt 4, dann `restart`.
+3. **Groß:** `guard.sh` Version 2 zurückholen:
+
+   ```bash
+   wget -O /tmp/guard.sh \
+     https://raw.githubusercontent.com/mantua1/twinraid/v0.5.0/host-scripts/guard.sh
+   sha256sum /tmp/guard.sh
+   ```
+
+   Erwartet genau `af4afe98fc11b20565194d7c22b293c165ee279efd79932878c31b5c80b42940  /tmp/guard.sh`. Weicht der Wert ab, hier abbrechen und nichts kopieren. Stimmt er:
+
+   ```bash
+   cp /tmp/guard.sh /boot/config/twinraid/guard.sh.neu
+   mv /boot/config/twinraid/guard.sh.neu /boot/config/twinraid/guard.sh
+   head -2 /boot/config/twinraid/guard.sh
+   ```
+
+   Die zweite Zeile lautet `# TwinRaid: SSH-Wächter auf Unraid Groß, Version 2 (Konzept 3.5 und 5.6).`
+4. **Klein:** `source-guard.sh` Version 1 zurückholen und neu starten:
+
+   ```bash
+   wget -O /tmp/source-guard.sh \
+     https://raw.githubusercontent.com/mantua1/twinraid/v0.5.0/host-scripts/source-guard.sh
+   sha256sum /tmp/source-guard.sh
+   ```
+
+   Erwartet genau `ca2f12f98dcae89c524b2f361dc6de5e5c3adfdd240fcbc336dc89a6b7939d3a  /tmp/source-guard.sh`. Weicht der Wert ab, hier abbrechen und nichts kopieren. Stimmt er:
+
+   ```bash
+   cp /tmp/source-guard.sh /boot/config/twinraid/source-guard.sh.neu
+   mv /boot/config/twinraid/source-guard.sh.neu /boot/config/twinraid/source-guard.sh
+   head -2 /boot/config/twinraid/source-guard.sh
+   bash /boot/config/twinraid/source-guard.sh restart
+   ```
+
+   Die zweite Zeile lautet `# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 1 (Konzept 3.6).`
 5. **Container-Konsole:** `twinraid-admin trust-host-key target`. Erwartet: `twinraid-guard 2 status ok`.
 6. Ausgabe und Log im PR melden (ohne private Angaben). Das nächste Update nimmst du erst nach einer Korrektur; dann **Repository** wieder auf `ghcr.io/mantua1/twinraid:latest`.
 
@@ -1624,8 +1704,16 @@ Erwartet: `Der Wächter wurde gestoppt.`, `Der Wächter wurde gestartet.` und di
 ```bash
 wget -O /tmp/testdata.sh \
   https://raw.githubusercontent.com/mantua1/twinraid/v0.5.1/host-scripts/testdata.sh
-bash /tmp/testdata.sh create
-bash /tmp/testdata.sh verify
+sha256sum /tmp/testdata.sh
+```
+
+Erwartet genau `ca4b8833cfde011242f08cf67cd72d5fd7a08e14f3f3db3811076888f864a019  /tmp/testdata.sh`. Weicht der Wert ab, hier abbrechen und nichts kopieren. Stimmt er:
+
+```bash
+cp /tmp/testdata.sh /boot/config/twinraid/testdata.sh.neu
+mv /boot/config/twinraid/testdata.sh.neu /boot/config/twinraid/testdata.sh
+bash /boot/config/twinraid/testdata.sh create
+bash /boot/config/twinraid/testdata.sh verify
 ```
 
 | Prüfen | Erwartet |
@@ -1633,9 +1721,9 @@ bash /tmp/testdata.sh verify
 | `create` | `Testdaten angelegt: /mnt/mainpool/twinraidtest/testdata`, die Zahl der Einträge, `Sonderfälle: xattr yes, acl yes, Besitzer yes` und `Prüfliste: PRUEFLISTE.txt, SHA-256 …` |
 | `verify` | `Keine Abweichung (Lauf 0).` und dieselbe SHA-256 |
 
-Die SHA-256 der Prüfliste notieren; ab 0.5.2 vergleichst du damit den Spiegel auf Groß, und zwar im Snapshot (`bash /tmp/testdata.sh verify /mnt/mainpool/twinraid-mirror/twinraidtest/.zfs/snapshot/<Name>/testdata`): Im eingehängten Spiegel kann der Kernel nach einem inkrementellen Empfang noch eine alte ACL zeigen, obwohl sie richtig angekommen ist. Steht dort `acl no` oder `xattr no`, kann das Dataset das nicht, oder das Werkzeug fehlt; `verify` lässt es dann aus. Das bitte im PR festhalten. `create` legt nur neu an; für einen neuen Anfang den Ordner `/mnt/mainpool/twinraidtest/testdata` von Hand löschen.
+Die SHA-256 der Prüfliste notieren; ab 0.5.2 vergleichst du damit den Spiegel auf Groß, und zwar im Snapshot (`bash /boot/config/twinraid/testdata.sh verify /mnt/mainpool/twinraid-mirror/twinraidtest/.zfs/snapshot/<Name>/testdata`): Im eingehängten Spiegel kann der Kernel nach einem inkrementellen Empfang noch eine alte ACL zeigen, obwohl sie richtig angekommen ist. Steht dort `acl no` oder `xattr no`, kann das Dataset das nicht, oder das Werkzeug fehlt; `verify` lässt es dann aus. Das bitte im PR festhalten. `create` legt nur neu an; für einen neuen Anfang den Ordner `/mnt/mainpool/twinraidtest/testdata` von Hand löschen.
 
-Später erzeugt `bash /tmp/testdata.sh change` je Lauf eine bekannte Änderung: 50 Dateien gelöscht, 20 geändert, 30 neu, 10 umbenannt, dazu ein Block in einer großen Datei und einzelne Eigenschaften. Das braucht der Test mit `zfs diff` in 0.5.2; `zfs diff` zählt die betroffenen Ordner zusätzlich als geändert.
+Später erzeugt `bash /boot/config/twinraid/testdata.sh change` je Lauf eine bekannte Änderung: 50 Dateien gelöscht, 20 geändert, 30 neu, 10 umbenannt, dazu ein Block in einer großen Datei und einzelne Eigenschaften. Das braucht der Test mit `zfs diff` in 0.5.2; `zfs diff` zählt die betroffenen Ordner zusätzlich als geändert.
 
 ### 15.6 Test 2: Der erste Probelauf
 
@@ -1698,21 +1786,30 @@ SSH_ORIGINAL_COMMAND=vm-start bash $G sync; echo "Exit: $?"
 | `receive ../fremd`, `zfs destroy …`, `poweroff` und `vm-start` im Modus sync | `twinraid-guard: denied`, Exit `2` |
 | *Tools → System Log* | Einträge `twinraid-guard: refused: name-denied` und `twinraid-guard: denied: …` ohne den Text der Anfrage |
 
-**`poweroff` während eines Empfangs.** Dafür hältst du die Sperre des Empfangs selbst. Erst prüfen, dass sie wirklich gehalten wird, und **nur bei `receive=busy` weitermachen**; sonst würde Groß wirklich ausgehen, wenn keine VM läuft.
+**`poweroff` während eines Empfangs.** Dafür hältst du die Sperre des Empfangs selbst, höchstens 10 Minuten, und gibst sie danach selbst frei. Alle Befehle im selben Terminal ausführen, sonst fehlen `$G` und `$LOCKPID`.
 
 ```bash
-flock /var/run/twinraid-guard-receive.lock sleep 90 &
+flock -o /var/run/twinraid-guard-receive.lock sleep 600 &
+LOCKPID=$!
 sleep 1
 SSH_ORIGINAL_COMMAND=check bash $G sync | grep -o 'receive=[a-z]*'
 ```
 
-Bei `receive=busy`:
+**Ohne `receive=busy` nicht weitermachen:** Ohne Sperre würde Groß wirklich ausgehen, wenn keine VM läuft. Dann `kill $LOCKPID` und nachsehen, warum die Sperre fehlt. Bei `receive=busy`:
 
 ```bash
 SSH_ORIGINAL_COMMAND=poweroff bash $G power; echo "Exit: $?"
 ```
 
-Erwartet: `twinraid-guard: refused sync-running`, Exit `3`, Groß bleibt an. Nach 90 Sekunden ist die Sperre wieder frei (`receive=idle`).
+Erwartet: `twinraid-guard: refused sync-running`, Exit `3`, Groß bleibt an. Dann die Sperre freigeben:
+
+```bash
+kill $LOCKPID
+sleep 1
+SSH_ORIGINAL_COMMAND=check bash $G sync | grep -o 'receive=[a-z]*'
+```
+
+Erwartet: `receive=idle`. Das `-o` bei `flock` ist nötig: Ohne es erbt `sleep` die Sperre und hielte sie nach `kill` die ganzen 10 Minuten weiter. Mit `-o` läuft nur `sleep` noch bis zum Ablauf weiter, ohne Sperre und ohne Folgen.
 
 ### 15.8 Test 2c: Fremdes Dataset an der Stelle des Spiegels
 
@@ -1997,6 +2094,6 @@ Alle Befehle laufen in der **Container-Konsole**.
 | `init-key` | ab 0.5.1: Key „sync“ erzeugen, falls er fehlt, und die Zeile für *Users → root → SSH authorized keys* auf Groß ausgeben (15.3); `--new` ersetzt ihn |
 | `trust-target` | ab 0.5.1: Hostkey von Groß anzeigen, nach `yes` speichern und `guard.sh sync check` testen (15.3); `--fingerprint SHA256:…` statt der Frage |
 
-**Testdaten** (ab 0.5.1, 15.5), im Unraid-Terminal von Klein: `bash /tmp/testdata.sh create` legt sie in `/mnt/mainpool/twinraidtest/testdata` an, `… change` ändert sie auf bekannte Weise, `… verify [Ordner]` vergleicht einen Ordner mit der Prüfliste und ändert nichts, auch im Spiegel auf Groß.
+**Testdaten** (ab 0.5.1, 15.5), im Unraid-Terminal von Klein: `bash /boot/config/twinraid/testdata.sh create` legt sie in `/mnt/mainpool/twinraidtest/testdata` an, `… change` ändert sie auf bekannte Weise, `… verify [Ordner]` vergleicht einen Ordner mit der Prüfliste und ändert nichts, auch im Spiegel auf Groß.
 
 **Machbarkeitstest Z1** (ab 0.5.0, 13.3): `bash /tmp/zfs-check.sh target` auf Groß, `… source` auf Klein, `… cleanup target|source` nach einem harten Abbruch.

@@ -1,6 +1,9 @@
 """Die Anleitungen nennen dieselben Werte wie die Host-Skripte (Konzept 3.7, ab v0.5.1)."""
 
+import hashlib
 import re
+
+import pytest
 
 from tests.conftest import REPO_ROOT
 
@@ -8,6 +11,11 @@ GUARD = (REPO_ROOT / "host-scripts" / "guard.sh").read_text(encoding="utf-8")
 TESTDATA = (REPO_ROOT / "host-scripts" / "testdata.sh").read_text(encoding="utf-8")
 SETUP = (REPO_ROOT / "docs" / "EINRICHTUNG.md").read_text(encoding="utf-8")
 RECOVERY = (REPO_ROOT / "docs" / "WIEDERHERSTELLUNG.md").read_text(encoding="utf-8")
+# Stand von v0.5.0 für den Rückweg in 15.2; diese Dateien ändern sich nicht mehr.
+ROLLBACK = {
+    "guard.sh": "af4afe98fc11b20565194d7c22b293c165ee279efd79932878c31b5c80b42940",
+    "source-guard.sh": "ca2f12f98dcae89c524b2f361dc6de5e5c3adfdd240fcbc336dc89a6b7939d3a",
+}
 
 
 def _recv_perms() -> str:
@@ -89,12 +97,59 @@ def test_new_keys_block_the_start_as_the_guide_says() -> None:
         assert text in SETUP
 
 
+def _rollback_section() -> str:
+    start = SETUP.index("**Scheitert G10, zurück auf 0.5.0.**")
+    return SETUP[start : SETUP.index("### 15.3 Test K1")]
+
+
+def _without_rollback() -> str:
+    return SETUP.replace(_rollback_section(), "")
+
+
 def test_scripts_are_taken_from_the_current_release() -> None:
     version = re.search(r'^__version__ = "(.+)"$', _init(), flags=re.M)
     assert version is not None
-    # Nur der Rückweg in 15.2 nennt v0.5.0 ohne Pfad zu einem Skript.
-    tags = set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", SETUP))
-    assert tags == {f"v{version[1]}"}
+    assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _without_rollback())) == {
+        f"v{version[1]}"
+    }
+    assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _rollback_section())) == {"v0.5.0"}
+
+
+@pytest.mark.parametrize("name", ["guard.sh", "source-guard.sh", "testdata.sh"])
+def test_documented_hashes_match_the_files(name: str) -> None:
+    current = hashlib.sha256((REPO_ROOT / "host-scripts" / name).read_bytes()).hexdigest()
+    documented = set(re.findall(rf"([0-9a-f]{{64}})  /tmp/{re.escape(name)}", _without_rollback()))
+    assert documented == {current}
+
+
+@pytest.mark.parametrize("name", sorted(ROLLBACK))
+def test_rollback_hashes_are_those_of_the_old_version(name: str) -> None:
+    documented = set(re.findall(rf"([0-9a-f]{{64}})  /tmp/{re.escape(name)}", _rollback_section()))
+    assert documented == {ROLLBACK[name]}
+
+
+def test_scripts_are_never_loaded_straight_into_boot() -> None:
+    assert not re.search(r"wget -O /boot/config/twinraid/\S+\.sh", SETUP)
+    downloads = re.findall(r"wget -O /tmp/(guard\.sh|source-guard\.sh|testdata\.sh)", SETUP)
+    assert len(downloads) >= 7
+    for name in set(downloads):
+        count = downloads.count(name)
+        escaped = re.escape(name)
+        assert len(re.findall(rf"sha256sum /tmp/{escaped}\n", SETUP)) == count
+        assert SETUP.count(f"cp /tmp/{name} /boot/config/twinraid/{name}.neu\n") == count
+        assert (
+            SETUP.count(f"mv /boot/config/twinraid/{name}.neu /boot/config/twinraid/{name}\n")
+            == count
+        )
+
+
+def test_lock_of_test_2b_can_be_released() -> None:
+    """Ohne -o erbt sleep die Sperre und hält sie nach kill weiter."""
+    start = SETUP.index("### 15.7 Test 2b")
+    section = SETUP[start : SETUP.index("### 15.8 Test 2c")]
+    assert "flock -o /var/run/twinraid-guard-receive.lock sleep 600 &\nLOCKPID=$!\n" in section
+    assert "kill $LOCKPID" in section
+    assert "`receive=idle`" in section
 
 
 def _init() -> str:
