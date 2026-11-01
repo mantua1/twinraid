@@ -40,22 +40,17 @@ actions:
   wake: true
   vm: true
   shutdown: true
+  sync_dry_run: true
+  sync: false
 
 sync:
   shares:
     - appdata
     - dokumente
     - medien
-  appdata_share: appdata
-  exclude:
-    - appdata/twinraid
-  protect_on_target:
-    - appdata/_twinraid
-  max_deletions: 1000
   stop_containers: true
-  never_stop:
-    - twinraid
-  copy_templates: true
+  never_stop: []
+  copy_templates: false
   schedule:
     enabled: true
     timezone: "Europe/Berlin"

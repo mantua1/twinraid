@@ -9,7 +9,7 @@ Aufruf im Container als root, z. B. über die Container-Konsole in Unraid:
     twinraid-admin init-ssh-keys [--key status|power] [--new]
     twinraid-admin trust-host-key target
     twinraid-admin show-action-log [--lines N]
-    twinraid-admin mock-job on|off      (nur im Simulationsmodus)
+    twinraid-admin sync-check           (nur im Modus real, ändert nichts)
     twinraid-admin mock-tour on|off     (nur im Simulationsmodus)
     twinraid-admin mock-fault <Name> on|off   (nur im Simulationsmodus)
 
@@ -23,13 +23,13 @@ import getpass
 import os
 import subprocess
 import sys
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from twinraid.config import ConfigError, TwinRaidConfig, load_config
-from twinraid.integrations.mocks.jobs import MockJobSwitch
 from twinraid.integrations.mocks.lab import FAULTS, fault_flag, set_flag, tour_flag
 from twinraid.integrations.ssh import (
     GUARD_CHECK_PATTERN,
@@ -51,11 +51,14 @@ from twinraid.shared.addresses import AddressError, resolve_addresses
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.mode import RunMode, RunModeError, resolve_run_mode
 from twinraid.shared.passwords import PasswordPolicyError, PasswordStore
+from twinraid.shared.status import StatusSnapshot
 from twinraid.shared.tls import TlsError, activate, certificate_info, read_runtime
+from twinraid.sync.check_report import sync_check_lines
 from twinraid.web.audit import AuditAction, AuditLog, AuditResult
 from twinraid.web.db import WebDatabase
 from twinraid.web.ratelimit import LoginLimiter
 from twinraid.web.sessions import SessionStore
+from twinraid.web.worker_client import WorkerClient, WorkerCommandError, WorkerUnavailableError
 from twinraid.worker.action_log import read_entries
 
 S6_SVC = Path("/command/s6-svc")
@@ -81,8 +84,8 @@ class Context:
     paths: DataPaths
     runtime_tls_dir: Path
     custom_tls_dir: Path
-    mock_job_flag: Path
     mock_flag_dir: Path
+    socket_path: Path
     web_uid: int
     web_gid: int
 
@@ -97,8 +100,8 @@ class Context:
                 paths=DataPaths(runtime.data_dir(env)),
                 runtime_tls_dir=runtime.runtime_tls_dir(env),
                 custom_tls_dir=runtime.custom_tls_dir(env),
-                mock_job_flag=runtime.mock_job_flag(env),
                 mock_flag_dir=runtime.mock_flag_dir(env),
+                socket_path=runtime.socket_path(env),
                 web_uid=runtime.web_uid(env),
                 web_gid=runtime.web_gid(env),
             )
@@ -130,6 +133,10 @@ class Context:
             database.initialize()
             operation(database)
 
+        self.run_as_web_user(run, "the database operation as web user failed")
+
+    def run_as_web_user(self, run: Callable[[], None], failure: str) -> None:
+        """Führt run in einem Kindprozess als Web-Benutzer aus (ohne Gruppen)."""
         if os.geteuid() == self.web_uid:
             run()
             return
@@ -150,7 +157,39 @@ class Context:
                 os._exit(code)
         _, status = os.waitpid(pid, 0)
         if os.waitstatus_to_exitcode(status) != 0:
-            raise CliError("the database operation as web user failed")
+            raise CliError(failure)
+
+    def worker_status(self) -> StatusSnapshot:
+        """get_status vom Worker; der Worker nimmt nur den Web-Benutzer an (SO_PEERCRED).
+
+        Der Kindprozess schreibt den Status in eine Pipe; ein Thread liest sie, solange er
+        läuft, damit ein großer Status den Kindprozess nicht am vollen Puffer anhält.
+        """
+        read_fd, write_fd = os.pipe()
+        chunks: list[bytes] = []
+
+        def drain() -> None:
+            with os.fdopen(read_fd, "rb") as handle:
+                chunks.append(handle.read())
+
+        def run() -> None:
+            snapshot = asyncio.run(WorkerClient(self.socket_path).get_status())
+            with os.fdopen(os.dup(write_fd), "wb") as handle:
+                handle.write(snapshot.model_dump_json().encode("utf-8"))
+
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        try:
+            self.run_as_web_user(run, "Cannot read the status of the worker; is TwinRaid running?")
+        except WorkerUnavailableError, WorkerCommandError:
+            raise CliError("Cannot read the status of the worker; is TwinRaid running?") from None
+        finally:
+            os.close(write_fd)
+            reader.join()
+        try:
+            return StatusSnapshot.model_validate_json(b"".join(chunks))
+        except ValueError:
+            raise CliError("The worker sent an invalid status.") from None
 
 
 def _audit(context: Context, action: AuditAction) -> None:
@@ -271,18 +310,6 @@ def cmd_renew_cert(context: Context, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_mock_job(context: Context, args: argparse.Namespace) -> int:
-    _require_mock(context, "mock-job")
-    running = args.state == "on"
-    try:
-        MockJobSwitch(context.mock_job_flag).set_running(running)
-    except OSError as exc:
-        raise CliError(f"Cannot switch the simulated copy job: {exc}") from None
-    state = "running" if running else "stopped"
-    say(f"Simulated copy job is now {state}. The dashboard shows it within a few seconds.")
-    return 0
-
-
 def _require_mock(context: Context, command: str) -> None:
     if context.mode is not RunMode.MOCK:
         raise CliError(f"{command} only works in simulation mode (TWINRAID_MODE=mock).")
@@ -333,7 +360,7 @@ _SSH_DIAGNOSIS: dict[ActionOutcome, str] = {
         "SSH does not answer. Enable it on the server: Settings → Management Access → Use SSH."
     ),
     ActionOutcome.SSH_DENIED: (
-        "guard.sh rejected the test. Copy host-scripts/guard.sh (version 2) to the server "
+        "guard.sh rejected the test. Copy host-scripts/guard.sh (version 3) to the server "
         "again; version 1 does not know the mode 'status'."
     ),
     ActionOutcome.REMOTE_FAILED: (
@@ -391,7 +418,7 @@ def cmd_init_ssh_keys(context: Context, args: argparse.Namespace) -> int:
     say("")
     if args.key is None and GuardKey.POWER not in keys:
         say("The key 'power' is only needed when actions.vm or actions.shutdown is enabled.")
-    say("Then store host-scripts/guard.sh (version 2) as /boot/config/twinraid/guard.sh,")
+    say("Then store host-scripts/guard.sh (version 3) as /boot/config/twinraid/guard.sh,")
     say("write the UUID of the gaming VM to /boot/config/twinraid/power.conf as 'vm <UUID>'")
     say("and confirm the host key: twinraid-admin trust-host-key target")
     return 0
@@ -506,10 +533,22 @@ def cmd_show_action_log(context: Context, args: argparse.Namespace) -> int:
         return 0
     for entry in entries:
         via = f" (part of {entry['part_of']})" if "part_of" in entry else ""
+        why = f" ({entry['reason']})" if "reason" in entry else ""
         say(
             f"{entry.get('at', '?')}  {entry.get('id', '?')}  {entry.get('action', '?')}"
-            f"  {entry.get('trigger', '?')}{via}: {entry.get('result', '?')}"
+            f"  {entry.get('trigger', '?')}{via}: {entry.get('result', '?')}{why}"
         )
+    return 0
+
+
+def cmd_sync_check(context: Context, _args: argparse.Namespace) -> int:
+    """Drei Ebenen, Wächter, eigenes Dataset, Spiegel und ARC (Konzept 5.5); ändert nichts."""
+    if context.mode is not RunMode.REAL:
+        raise CliError("sync-check only works in real mode (TWINRAID_MODE=real).")
+    context.require_owner()
+    for line in sync_check_lines(context.worker_status()):
+        say(line)
+    _audit(context, AuditAction.CLI_SYNC_CHECK)
     return 0
 
 
@@ -563,11 +602,9 @@ def build_parser() -> argparse.ArgumentParser:
     action_log = commands.add_parser("show-action-log", help="show the action log of the worker")
     action_log.add_argument("--lines", type=int, default=50, help="number of entries (default 50)")
     action_log.set_defaults(handler=cmd_show_action_log)
-    mock_job = commands.add_parser(
-        "mock-job", help="switch the simulated copy job (simulation mode only)"
-    )
-    mock_job.add_argument("state", choices=["on", "off"])
-    mock_job.set_defaults(handler=cmd_mock_job)
+    commands.add_parser(
+        "sync-check", help="show shares, source guard and mirrors (real mode, read only)"
+    ).set_defaults(handler=cmd_sync_check)
     mock_tour = commands.add_parser(
         "mock-tour", help="cycle through all states and reasons (simulation mode only)"
     )

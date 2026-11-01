@@ -20,6 +20,7 @@ from twinraid.config import TwinRaidConfig
 from twinraid.integrations.control import ActionControl, ActionError
 from twinraid.integrations.jobs import JobState
 from twinraid.shared.actions import (
+    SYNC_ACTIONS,
     ActionBlocker,
     ActionGroup,
     ActionName,
@@ -98,6 +99,14 @@ class StatusSource(Protocol):
     async def check_once(self) -> ResourceStatus: ...
 
 
+class SyncActions(Protocol):
+    """Probelauf und Sync (sync/coordinator.py, ab v0.5.1): eigene Ressource „Sync“."""
+
+    def blocker(self, name: ActionName, status: ResourceStatus) -> ActionBlocker | None: ...
+
+    async def request(self, name: ActionName) -> ActionBlocker | None: ...
+
+
 @dataclass
 class _Run:
     id: str
@@ -149,6 +158,11 @@ class ActionCoordinator:
         # Ende des Angebots „Erzwingen und danach Server herunterfahren“; nur im Speicher.
         self._forced_shutdown_until: datetime | None = None
         self._tasks: set[asyncio.Task[None]] = set()
+        # Probelauf und Sync (ab v0.5.1); ohne ihn sind die Sync-Aktionen nicht verfügbar.
+        self._sync: SyncActions | None = None
+
+    def attach_sync(self, sync: SyncActions) -> None:
+        self._sync = sync
 
     # --- Freischaltung und Verfügbarkeit ---
 
@@ -196,6 +210,13 @@ class ActionCoordinator:
         return {name: self._blocker(name, status) for name in ActionName}
 
     def _blocker(self, name: ActionName, status: ResourceStatus) -> ActionBlocker | None:
+        if name in SYNC_ACTIONS:
+            if self._sync is None:
+                return ActionBlocker.NOT_ENABLED
+            return self._sync.blocker(name, status)
+        return self._target_vm_blocker(name, status)
+
+    def _target_vm_blocker(self, name: ActionName, status: ResourceStatus) -> ActionBlocker | None:
         target, vm = status.target.state, status.vm
         on, off = ResourceState.ONLINE, ResourceState.OFFLINE
         vm_unknown = vm.state is ResourceState.UNKNOWN
@@ -255,6 +276,8 @@ class ActionCoordinator:
                     (self.forced_shutdown_until(status) is None, ActionBlocker.NOT_OFFERED),
                     *other_vms,
                 ]
+            case ActionName.SYNC_DRY_RUN | ActionName.SYNC_START:  # pragma: no cover
+                checks = []  # über self._sync, siehe _blocker
             case ActionName.VM_STOP | ActionName.VM_FORCE_STOP:
                 force = name is ActionName.VM_FORCE_STOP
                 available_at = self.force_available_at()
@@ -341,6 +364,10 @@ class ActionCoordinator:
         blocker = self.availability(self._status.current())[name]
         if blocker is not None:
             return blocker
+        if name in SYNC_ACTIONS:
+            if self._sync is None:  # pragma: no cover - availability lehnt dann schon ab
+                return ActionBlocker.NOT_ENABLED
+            return await self._sync.request(name)
         # Jede neue Aktion beendet das Angebot; die erzwungene Variante verbraucht es.
         self._forced_shutdown_until = None
         resources = _RESOURCES[name]
@@ -351,6 +378,67 @@ class ActionCoordinator:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return None
+
+    # --- Für den Probelauf (sync/coordinator.py) ---
+
+    def wake_enabled(self) -> bool:
+        return self.enabled(ActionGroup.WAKE)
+
+    def target_busy(self) -> bool:
+        return Resource.TARGET in self._running
+
+    def running_step(self, run_id: str) -> ActionStep | None:
+        """Schritt eines Teilschritts, den ein Probelauf über wake_for belegt."""
+        run = self._running.get(Resource.TARGET)
+        return run.step if run is not None and run.id == run_id else None
+
+    def reserve_target(self, run_id: str, part_of: ActionName) -> bool:
+        """Belegt Groß für das Wecken durch einen Probelauf (Konzept 4.2).
+
+        Synchron, noch beim Annehmen des Befehls: Zwischen Annahme und Wecken kann so
+        keine andere Aktion Groß belegen. False, wenn Groß schon belegt ist.
+        """
+        if Resource.TARGET in self._running:
+            return False
+        self._running[Resource.TARGET] = _Run(
+            run_id, part_of, self._clock(), ActionStep.WAKING, held=frozenset()
+        )
+        return True
+
+    def release_target(self, run_id: str) -> None:
+        """Gibt eine Belegung frei, die nicht bis zum Wecken kam (etwa nach einem Abbruch)."""
+        run = self._running.get(Resource.TARGET)
+        if run is not None and run.id == run_id:
+            del self._running[Resource.TARGET]
+
+    async def wake_for(self, run_id: str, part_of: ActionName) -> None:
+        """Weckt Groß als Teil eines Probelaufs; Groß ist mit reserve_target belegt.
+
+        Wie „Groß wecken“, mit eigenem Eintrag im Aktionslog (Teilschritt wake_target).
+        Wirft ActionError; ein Abbruch steht als cancelled im Aktionslog.
+        """
+        run = self._running.get(Resource.TARGET)
+        if run is None or run.id != run_id:
+            raise ActionError(ActionOutcome.INTERNAL_ERROR)
+        self._log.record(run_id, ActionName.WAKE_TARGET, Trigger.AUTOMATIC, STARTED, part_of)
+        outcome = ActionOutcome.SUCCESS
+        try:
+            await self._wake(run)
+        except ActionError as failure:
+            outcome = failure.outcome
+            raise
+        except asyncio.CancelledError:
+            outcome = ActionOutcome.CANCELLED
+            raise
+        except Exception:
+            outcome = ActionOutcome.INTERNAL_ERROR
+            raise
+        finally:
+            self._log.record(run_id, ActionName.WAKE_TARGET, Trigger.AUTOMATIC, outcome, part_of)
+            with contextlib.suppress(Exception):
+                await self._status.check_once()
+            if self._running.get(Resource.TARGET) is run:
+                del self._running[Resource.TARGET]
 
     async def close(self) -> None:
         """Beendet laufende Aktionen (Worker stoppt); sie stehen als interrupted im Log."""

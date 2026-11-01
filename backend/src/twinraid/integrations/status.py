@@ -17,6 +17,7 @@ from twinraid.shared.status import (
     ResourceStatus,
     StatusNotice,
     StatusReason,
+    TargetZfs,
 )
 
 
@@ -67,19 +68,23 @@ def server_status(reachable: bool) -> ResourceInfo:
 
 def vm_status(
     view: WatchView, expected_name: str | None
-) -> tuple[ResourceInfo, tuple[str, ...] | None, tuple[StatusNotice, ...]]:
-    """VM, weitere laufende VMs und Hinweise aus dem Stand der Sitzung (Groß ist online)."""
+) -> tuple[ResourceInfo, tuple[str, ...] | None, tuple[StatusNotice, ...], TargetZfs | None]:
+    """VM, weitere laufende VMs, Hinweise und ARC aus dem Stand der Sitzung (Groß ist online)."""
     report = view.report
     if report is None:
-        return ResourceInfo(state=ResourceState.UNKNOWN, reason=view.reason), None, ()
+        return ResourceInfo(state=ResourceState.UNKNOWN, reason=view.reason), None, (), None
     notices: list[StatusNotice] = []
     if report.connect_plugin:
         notices.append(StatusNotice.TARGET_CONNECT_PLUGIN)
     if report.flash_backup == "active":
         notices.append(StatusNotice.TARGET_FLASH_BACKUP)
+    # Keine Grenze des ZFS-Caches in Unraid eingetragen (Konzept 3.5, „Grenze des ARC“).
+    if report.arc_max == 0:
+        notices.append(StatusNotice.TARGET_ARC_UNLIMITED)
     if expected_name is not None and report.name is not None and report.name != expected_name:
         notices.append(StatusNotice.VM_NAME_MISMATCH)
-    return map_vm_state(report.vm), report.others, tuple(notices)
+    zfs = TargetZfs(arc_max=report.arc_max, c_max=report.c_max)
+    return map_vm_state(report.vm), report.others, tuple(notices), zfs
 
 
 def _utc_now() -> datetime:
@@ -106,9 +111,10 @@ class RealStatusProvider:
         target_up = await self._tcp_check(str(target.host), target.webgui.effective_port)
         self._watch.set_target_online(target_up)
         retry = None
+        zfs = None
         if target_up:
             view = self._watch.view()
-            vm, others, notices = vm_status(view, self._config.gaming_vm.unraid_vm_name)
+            vm, others, notices, zfs = vm_status(view, self._config.gaming_vm.unraid_vm_name)
             # Wann die Sitzung den nächsten Versuch macht (Konzept 3.5, ab v0.4.4).
             retry = view.retry
         else:
@@ -121,4 +127,5 @@ class RealStatusProvider:
             other_vms_running=others,
             notices=notices,
             watch_retry=retry,
+            target_zfs=zfs,
         )

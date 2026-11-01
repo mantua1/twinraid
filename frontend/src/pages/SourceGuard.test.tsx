@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import type { GuardDetails, SourceGuardStatus, StatusSnapshot } from "@/api/types";
 import {
+  dataset,
   GUARD_ACTIVE,
   GUARD_DETAILS,
   installFakeApi,
@@ -40,12 +41,15 @@ function guardState(source: HTMLElement) {
 }
 
 describe("tile Klein", () => {
-  it("shows an active guard with heartbeat and allowed containers", async () => {
+  it("shows an active guard with its allowed containers", async () => {
     const { source } = await openDashboard();
     const state = guardState(source);
     expect(state).toHaveAttribute("data-state", "active");
-    expect(state).toHaveTextContent(
-      "Wächter: aktiv · Herzschlag vor 4 s · 1 Container freigegeben",
+    expect(state).toHaveTextContent("Wächter: aktiv · 1 Container freigegeben");
+    // Kein laufendes Alter des Herzschlags in der Kachel (D1); es steht in den Einstellungen.
+    expect(state).not.toHaveTextContent("Herzschlag");
+    expect(within(source).getByTestId("guard-active-hint")).toHaveTextContent(
+      "Status wird alle 5 s geprüft.",
     );
     expect(state).not.toHaveClass("text-destructive");
     expect(within(source).getByTestId("guard-zfs")).toHaveTextContent(
@@ -169,11 +173,11 @@ describe("tile Klein", () => {
         zfs: {
           ...zfs,
           datasets: [
-            { name: "eins", present: true, referenced: GIB, compression: "on" },
-            { name: "zwei", present: true, referenced: GIB, compression: "lz4" },
-            { name: "drei", present: true, referenced: GIB, compression: "zstd" },
-            { name: "vier", present: true, referenced: GIB, compression: "off" },
-            { name: "fuenf", present: false, referenced: null, compression: null },
+            dataset("eins", true, { referenced: GIB, compression: "on" }),
+            dataset("zwei", true, { referenced: GIB, compression: "lz4" }),
+            dataset("drei", true, { referenced: GIB, compression: "zstd" }),
+            dataset("vier", true, { referenced: GIB, compression: "off" }),
+            dataset("fuenf", false),
           ],
         },
       }),
@@ -200,7 +204,7 @@ describe("tile Klein", () => {
             ...zfs,
             datasets: [
               ...zfs.datasets,
-              { name: "appdata", present: true, referenced: GIB, compression: "on" },
+              dataset("appdata", true, { referenced: GIB, compression: "on" }),
             ],
             self_dataset: "missing",
           },
@@ -219,7 +223,7 @@ describe("tile Klein", () => {
           state: "unavailable",
           pool_used: null,
           pool_available: null,
-          datasets: [{ name: "twinraidtest", present: null, referenced: null, compression: null }],
+          datasets: [dataset("twinraidtest", null)],
           self_dataset: "unknown",
         },
       }),
@@ -258,7 +262,7 @@ describe("tile Klein", () => {
     const { user, source } = await openDashboard();
     await user.click(screen.getByRole("button", { name: "Englisch" }));
     expect(guardState(source)).toHaveTextContent(
-      "Guard: active · heartbeat 4 s ago · 1 container allowed",
+      "Guard: active · 1 container allowedStatus is checked every 5 s.",
     );
   });
 });
@@ -303,7 +307,49 @@ describe("settings", () => {
       "mainpool/twinraidtest: 2 GiB · Kompression on",
     );
     expect(within(card).getByTestId("guard-rejected")).toHaveTextContent("3");
-    expect(card).toHaveTextContent("nicht eingetragen (erst ab v0.5.1 nötig)");
+    expect(card).toHaveTextContent("nicht eingetragen (target_host in source-guard.conf)");
+    // Das genaue Alter des Herzschlags steht nur hier (D1).
+    expect(within(card).getByTestId("guard-heartbeat")).toHaveTextContent("vor 4 Sekunden");
+    expect(within(card).getByTestId("guard-key")).toHaveTextContent(
+      "fehlt (source-guard.sh init-key)",
+    );
+    expect(within(card).getByTestId("guard-known-host")).toHaveTextContent(
+      "nicht bestätigt (source-guard.sh trust-target)",
+    );
+  });
+
+  it("lists snapshots, base and bookmark per dataset", async () => {
+    const { user } = await openDashboard({
+      status: withDetails({
+        target_configured: true,
+        target_key: true,
+        target_known_host: true,
+        zfs: {
+          ...GUARD_DETAILS.zfs,
+          datasets: [
+            dataset("twinraidtest", true, {
+              snapshots: 3,
+              oldest_snapshot_at: "2026-10-10T08:00:00Z",
+              base_created_at: "2026-10-12T08:00:00Z",
+              bookmark: true,
+            }),
+            dataset("neu", true, { snapshots: 0 }),
+          ],
+        },
+      }),
+    });
+    await user.click(screen.getByRole("button", { name: "Einstellungen" }));
+    const card = await screen.findByTestId("settings-source-guard");
+    const base = new Intl.DateTimeFormat("de", { dateStyle: "short", timeStyle: "medium" }).format(
+      new Date("2026-10-12T08:00:00Z"),
+    );
+    expect(within(card).getByTestId("guard-datasets")).toHaveTextContent(
+      `mainpool/twinraidtest: 2 GiB · Kompression on · 3 eigene Snapshots · Basis vom ${base} · mit Lesezeichen` +
+        "mainpool/neu: 2 GiB · Kompression on · 0 eigene Snapshots · noch keine Basis",
+    );
+    expect(card).toHaveTextContent("eingetragen (SSH-Port 22)");
+    expect(within(card).getByTestId("guard-key")).toHaveTextContent("vorhanden");
+    expect(within(card).getByTestId("guard-known-host")).toHaveTextContent("bestätigt");
   });
 
   it("explains a guard that is not set up", async () => {

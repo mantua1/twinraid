@@ -12,6 +12,9 @@ export interface PanelAction {
   variant?: "default" | "outline" | "destructive";
   // Kurzer Zusatz unter den Buttons, z. B. „gültig bis 20:45“.
   note?: string;
+  // Eigene Begründung für einzelne Gründe; sie wird immer genannt (z. B. beim Probelauf
+  // „Groß ist aus, und Wecken ist nicht freigeschaltet“ statt nur „der Server ist aus“).
+  blockerHints?: Partial<Record<ActionBlocker, string>>;
   confirm?: {
     title: string;
     description: string;
@@ -29,11 +32,12 @@ interface ActionPanelProps {
 }
 
 export interface BlockerValues {
+  source: string;
   target: string;
   vms: string;
 }
 
-const NO_VALUES: BlockerValues = { target: "", vms: "" };
+const NO_VALUES: BlockerValues = { source: "", target: "", vms: "" };
 
 /** Ein ganzer Satz endet mit Punkt; Teilsätze bekommen ihn hier. */
 function sentence(text: string): string {
@@ -49,6 +53,10 @@ const EXPLAINED = new Set<ActionBlocker>([
   "force_not_yet",
   "other_vms_running",
   "tour",
+  "source_guard_inactive",
+  "levels_mismatch",
+  "self_dataset_missing",
+  "next_version",
 ]);
 
 /** Buttons einer Kachel. Verfügbar ist nur, was der Worker als möglich meldet (Konzept 4.2). */
@@ -96,7 +104,14 @@ export function ActionPanel({
       });
   };
 
-  const hint = (blocker: ActionBlocker): string => {
+  const hint = (action: PanelAction, blocker: ActionBlocker): string | undefined => {
+    const own = action.blockerHints?.[blocker];
+    if (own !== undefined) {
+      return own;
+    }
+    if (!EXPLAINED.has(blocker)) {
+      return undefined;
+    }
     if (blocker === "force_not_yet" && snapshot?.force_available_at != null) {
       const time = new Intl.DateTimeFormat(i18n.resolvedLanguage, { timeStyle: "medium" }).format(
         new Date(snapshot.force_available_at),
@@ -111,8 +126,8 @@ export function ActionPanel({
   const hints = new Map<string, string[]>();
   for (const action of snapshot === null ? [] : actions) {
     const blocker = blockerOf(action.name);
-    if (blocker !== null && EXPLAINED.has(blocker)) {
-      const text = hint(blocker);
+    const text = blocker === null ? undefined : hint(action, blocker);
+    if (text !== undefined) {
       hints.set(text, [...(hints.get(text) ?? []), action.label]);
     }
   }

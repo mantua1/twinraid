@@ -9,13 +9,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 from twinraid.config import ConfigError, TwinRaidConfig, load_config
-from twinraid.integrations.factory import BackgroundTask, build_integrations, build_job_state
+from twinraid.integrations.factory import BackgroundTask, build_integrations
 from twinraid.integrations.wol import BroadcastError, WolTarget, resolve_wol_target
 from twinraid.shared import runtime
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.logs import configure_logging, warn_if_mock
 from twinraid.shared.mode import RunMode, RunModeError, resolve_run_mode
 from twinraid.shared.passwords import PasswordStore
+from twinraid.sync.coordinator import SyncCoordinator
 from twinraid.worker.action_log import ActionLog
 from twinraid.worker.actions import ActionCoordinator
 from twinraid.worker.handler import CommandHandler
@@ -59,18 +60,24 @@ def main() -> int:
     password_check = PasswordCheck(PasswordStore(paths.password_file))
     integrations = build_integrations(mode, config, paths, runtime.mock_flag_dir(env), wol)
     monitor = StatusMonitor(integrations.status, changes=integrations.status_changed)
-    jobs = build_job_state(mode, runtime.mock_job_flag(env))
+    action_log = ActionLog(paths.action_log)
+    # Probelauf (ab v0.5.1): eigene Ressource „Sync“; „Kopierjob läuft“ kommt von hier.
+    sync = SyncCoordinator(
+        integrations.guard_channel, integrations.source_guard, monitor, config, mode, action_log
+    )
     actions = ActionCoordinator(
         integrations.control,
         monitor,
-        jobs,
+        sync,
         config,
         mode,
-        ActionLog(paths.action_log),
+        action_log,
         tour_active=integrations.tour_active,
     )
+    actions.attach_sync(sync)
+    sync.attach(actions)
     handler = CommandHandler(
-        monitor, password_check, jobs, mode, actions, integrations.source_guard
+        monitor, password_check, sync, mode, actions, integrations.source_guard, sync
     )
     server = WorkerServer(runtime.socket_path(env), allowed_uid, handler)
     log_enabled_actions(actions, mode)
@@ -81,7 +88,8 @@ def main() -> int:
                 password_check,
                 monitor,
                 actions,
-                integrations.background,
+                sync,
+                (*integrations.background, sync.run),
                 integrations.retry_status_now,
             )
         )
@@ -138,6 +146,7 @@ async def _serve(
     password_check: PasswordCheck,
     monitor: StatusMonitor,
     actions: ActionCoordinator,
+    sync: SyncCoordinator,
     background: tuple[BackgroundTask, ...] = (),
     retry_status_now: Callable[[], None] = lambda: None,
 ) -> None:
@@ -168,6 +177,7 @@ async def _serve(
     try:
         await stop.wait()
     finally:
+        await sync.close()
         await actions.close()
         for task in tasks:
             task.cancel()

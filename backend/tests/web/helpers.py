@@ -18,6 +18,7 @@ from twinraid.shared.mode import RunMode
 from twinraid.shared.passwords import VerifyOutcome
 from twinraid.shared.source_guard import GuardState, SourceGuardStatus
 from twinraid.shared.status import UNKNOWN, StatusSnapshot
+from twinraid.shared.sync import SyncLevels, SyncStatus
 from twinraid.web.app import WebApp, WebSettings, create_app
 from twinraid.web.db import WebDatabase
 from twinraid.web.events import EventTimings
@@ -47,6 +48,9 @@ def unknown_status(password_set: bool = True, job_running: bool = False) -> Stat
         password_set=password_set,
         actions=ActionsSnapshot.blocked(ActionBlocker.TARGET_UNKNOWN),
         source_guard=SourceGuardStatus(state=GuardState.NOT_MOUNTED),
+        sync=SyncStatus(
+            levels=SyncLevels(configured=(), source=None, target=None, target_checked_at=None)
+        ),
     )
 
 
@@ -68,6 +72,7 @@ class FakeWorker:
         # Antwort auf Aktionen: None nimmt an, sonst lehnt der Worker mit diesem Fehler ab.
         self.action_error: WorkerCommandError | None = None
         self.actions: list[ActionName] = []
+        self.cancelled: list[str] = []
 
     async def get_status(self) -> StatusSnapshot:
         self.calls.append("get_status")
@@ -100,6 +105,14 @@ class FakeWorker:
         if self.action_error is not None:
             raise self.action_error
         self.actions.append(action)
+
+    async def cancel_sync(self, job_id: str) -> None:
+        self.calls.append("sync_cancel")
+        if not self.available:
+            raise WorkerUnavailableError("down")
+        if self.action_error is not None:
+            raise self.action_error
+        self.cancelled.append(job_id)
 
 
 class FakeClock:

@@ -1,5 +1,5 @@
 #!/bin/bash
-# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 1 (Konzept 3.6).
+# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 2 (Konzept 3.6).
 #
 # Ablage auf Klein: /boot/config/twinraid/source-guard.sh, Konfiguration daneben in
 # source-guard.conf (Vorlage: host-scripts/source-guard.conf.example). Gestartet wird
@@ -17,9 +17,14 @@
 #
 #   source-guard.sh start | stop | restart | status | check-config | reset-run-interval
 #   source-guard.sh selftest <Container> | selftest-deadman <Container>
+#   source-guard.sh init-key [--new] | trust-target [--fingerprint SHA256:…]
 #
-# Version 1 (TwinRaid v0.5.0) kennt die Aufträge begin, stop, ping und finish.
-# snapshot, prepare, confirm, send und close lehnt sie mit not_supported ab.
+# Version 1 (TwinRaid v0.5.0) kannte die Aufträge begin, stop, ping und finish.
+# Version 2 (TwinRaid v0.5.1) nimmt dazu snapshot, prepare, confirm, send und close an:
+# ZFS-Snapshots der Datasets aus "dataset", Prüfen gegen die Basis und guard.sh auf Groß,
+# Senden mit zfs send über SSH mit dem Key „sync“. prepare und send laufen in einem
+# Kindprozess; der Status zeigt Job und Fortschritt (Konzept 3.6, „Job, Prüfen und
+# Senden“). Snapshots löscht nur der Wächter selbst nach seiner Regel, nie auf Auftrag.
 #
 # Ins Syslog (Kennung twinraid-source-guard) kommen nur feste Texte, Codes, Zahlen
 # und geprüfte Container-Namen, nie der Inhalt der Auftragsdatei.
@@ -28,8 +33,8 @@ export LC_ALL=C
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 
-readonly VERSION=1
-readonly PROTOCOL=1
+readonly VERSION=2
+readonly PROTOCOL=2
 readonly CONF=/boot/config/twinraid/source-guard.conf
 readonly BASE_DIR=/run/twinraid-source-guard
 # Andere Schreibweise desselben Ordners: auf Unraid ist /var/run ein Link auf /run.
@@ -42,6 +47,13 @@ readonly ZPOOL=/usr/sbin/zpool
 readonly LOGGER=/usr/bin/logger
 readonly MOUNT=/bin/mount
 readonly FINDMNT=/bin/findmnt
+readonly SSH=/usr/bin/ssh
+readonly SSH_KEYGEN=/usr/bin/ssh-keygen
+readonly SSH_KEYSCAN=/usr/bin/ssh-keyscan
+readonly IP=/sbin/ip
+# Key „sync“ und bestätigter Hostkey von Groß (Konzept 3.6, ab Version 2).
+readonly SYNC_KEY=/boot/config/twinraid/ssh-sync
+readonly KNOWN_HOSTS=/boot/config/twinraid/target-known-hosts
 # Laufzeit des Systems für alle Fristen (unabhängig von Sprüngen der Uhr).
 readonly UPTIME=/proc/uptime
 readonly POOL=mainpool
@@ -69,6 +81,24 @@ readonly LOG_INTERVAL=60
 readonly RESTART_DELAY=5
 readonly RESTART_LIMIT=10
 readonly RESTART_WINDOW=600
+# Snapshots und Job (ab Version 2), Zeiten in Sekunden nach Laufzeit: Mindestabstand zweier
+# Snapshots, Fristen für prepare, für das Warten danach und für eine Übertragung,
+# Aufbewahrung einmal täglich, Zeitlimit für guard.sh check.
+readonly SNAPSHOT_PREFIX=twinraid-
+readonly CREATED_BY=twinraid:created-by
+readonly HOLD_TAG=twinraid-base
+readonly SNAPSHOT_GAP=1800
+readonly SNAPSHOT_LIMIT=50
+readonly PREPARE_LIMIT=1800
+readonly CONFIRM_LIMIT=1800
+readonly SEND_LIMIT=43200
+readonly RETENTION_INTERVAL=86400
+readonly CHECK_TIMEOUT=60
+readonly DAY=86400
+# Gründe, mit denen guard.sh einen Empfang ablehnt (Konzept 3.7); jeder andere wird refused_other.
+readonly SEND_REFUSALS=(name-denied receive-busy mirror-root-missing receiver-id-in-use
+  target-exists delegation-mismatch props-mismatch props-not-applied clone-active space-low
+  too-soon received-properties mount-mismatch)
 
 readonly IN_DIR="${BASE_DIR}/in"
 readonly REQUEST="${IN_DIR}/request"
@@ -89,6 +119,8 @@ readonly INSTANCE_RE='^[0-9a-f]{16}$'
 readonly CODE_RE='^[a-z][a-z0-9_]{0,39}$'
 readonly COMPRESSION_RE='^[a-z0-9-]{1,20}$'
 readonly NUMBER_RE='^[0-9]{1,20}$'
+readonly GUID_RE='^[0-9]{1,20}$'
+readonly SNAPNAME_RE='^twinraid-[0-9]{8}T[0-9]{6}Z$'
 # Ein Auftrag: genau diese Form, mit Leerzeichen auf 255 Zeichen aufgefüllt, dann "\n".
 readonly ORDER_RE='^TRSG1 ([1-9][0-9]{0,8}) ((begin|ping|snapshot|finish|prepare|confirm|send|close)|stop ([A-Za-z0-9][A-Za-z0-9_.-]{0,127})) ([0-9a-f]{16}) *$'
 
@@ -972,6 +1004,8 @@ execute_order() {
       run_wait
       if ((RUN_OPEN)); then
         RESULT=run_open
+      elif job_is_open; then
+        RESULT=job_open
       elif ((WAIT > 0)); then
         RESULT=too_soon
       elif ! docker_check; then
@@ -1003,6 +1037,11 @@ execute_order() {
         RESULT=docker_unavailable
       fi
       ;;
+    snapshot) order_snapshot ;;
+    prepare) order_prepare ;;
+    confirm) order_confirm ;;
+    send) order_send ;;
+    close) order_close ;;
     *)
       RESULT=not_supported
       ;;
@@ -1108,6 +1147,12 @@ POOL_AVAILABLE=""
 DS_PRESENT=()
 DS_REFERENCED=()
 DS_COMPRESSION=()
+# Ab Version 2: eigene Snapshots (Anzahl, ältester), Basis mit Hold, eigenes Lesezeichen.
+DS_SNAPSHOTS=()
+DS_OLDEST=()
+DS_BASE_GUID=()
+DS_BASE_CREATED=()
+DS_BOOKMARK=()
 SELF_DATASET_STATE=unknown
 
 zfs_call() {
@@ -1189,6 +1234,11 @@ refresh_zfs() {
   DS_PRESENT=()
   DS_REFERENCED=()
   DS_COMPRESSION=()
+  DS_SNAPSHOTS=()
+  DS_OLDEST=()
+  DS_BASE_GUID=()
+  DS_BASE_CREATED=()
+  DS_BOOKMARK=()
   SELF_DATASET_STATE=unknown
   if [[ ! -x "${ZFS}" || ! -x "${ZPOOL}" ]]; then
     return 0
@@ -1209,12 +1259,30 @@ refresh_zfs() {
     DS_PRESENT+=(false)
     DS_REFERENCED+=("")
     DS_COMPRESSION+=("")
+    DS_SNAPSHOTS+=("")
+    DS_OLDEST+=("")
+    DS_BASE_GUID+=("")
+    DS_BASE_CREATED+=("")
+    DS_BOOKMARK+=("")
     if out="$(zfs_call "${ZFS}" list -H -p -o name,type,referenced,compression -- "${POOL}/${ds}" 2>/dev/null)"; then
       IFS=$'\t' read -r name type referenced compression <<<"${out}"
       if [[ "${name}" == "${POOL}/${ds}" && "${type}" == filesystem ]]; then
         DS_PRESENT[-1]=true
         DS_REFERENCED[-1]="${referenced}"
         DS_COMPRESSION[-1]="${compression}"
+        if own_snapshots "${POOL}/${ds}"; then
+          DS_SNAPSHOTS[-1]="${#OS_NAMES[@]}"
+          DS_OLDEST[-1]="${OS_CREATED[0]:-}"
+          find_held_base "${POOL}/${ds}"
+          DS_BASE_GUID[-1]="${BASE_GUID}"
+          DS_BASE_CREATED[-1]="${BASE_CREATED}"
+        fi
+        if own_bookmarks "${POOL}/${ds}"; then
+          DS_BOOKMARK[-1]=false
+          if ((${#OB_NAMES[@]} > 0)); then
+            DS_BOOKMARK[-1]=true
+          fi
+        fi
       fi
     fi
   done
@@ -1263,6 +1331,1219 @@ flash_backup_state() {
   } 2>/dev/null || FLASH_BACKUP=unknown
 }
 
+# --- Snapshots, Job und Senden (ab Version 2, Konzept 3.6) --------------------------------
+
+# Ein Job zur Zeit (Konzept 3.6, „Job, Prüfen und Senden“). Der Zustand liegt in
+# private/job; prepare und send bearbeiten ihn in einem Kindprozess, der ihn am Ende als
+# private/child/job zurückgibt. Werte je Dataset stehen in parallelen Listen (JD_*).
+JOB_ID=0
+JOB_STATE=""
+JOB_RESULT=""
+JOB_REASON=""
+JOB_SNAPSHOT=""
+JOB_CREATED=0
+# Frist in Laufzeit (UP); 0: keine.
+JOB_DEADLINE=0
+JOB_CONFIRMED=0
+JOB_SEND_READY=""
+JOB_CONFIRM_REASONS=()
+JOB_BLOCKERS=()
+readonly JD_FIELDS=(name mode base_guid base_type problem deleted modified added renamed
+  referenced base_referenced size sent result)
+JD_NAME=()
+JD_MODE=()
+JD_BASE_GUID=()
+JD_BASE_TYPE=()
+JD_PROBLEM=()
+JD_DELETED=()
+JD_MODIFIED=()
+JD_ADDED=()
+JD_RENAMED=()
+JD_REFERENCED=()
+JD_BASE_REFERENCED=()
+JD_SIZE=()
+JD_SENT=()
+JD_RESULT=()
+# Laufzeit beim letzten Snapshot dieses Systemstarts (Mindestabstand); 0: noch keiner.
+LAST_SNAPSHOT_UP=0
+# Letzte tägliche Aufbewahrung in Laufzeit.
+LAST_RETENTION_UP=0
+CHILD_PID=""
+RUN_LOCK=""
+
+# Zeichenregel je Feld eines Datasets im Job.
+jd_pattern() {
+  case "$1" in
+    name) PATTERN="${SHARE_RE}" ;;
+    mode) PATTERN='^(full|incremental)$' ;;
+    base_guid) PATTERN="${GUID_RE}" ;;
+    base_type) PATTERN='^(snapshot|bookmark)$' ;;
+    problem | result) PATTERN="${CODE_RE}" ;;
+    *) PATTERN='^(0|[1-9][0-9]{0,18})$' ;;
+  esac
+}
+
+job_is_open() {
+  case "${JOB_STATE}" in
+    snapshot | preparing | prepared | awaiting_confirm | sending) return 0 ;;
+  esac
+  return 1
+}
+
+clear_job() {
+  local field
+  JOB_ID=0
+  JOB_STATE=""
+  JOB_RESULT=""
+  JOB_REASON=""
+  JOB_SNAPSHOT=""
+  JOB_CREATED=0
+  JOB_DEADLINE=0
+  JOB_CONFIRMED=0
+  JOB_SEND_READY=""
+  JOB_CONFIRM_REASONS=()
+  JOB_BLOCKERS=()
+  for field in "${JD_FIELDS[@]}"; do
+    # shellcheck disable=SC2178 # Namensreferenz auf eine der Listen JD_*.
+    local -n jd_ref="JD_${field^^}"
+    jd_ref=()
+    unset -n jd_ref
+  done
+}
+
+# Schreibt den Job (Standard private/job); "-" steht für einen leeren Wert.
+save_job() {
+  local file="${1:-${PRIVATE_DIR}/job}" text i field value line
+  if ((JOB_ID == 0)); then
+    rm -f -- "${file}"
+    return 0
+  fi
+  text="id ${JOB_ID}"$'\n'"state ${JOB_STATE}"$'\n'"result ${JOB_RESULT:--}"$'\n'
+  text+="reason ${JOB_REASON:--}"$'\n'"snapshot ${JOB_SNAPSHOT}"$'\n'"created ${JOB_CREATED}"$'\n'
+  text+="deadline ${JOB_DEADLINE}"$'\n'"confirmed ${JOB_CONFIRMED}"$'\n'"send_ready ${JOB_SEND_READY:--}"$'\n'
+  text+="confirm_reasons ${JOB_CONFIRM_REASONS[*]:--}"$'\n'"blockers ${JOB_BLOCKERS[*]:--}"$'\n'
+  for i in "${!JD_NAME[@]}"; do
+    line="dataset"
+    for field in "${JD_FIELDS[@]}"; do
+      # shellcheck disable=SC2178 # Namensreferenz auf eine der Listen JD_*.
+      local -n jd_ref="JD_${field^^}"
+      value="${jd_ref[i]:-}"
+      unset -n jd_ref
+      line+=" ${value:--}"
+    done
+    text+="${line}"$'\n'
+  done
+  write_atomic "${file}" "${text}" 0600
+}
+
+# Liest einen Job und prüft jeden Wert. Rückgabe 1, wenn die Datei fehlt oder ungültig ist
+# (dann ist kein Job geladen).
+load_job_from() {
+  local file="$1" key rest value i field code
+  local -a values=() words=()
+  clear_job
+  if [[ ! -f "${file}" || -L "${file}" ]]; then
+    return 1
+  fi
+  while read -r key rest; do
+    case "${key}" in
+      id) [[ "${rest}" =~ ^[1-9][0-9]{0,8}$ ]] && JOB_ID="${rest}" ;;
+      state)
+        case "${rest}" in
+          snapshot | preparing | prepared | awaiting_confirm | sending | done | failed | closed)
+            JOB_STATE="${rest}"
+            ;;
+        esac
+        ;;
+      result | reason)
+        value=""
+        if [[ "${rest}" != - ]]; then
+          [[ "${rest}" =~ ${CODE_RE} ]] || { clear_job && return 1; }
+          value="${rest}"
+        fi
+        if [[ "${key}" == result ]]; then JOB_RESULT="${value}"; else JOB_REASON="${value}"; fi
+        ;;
+      snapshot) [[ "${rest}" =~ ${SNAPNAME_RE} ]] && JOB_SNAPSHOT="${rest}" ;;
+      created) [[ "${rest}" =~ ^[0-9]{1,12}$ ]] && JOB_CREATED="${rest}" ;;
+      deadline) [[ "${rest}" =~ ^[0-9]{1,12}$ ]] && JOB_DEADLINE="${rest}" ;;
+      confirmed) [[ "${rest}" =~ ^[01]$ ]] && JOB_CONFIRMED="${rest}" ;;
+      send_ready)
+        case "${rest}" in
+          true | false) JOB_SEND_READY="${rest}" ;;
+          -) JOB_SEND_READY="" ;;
+        esac
+        ;;
+      confirm_reasons | blockers)
+        read -r -a words <<<"${rest}"
+        values=()
+        for code in "${words[@]}"; do
+          [[ "${code}" == - ]] && continue
+          [[ "${code}" =~ ${CODE_RE} ]] || { clear_job && return 1; }
+          values+=("${code}")
+        done
+        if [[ "${key}" == blockers ]]; then
+          JOB_BLOCKERS=("${values[@]+"${values[@]}"}")
+        else
+          JOB_CONFIRM_REASONS=("${values[@]+"${values[@]}"}")
+        fi
+        ;;
+      dataset)
+        read -r -a words <<<"${rest}"
+        if ((${#words[@]} != ${#JD_FIELDS[@]})); then
+          clear_job
+          return 1
+        fi
+        i="${#JD_NAME[@]}"
+        for field in "${!JD_FIELDS[@]}"; do
+          value="${words[field]}"
+          [[ "${value}" == - ]] && value=""
+          jd_pattern "${JD_FIELDS[field]}"
+          if [[ -n "${value}" && ! "${value}" =~ ${PATTERN} ]] ||
+            [[ "${JD_FIELDS[field]}" == name && -z "${value}" ]]; then
+            clear_job
+            return 1
+          fi
+          # shellcheck disable=SC2178 # Namensreferenz auf eine der Listen JD_*.
+          local -n jd_ref="JD_${JD_FIELDS[field]^^}"
+          jd_ref[i]="${value}"
+          unset -n jd_ref
+        done
+        ;;
+    esac
+  done <"${file}"
+  if ((JOB_ID == 0)) || [[ -z "${JOB_STATE}" || -z "${JOB_SNAPSHOT}" ]]; then
+    clear_job
+    return 1
+  fi
+}
+
+add_unique() {
+  local -n target="$1"
+  if ! in_list "$2" "${target[@]+"${target[@]}"}"; then
+    target+=("$2")
+  fi
+}
+
+# Ist der Pool da? (Für Aufträge; refresh_zfs prüft nur alle ZFS_INTERVAL Sekunden.)
+zfs_ready() {
+  local out
+  [[ -x "${ZFS}" && -x "${ZPOOL}" ]] || return 1
+  out="$(zfs_call "${ZPOOL}" list -H -o name -- "${POOL}" 2>/dev/null)" || return 1
+  [[ "${out}" == "${POOL}" ]]
+}
+
+# Eigene Snapshots eines Datasets (Name twinraid-…, twinraid:created-by=source-guard mit
+# Quelle local), nach dem Entstehen sortiert. Setzt OS_NAMES (Teil nach "@"), OS_GUIDS,
+# OS_CREATED und OS_HOLDS (Anzahl Holds). Rückgabe 1, wenn nicht lesbar.
+own_snapshots() {
+  local ds="$1" out name property value source line
+  local -A own=() guid=() created=() holds=() txg=()
+  OS_NAMES=()
+  OS_GUIDS=()
+  OS_CREATED=()
+  OS_HOLDS=()
+  out="$(zfs_call "${ZFS}" get -H -p -r -t snapshot -o name,property,value,source \
+    -- "${CREATED_BY},guid,creation,userrefs,createtxg" "${ds}" 2>/dev/null)" || return 1
+  while IFS=$'\t' read -r name property value source; do
+    if [[ "${name}" != "${ds}@"* || ! "${name#"${ds}@"}" =~ ${SNAPNAME_RE} ]]; then
+      continue
+    fi
+    case "${property}" in
+      "${CREATED_BY}") [[ "${value}" == source-guard && "${source}" == local ]] && own["${name}"]=1 ;;
+      guid) [[ "${value}" =~ ${GUID_RE} ]] && guid["${name}"]="${value}" ;;
+      creation) [[ "${value}" =~ ^[0-9]{1,12}$ ]] && created["${name}"]="${value}" ;;
+      userrefs) [[ "${value}" =~ ^[0-9]{1,9}$ ]] && holds["${name}"]="${value}" ;;
+      createtxg) [[ "${value}" =~ ^[0-9]{1,19}$ ]] && txg["${name}"]="${value}" ;;
+    esac
+  done <<<"${out}"
+  while IFS=$'\t' read -r value name; do
+    [[ -n "${name}" ]] || continue
+    if [[ -z "${guid[${name}]:-}" || -z "${created[${name}]:-}" || -z "${holds[${name}]:-}" ]]; then
+      continue
+    fi
+    OS_NAMES+=("${name#"${ds}@"}")
+    OS_GUIDS+=("${guid[${name}]}")
+    OS_CREATED+=("${created[${name}]}")
+    OS_HOLDS+=("${holds[${name}]}")
+  done < <(for line in "${!own[@]}"; do
+    printf '%s\t%s\n' "${txg[${line}]:-0}" "${line}"
+  done | sort -n)
+}
+
+# Eigene Lesezeichen (#twinraid-…). Setzt OB_NAMES (Teil nach "#") und OB_GUIDS.
+own_bookmarks() {
+  local ds="$1" out name guid txg
+  OB_NAMES=()
+  OB_GUIDS=()
+  out="$(zfs_call "${ZFS}" list -H -p -d 1 -t bookmark -o name,guid,createtxg -s createtxg \
+    -- "${ds}" 2>/dev/null)" || return 1
+  while IFS=$'\t' read -r name guid txg; do
+    if [[ "${name}" == "${ds}#"* && "${name#"${ds}#"}" =~ ${SNAPNAME_RE} && "${guid}" =~ ${GUID_RE} ]]; then
+      OB_NAMES+=("${name#"${ds}#"}")
+      OB_GUIDS+=("${guid}")
+    fi
+  done <<<"${out}"
+}
+
+# Die Basis: der eigene Snapshot mit dem Hold twinraid-base (der neueste, falls mehrere).
+# Setzt BASE_GUID und BASE_CREATED (leer, wenn es keine gibt). Nach own_snapshots.
+find_held_base() {
+  local ds="$1" i out name tag
+  BASE_GUID=""
+  BASE_CREATED=""
+  for ((i = ${#OS_NAMES[@]} - 1; i >= 0; i--)); do
+    if ((OS_HOLDS[i] == 0)); then
+      continue
+    fi
+    out="$(zfs_call "${ZFS}" holds -H -- "${ds}@${OS_NAMES[i]}" 2>/dev/null)" || continue
+    while IFS=$'\t' read -r name tag _; do
+      if [[ "${name}" == "${ds}@${OS_NAMES[i]}" && "${tag}" == "${HOLD_TAG}" ]]; then
+        BASE_GUID="${OS_GUIDS[i]}"
+        BASE_CREATED="${OS_CREATED[i]}"
+        return 0
+      fi
+    done <<<"${out}"
+  done
+}
+
+# --- SSH zu guard.sh auf Groß --------------------------------------------------------------
+
+# Den Key „sync“ nach private/ kopieren (tmpfs, 0600): ssh lehnt Keys mit zu weiten Rechten
+# ab, und /boot speichert als FAT keine Dateirechte. Rückgabe 1, wenn er fehlt.
+ssh_key_ready() {
+  if [[ ! -f "${SYNC_KEY}" || -L "${SYNC_KEY}" ]]; then
+    return 1
+  fi
+  install -m 0600 -- "${SYNC_KEY}" "${PRIVATE_DIR}/ssh-sync" 2>/dev/null
+}
+
+# Feste Argumentliste (Konzept 3.6, „SSH“). Setzt SSH_ARGS; die Anfrage folgt dahinter.
+ssh_args() {
+  SSH_ARGS=(-F /dev/null -i "${PRIVATE_DIR}/ssh-sync" -o BatchMode=yes -o IdentitiesOnly=yes
+    -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=${KNOWN_HOSTS}"
+    -o GlobalKnownHostsFile=/dev/null -o HostKeyAlgorithms=ssh-ed25519 -o ConnectTimeout=5
+    -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -p "${TARGET_PORT}" -l root
+    -- "${TARGET_HOST}")
+}
+
+# Ordnet einen gescheiterten Aufruf nach Exit-Code und festen Meldungen von OpenSSH (LC_ALL=C)
+# einem Code zu; die Meldungen selbst gehen nirgends hin. Setzt SSH_CODE.
+ssh_failure() {
+  local rc="$1" err="$2"
+  SSH_CODE=ssh_failed
+  if ((rc == 255)); then
+    case "${err}" in
+      *"REMOTE HOST IDENTIFICATION HAS CHANGED"*) SSH_CODE=host_key_mismatch ;;
+      *"Host key verification failed"* | *"No ED25519 host key is known"*) SSH_CODE=host_untrusted ;;
+      *"Permission denied"*) SSH_CODE=auth_failed ;;
+      *"Connection refused"* | *"timed out"* | *"No route to host"* | *"Network is unreachable"* | *"Could not resolve"*)
+        SSH_CODE=unreachable
+        ;;
+    esac
+  elif ((rc == 2)) && [[ "${err}" == *"twinraid-guard: denied"* ]]; then
+    SSH_CODE=denied
+  elif ((rc == 124 || rc == 137)); then
+    SSH_CODE=unreachable
+  fi
+}
+
+# Zeilen von guard.sh sync check (Konzept 3.7), streng.
+readonly CHECK_FIRST_RE='^twinraid-guard ([0-9]{1,4}) sync ok$'
+readonly CHECK_MIRROR_RE='^mirror ([A-Za-z0-9][A-Za-z0-9._-]{0,63}) state=(absent|mirror|foreign) props=(ok|mismatch|-) count=([0-9]{1,9}|-|\?) newest_guid=([0-9]{1,20}|-|\?) newest_created=([0-9]{1,12}|-|\?) newest_received=([0-9]{1,12}|-|\?) oldest_created=([0-9]{1,12}|-|\?)$'
+readonly CHECK_SUMMARY_RE='^summary root=(ok|missing) conf=(ok|missing|invalid) deleg=(ok|mismatch|id-in-use) receive=(idle|busy) clones=([0-9]{1,9}|\?) available=([0-9]{1,19}|\?) size=([0-9]{1,19}|\?) reserve_percent=([0-9]{1,2}|-) keep_days=([0-9]{1,4}|-) min_interval_minutes=([0-9]{1,4}|-)$'
+CHECK_AT=0
+CHECK_RESULT=""
+CHECK_LINES=()
+
+# Prüft die Antwort von check; Rückgabe 1 bei einer Zeile außerhalb des Formats.
+check_lines_valid() {
+  local line count=0 summary=0
+  ((${#CHECK_LINES[@]} >= 2)) || return 1
+  [[ "${CHECK_LINES[0]}" =~ ${CHECK_FIRST_RE} ]] && ((10#${BASH_REMATCH[1]} >= 3)) || return 1
+  for line in "${CHECK_LINES[@]:1}"; do
+    if ((summary)); then
+      return 1
+    fi
+    if [[ "${line}" =~ ${CHECK_MIRROR_RE} ]]; then
+      count=$((count + 1))
+      ((count <= 20)) || return 1
+    elif [[ "${line}" =~ ${CHECK_SUMMARY_RE} ]]; then
+      summary=1
+    else
+      return 1
+    fi
+  done
+  ((summary))
+}
+
+# guard.sh sync check über SSH. Setzt CHECK_AT, CHECK_RESULT (ok oder ein Code) und CHECK_LINES.
+guard_check() {
+  local out rc=0 err=""
+  now
+  CHECK_AT="${NOW}"
+  CHECK_LINES=()
+  CHECK_RESULT=""
+  if [[ -z "${TARGET_HOST}" ]]; then
+    CHECK_RESULT=target_not_configured
+  elif ! ssh_key_ready; then
+    CHECK_RESULT=key_missing
+  elif [[ ! -f "${KNOWN_HOSTS}" || -L "${KNOWN_HOSTS}" ]]; then
+    CHECK_RESULT=host_untrusted
+  fi
+  if [[ -n "${CHECK_RESULT}" ]]; then
+    return 1
+  fi
+  ssh_args
+  out="$(timeout --kill-after=5 "${CHECK_TIMEOUT}" "${SSH}" "${SSH_ARGS[@]}" check \
+    </dev/null 2>"${PRIVATE_DIR}/ssh.err" | head -c 65536)" || rc=$?
+  err="$(head -c 4096 -- "${PRIVATE_DIR}/ssh.err" 2>/dev/null)" || err=""
+  rm -f -- "${PRIVATE_DIR}/ssh.err"
+  if ((rc != 0)); then
+    ssh_failure "${rc}" "${err}"
+    CHECK_RESULT="${SSH_CODE}"
+    return 1
+  fi
+  mapfile -t CHECK_LINES <<<"${out}"
+  if ! check_lines_valid; then
+    CHECK_LINES=()
+    CHECK_RESULT=bad_answer
+    return 1
+  fi
+  CHECK_RESULT=ok
+}
+
+save_check() {
+  local file="${1:-${PRIVATE_DIR}/check}" text line
+  if [[ -z "${CHECK_RESULT}" ]]; then
+    rm -f -- "${file}"
+    return 0
+  fi
+  text="at ${CHECK_AT}"$'\n'"result ${CHECK_RESULT}"$'\n'
+  for line in "${CHECK_LINES[@]+"${CHECK_LINES[@]}"}"; do
+    text+="line ${line}"$'\n'
+  done
+  write_atomic "${file}" "${text}" 0600
+}
+
+load_check_from() {
+  local file="$1" key rest
+  CHECK_AT=0
+  CHECK_RESULT=""
+  CHECK_LINES=()
+  if [[ ! -f "${file}" || -L "${file}" ]]; then
+    return 1
+  fi
+  while IFS=' ' read -r key rest; do
+    case "${key}" in
+      at) [[ "${rest}" =~ ^[0-9]{1,12}$ ]] && CHECK_AT="${rest}" ;;
+      result) [[ "${rest}" =~ ${CODE_RE} ]] && CHECK_RESULT="${rest}" ;;
+      line) CHECK_LINES+=("${rest}") ;;
+    esac
+  done <"${file}"
+  if [[ "${CHECK_RESULT}" == ok ]] && ! check_lines_valid; then
+    CHECK_RESULT=bad_answer
+    CHECK_LINES=()
+  fi
+  [[ -n "${CHECK_RESULT}" ]]
+}
+
+# Zerlegt CHECK_LINES in M_* (je Spiegel) und S_* (summary).
+declare -A M_STATE=() M_PROPS=() M_GUID=()
+parse_check() {
+  local line
+  M_STATE=()
+  M_PROPS=()
+  M_GUID=()
+  S_ROOT=""
+  S_CONF=""
+  S_DELEG=""
+  S_RECEIVE=""
+  S_CLONES=""
+  S_AVAILABLE=""
+  S_SIZE=""
+  S_RESERVE=""
+  for line in "${CHECK_LINES[@]+"${CHECK_LINES[@]}"}"; do
+    if [[ "${line}" =~ ${CHECK_MIRROR_RE} ]]; then
+      M_STATE["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+      M_PROPS["${BASH_REMATCH[1]}"]="${BASH_REMATCH[3]}"
+      M_GUID["${BASH_REMATCH[1]}"]="${BASH_REMATCH[5]}"
+    elif [[ "${line}" =~ ${CHECK_SUMMARY_RE} ]]; then
+      S_ROOT="${BASH_REMATCH[1]}"
+      S_CONF="${BASH_REMATCH[2]}"
+      S_DELEG="${BASH_REMATCH[3]}"
+      S_RECEIVE="${BASH_REMATCH[4]}"
+      S_CLONES="${BASH_REMATCH[5]}"
+      S_AVAILABLE="${BASH_REMATCH[6]}"
+      S_SIZE="${BASH_REMATCH[7]}"
+      S_RESERVE="${BASH_REMATCH[8]}"
+    fi
+  done
+}
+
+# --- Kindprozess: prepare und send ---------------------------------------------------------
+
+# Läuft der Kindprozess noch? (Ein beendeter bleibt als Zombie, bis wait ihn abholt.)
+child_alive() {
+  local stat
+  [[ -n "${CHILD_PID}" ]] || return 1
+  stat="$(cat "/proc/${CHILD_PID}/stat" 2>/dev/null)" || return 1
+  stat="${stat##*) }"
+  [[ "${stat:0:1}" != Z ]]
+}
+
+# Startet "source-guard.sh child <Art> <PID des Wächters>" in einer eigenen Sitzung (setsid,
+# Sitzung = seine PID); die Sperre des Wächters erbt er nicht.
+start_child() {
+  local kind="$1"
+  rm -rf -- "${PRIVATE_DIR}/child"
+  mkdir -m 0700 -- "${PRIVATE_DIR}/child" || return 1
+  setsid /bin/bash "${SELF}" child "${kind}" "$$" {RUN_LOCK}>&- </dev/null >/dev/null 2>&1 &
+  CHILD_PID=$!
+  write_atomic "${PRIVATE_DIR}/child.pid" "${CHILD_PID}" 0600
+}
+
+# Signal an alle Prozesse der Sitzung des Kindprozesses (setsid; die Sitzung hat seine PID),
+# außer an den aufrufenden Prozess selbst. Eine Prozessgruppe genügt nicht: timeout legt
+# für zfs und ssh eigene Gruppen an. Die Sitzung steht in /proc/<PID>/stat im vierten Feld
+# nach dem Namen.
+signal_session() {
+  local signal="$1" session="$2" stat line pid
+  local -a fields=()
+  for stat in /proc/[0-9]*/stat; do
+    read -r line 2>/dev/null <"${stat}" || continue
+    read -r -a fields <<<"${line##*) }"
+    pid="${stat#/proc/}"
+    pid="${pid%/stat}"
+    if [[ "${fields[3]:-}" == "${session}" && "${pid}" != "${BASHPID}" ]]; then
+      kill "-${signal}" "${pid}" 2>/dev/null || true
+    fi
+  done
+}
+
+# Beendet den Kindprozess mit seiner ganzen Sitzung (etwa zfs send und ssh).
+stop_child() {
+  local i
+  if [[ -z "${CHILD_PID}" ]]; then
+    return 0
+  fi
+  signal_session TERM "${CHILD_PID}"
+  for ((i = 0; i < 50; i++)); do
+    child_alive || break
+    sleep 0.1
+  done
+  signal_session KILL "${CHILD_PID}"
+  wait "${CHILD_PID}" 2>/dev/null || true
+  CHILD_PID=""
+  rm -f -- "${PRIVATE_DIR}/child.pid"
+}
+
+# Ein Kindprozess aus einem früheren Lauf des Wächters (nur nach kill -9 möglich) wird mit
+# seiner Sitzung beendet. Als solcher gilt nur ein Prozess, dessen Befehlszeile genau so
+# lautet, wie start_child ihn startet: /bin/bash <dieses Skript> child <Art> <PID>. Lebt unter
+# der PID ein anderer Prozess (PID wiederverwendet), bleibt er unberührt; ist die PID frei,
+# gehören übrige Prozesse der Sitzung zum Kindprozess.
+stop_stale_child() {
+  local pid
+  local -a args=()
+  if [[ ! -f "${PRIVATE_DIR}/child.pid" ]]; then
+    return 0
+  fi
+  pid="$(<"${PRIVATE_DIR}/child.pid")"
+  if [[ "${pid}" =~ ^[0-9]{1,9}$ ]]; then
+    if [[ ! -e "/proc/${pid}" ]]; then
+      signal_session KILL "${pid}"
+    elif mapfile -d '' -t args 2>/dev/null <"/proc/${pid}/cmdline" && ((${#args[@]} == 5)) &&
+      [[ "${args[0]}" == /bin/bash && "${args[1]}" == "${SELF}" && "${args[2]}" == child &&
+        "${args[3]}" =~ ^(prepare|send)$ && "${args[4]}" =~ ^[0-9]{1,9}$ ]]; then
+      signal_session KILL "${pid}"
+    fi
+  fi
+  rm -f -- "${PRIVATE_DIR}/child.pid"
+}
+
+# Übernimmt das Ergebnis eines beendeten Kindprozesses.
+adopt_child() {
+  local id="${JOB_ID}" before="${JOB_STATE}" fallback=prepare_failed valid=1
+  if [[ "${before}" == sending ]]; then
+    fallback=send_failed
+  fi
+  if load_check_from "${PRIVATE_DIR}/child/check"; then
+    save_check
+  else
+    load_check_from "${PRIVATE_DIR}/check" || true
+  fi
+  if ! load_job_from "${PRIVATE_DIR}/child/job" || ((JOB_ID != id)); then
+    valid=0
+  elif [[ "${before}" == preparing ]]; then
+    case "${JOB_STATE}" in prepared | awaiting_confirm | failed) ;; *) valid=0 ;; esac
+  else
+    case "${JOB_STATE}" in done | failed) ;; *) valid=0 ;; esac
+  fi
+  if ((valid == 0)); then
+    load_job_from "${PRIVATE_DIR}/job" || true
+    JOB_STATE=failed
+    JOB_RESULT="${fallback}"
+  fi
+  now
+  case "${JOB_STATE}" in
+    prepared | awaiting_confirm) JOB_DEADLINE=$((UP + CONFIRM_LIMIT)) ;;
+    *) JOB_DEADLINE=0 ;;
+  esac
+  save_job
+  rm -rf -- "${PRIVATE_DIR}/child"
+  log "job ${JOB_ID}: ${JOB_STATE}${JOB_RESULT:+ (${JOB_RESULT}${JOB_REASON:+ ${JOB_REASON}})}"
+  STATUS_DIRTY=1
+}
+
+poll_child() {
+  if [[ -z "${CHILD_PID}" ]] || child_alive; then
+    return 0
+  fi
+  wait "${CHILD_PID}" 2>/dev/null || true
+  # Reste seiner Sitzung (zfs send, ssh) enden mit ihm, auch nach kill -9.
+  signal_session TERM "${CHILD_PID}"
+  CHILD_PID=""
+  rm -f -- "${PRIVATE_DIR}/child.pid"
+  adopt_child
+}
+
+# Fristen des Jobs (nach Laufzeit): Danach schließt der Wächter ihn selbst (job_timeout).
+check_job_deadline() {
+  if ! job_is_open || ((JOB_DEADLINE == 0)); then
+    return 0
+  fi
+  now
+  if ((UP >= JOB_DEADLINE)); then
+    stop_child
+    JOB_STATE=closed
+    JOB_RESULT=job_timeout
+    JOB_DEADLINE=0
+    save_job
+    log "job ${JOB_ID}: closed (job_timeout)"
+    STATUS_DIRTY=1
+  fi
+}
+
+# Endet der Wächter, endet auch ein Kindprozess; der Job gilt dann als gescheitert.
+interrupt_job() {
+  stop_child
+  case "${JOB_STATE}" in
+    preparing | sending)
+      JOB_STATE=failed
+      JOB_RESULT=interrupted
+      JOB_DEADLINE=0
+      save_job
+      log "job ${JOB_ID}: failed (interrupted)"
+      ;;
+  esac
+}
+
+# Der Kindprozess beendet sich selbst mit seiner Sitzung, wenn der Wächter fehlt.
+watch_parent() {
+  local parent="$1"
+  while kill -0 "${parent}" 2>/dev/null; do
+    sleep 1
+  done
+  signal_session TERM "$$"
+}
+
+# Liegen /config und /data von TwinRaid im eigenen Dataset (E18)? Nur dann wird appdata
+# gesendet; sonst lägen Secrets von TwinRaid im Strom. Prüft nur, wenn appdata im Job ist.
+self_dataset_ok() {
+  SELF_DATASET_STATE=unknown
+  in_list appdata "${JD_NAME[@]+"${JD_NAME[@]}"}" || return 0
+  docker_check || true
+  check_self_dataset
+  [[ "${SELF_DATASET_STATE}" == found ]]
+}
+
+# Zählt die Zeilen von zfs diff nach dem ersten Zeichen. Setzt DIFF_*.
+count_diff() {
+  local out
+  out="$("${ZFS}" diff -H -- "$1" "$2" | awk -F'\t' '
+    { n[$1]++ }
+    END { printf "%d %d %d %d\n", n["-"], n["M"], n["+"], n["R"] }')" || return 1
+  read -r DIFF_DELETED DIFF_MODIFIED DIFF_ADDED DIFF_RENAMED <<<"${out}"
+}
+
+# Größe aus zfs send -nvP (Zeile "size<TAB><Byte>"): estimate_size <neu> [<Basis>].
+# Setzt SEND_SIZE.
+estimate_size() {
+  local out line
+  local -a increment=()
+  SEND_SIZE=""
+  if [[ -n "${2:-}" ]]; then
+    increment=(-i "$2")
+  fi
+  out="$("${ZFS}" send -n -v -P -L -c -e "${increment[@]+"${increment[@]}"}" -- "$1" 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    if [[ "${line}" =~ ^size$'\t'([0-9]{1,19})$ ]]; then
+      SEND_SIZE="${BASH_REMATCH[1]}"
+    fi
+  done <<<"${out}"
+  [[ -n "${SEND_SIZE}" ]]
+}
+
+referenced_of() {
+  local value
+  value="$("${ZFS}" get -H -p -o value -- referenced "$1" 2>/dev/null)" || return 1
+  [[ "${value}" =~ ^[0-9]{1,19}$ ]] || return 1
+  REFERENCED="${value}"
+}
+
+# prepare im Kindprozess (Konzept 3.6): check auf Groß, je Dataset Basis, Zählungen, Größe,
+# Freigabe und Bereitschaft zum Senden.
+# shellcheck disable=SC2034 # JD_* liest save_job über Namensreferenzen.
+child_prepare() {
+  local i name ds new base guid deletions=0 total=0 j failed=0
+  guard_check || true
+  save_check "${PRIVATE_DIR}/child/check"
+  parse_check
+  JOB_BLOCKERS=()
+  JOB_CONFIRM_REASONS=()
+  if [[ "${CHECK_RESULT}" != ok ]]; then
+    JOB_BLOCKERS+=(target_unreachable)
+  else
+    [[ "${S_ROOT}" == ok ]] || JOB_BLOCKERS+=(mirror_root_missing)
+    [[ "${S_CONF}" == ok ]] || JOB_BLOCKERS+=(mirror_conf_invalid)
+    [[ "${S_DELEG}" == ok ]] || JOB_BLOCKERS+=(delegation_mismatch)
+    [[ "${S_RECEIVE}" == idle ]] || JOB_BLOCKERS+=(receive_busy)
+    [[ "${S_CLONES}" == 0 ]] || JOB_BLOCKERS+=(clone_active)
+  fi
+  self_dataset_ok || true
+  for i in "${!JD_NAME[@]}"; do
+    name="${JD_NAME[i]}"
+    ds="${POOL}/${name}"
+    new="${ds}@${JOB_SNAPSHOT}"
+    base=""
+    JD_MODE[i]=""
+    JD_BASE_GUID[i]=""
+    JD_BASE_TYPE[i]=""
+    JD_PROBLEM[i]=""
+    if [[ "${CHECK_RESULT}" == ok ]]; then
+      case "${M_STATE[${name}]:-}" in
+        "") JD_PROBLEM[i]=not_in_mirror_conf ;;
+        absent) JD_MODE[i]=full ;;
+        foreign) JD_PROBLEM[i]=target_exists ;;
+        mirror)
+          [[ "${M_PROPS[${name}]}" == ok ]] || add_unique JOB_BLOCKERS props_mismatch
+          guid="${M_GUID[${name}]}"
+          JD_PROBLEM[i]=base_missing
+          if [[ "${guid}" =~ ${GUID_RE} ]] && own_snapshots "${ds}"; then
+            for j in "${!OS_NAMES[@]}"; do
+              if [[ "${OS_GUIDS[j]}" == "${guid}" && "${OS_NAMES[j]}" != "${JOB_SNAPSHOT}" ]]; then
+                base="${ds}@${OS_NAMES[j]}"
+                JD_BASE_TYPE[i]=snapshot
+              fi
+            done
+            if [[ -z "${base}" ]] && own_bookmarks "${ds}"; then
+              for j in "${!OB_NAMES[@]}"; do
+                if [[ "${OB_GUIDS[j]}" == "${guid}" ]]; then
+                  base="${ds}#${OB_NAMES[j]}"
+                  JD_BASE_TYPE[i]=bookmark
+                fi
+              done
+            fi
+            if [[ -n "${base}" ]]; then
+              JD_MODE[i]=incremental
+              JD_BASE_GUID[i]="${guid}"
+              JD_PROBLEM[i]=""
+            fi
+          fi
+          ;;
+      esac
+    fi
+    if [[ "${name}" == appdata && "${SELF_DATASET_STATE}" != found && -z "${JD_PROBLEM[i]}" ]]; then
+      JD_PROBLEM[i]=self_dataset_missing
+    fi
+    if [[ -n "${JD_PROBLEM[i]}" ]]; then
+      add_unique JOB_BLOCKERS "${JD_PROBLEM[i]}"
+    fi
+    JD_DELETED[i]=""
+    JD_MODIFIED[i]=""
+    JD_ADDED[i]=""
+    JD_RENAMED[i]=""
+    JD_BASE_REFERENCED[i]=""
+    JD_SIZE[i]=""
+    if referenced_of "${new}"; then
+      JD_REFERENCED[i]="${REFERENCED}"
+    else
+      failed=1
+    fi
+    if [[ "${JD_BASE_TYPE[i]}" == snapshot ]]; then
+      if count_diff "${base}" "${new}" && referenced_of "${base}"; then
+        JD_DELETED[i]="${DIFF_DELETED}"
+        JD_MODIFIED[i]="${DIFF_MODIFIED}"
+        JD_ADDED[i]="${DIFF_ADDED}"
+        JD_RENAMED[i]="${DIFF_RENAMED}"
+        JD_BASE_REFERENCED[i]="${REFERENCED}"
+        deletions=$((deletions + DIFF_DELETED))
+        if ((JD_REFERENCED[i] * 100 < JD_BASE_REFERENCED[i] * 50)); then
+          add_unique JOB_CONFIRM_REASONS shrunk
+        fi
+      else
+        failed=1
+      fi
+    elif [[ "${JD_BASE_TYPE[i]}" == bookmark ]]; then
+      add_unique JOB_CONFIRM_REASONS no_diff
+    fi
+    if [[ "${JD_MODE[i]}" == full ]]; then
+      estimate_size "${new}" || failed=1
+    elif [[ -n "${base}" ]]; then
+      estimate_size "${new}" "${base}" || failed=1
+    else
+      SEND_SIZE=""
+    fi
+    JD_SIZE[i]="${SEND_SIZE}"
+    if [[ -n "${SEND_SIZE}" ]]; then
+      total=$((total + SEND_SIZE))
+    fi
+  done
+  if ((deletions > MAX_DELETIONS)); then
+    add_unique JOB_CONFIRM_REASONS deletions
+  fi
+  # Platz auf Groß für die ganze Menge plus Reserve (wie space-low in guard.sh).
+  if [[ "${CHECK_RESULT}" == ok ]]; then
+    if [[ ! "${S_AVAILABLE}" =~ ^[0-9]+$ || ! "${S_SIZE}" =~ ^[0-9]+$ || ! "${S_RESERVE}" =~ ^[0-9]+$ ]] ||
+      (((S_AVAILABLE - total) * 100 < S_RESERVE * S_SIZE)); then
+      add_unique JOB_BLOCKERS space_low
+    fi
+  fi
+  if ((failed)); then
+    JOB_STATE=failed
+    JOB_RESULT=prepare_failed
+    return 0
+  fi
+  JOB_SEND_READY=false
+  if ((${#JOB_BLOCKERS[@]} == 0)); then
+    JOB_SEND_READY=true
+  fi
+  JOB_STATE=prepared
+  if ((${#JOB_CONFIRM_REASONS[@]} > 0)); then
+    JOB_STATE=awaiting_confirm
+  fi
+}
+
+# Fortschritt aus den Zeilen von zfs send -v -P ("hh:mm:ss<TAB><Byte><TAB><Snapshot>").
+readonly PROGRESS_RE=$'^[0-9]{2}:[0-9]{2}:[0-9]{2}\t([0-9]{1,19})\t'
+progress_reader() {
+  local index="$1" line
+  while IFS= read -r line; do
+    if [[ "${line}" =~ ${PROGRESS_RE} ]]; then
+      write_atomic "${PRIVATE_DIR}/child/progress" "${index} ${BASH_REMATCH[1]}"$'\n' 0600 || true
+    fi
+  done
+}
+
+# Nach einem erfolgreichen Senden: Hold an den neuen Snapshot, Lesezeichen, alter Hold frei.
+new_base() {
+  local ds="$1" snapshot="$2" i
+  if ! "${ZFS}" hold -- "${HOLD_TAG}" "${ds}@${snapshot}" >/dev/null 2>&1; then
+    log "dataset ${ds#"${POOL}/"}: hold on the new base failed"
+  fi
+  if ! "${ZFS}" bookmark -- "${ds}@${snapshot}" "${ds}#${snapshot}" >/dev/null 2>&1; then
+    log "dataset ${ds#"${POOL}/"}: bookmark failed"
+  fi
+  own_snapshots "${ds}" || return 0
+  for i in "${!OS_NAMES[@]}"; do
+    if [[ "${OS_NAMES[i]}" != "${snapshot}" ]] && ((OS_HOLDS[i] > 0)); then
+      "${ZFS}" release -- "${HOLD_TAG}" "${ds}@${OS_NAMES[i]}" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+# send im Kindprozess (Konzept 3.6): Datasets nacheinander, Ergebnis aus der Antwort von guard.sh.
+# shellcheck disable=SC2034 # JD_* liest save_job über Namensreferenzen.
+child_send() {
+  local i name ds new base err refused failed=0 j
+  local -a statuses=() increment=()
+  if ! ssh_key_ready || [[ -z "${TARGET_HOST}" ]]; then
+    JOB_STATE=failed
+    JOB_RESULT=send_failed
+    JOB_REASON=key_missing
+    return 0
+  fi
+  ssh_args
+  for i in "${!JD_NAME[@]}"; do
+    if ((failed)); then
+      JD_RESULT[i]=skipped
+      continue
+    fi
+    name="${JD_NAME[i]}"
+    ds="${POOL}/${name}"
+    new="${ds}@${JOB_SNAPSHOT}"
+    base=""
+    increment=()
+    if [[ "${JD_MODE[i]}" == incremental ]]; then
+      if [[ "${JD_BASE_TYPE[i]}" == snapshot ]] && own_snapshots "${ds}"; then
+        for j in "${!OS_NAMES[@]}"; do
+          [[ "${OS_GUIDS[j]}" == "${JD_BASE_GUID[i]}" ]] && base="${ds}@${OS_NAMES[j]}"
+        done
+      elif own_bookmarks "${ds}"; then
+        for j in "${!OB_NAMES[@]}"; do
+          [[ "${OB_GUIDS[j]}" == "${JD_BASE_GUID[i]}" ]] && base="${ds}#${OB_NAMES[j]}"
+        done
+      fi
+      if [[ -z "${base}" ]]; then
+        JD_RESULT[i]=base_missing
+        JOB_RESULT=send_failed
+        JOB_REASON=base_missing
+        failed=1
+        continue
+      fi
+      increment=(-i "${base}")
+    elif [[ "${JD_MODE[i]}" != full ]]; then
+      JD_RESULT[i]=not_ready
+      JOB_RESULT=send_failed
+      JOB_REASON=not_ready
+      failed=1
+      continue
+    fi
+    if [[ "${name}" == appdata ]] && ! self_dataset_ok; then
+      JD_RESULT[i]=not_ready
+      JOB_RESULT=send_failed
+      JOB_REASON=self_dataset_missing
+      failed=1
+      continue
+    fi
+    log "sending ${name} (${JD_MODE[i]})"
+    statuses=(0 0)
+    if ! "${ZFS}" send -L -c -e -v -P "${increment[@]+"${increment[@]}"}" -- "${new}" \
+      2> >(progress_reader "${i}") |
+      "${SSH}" "${SSH_ARGS[@]}" "receive ${name}" >/dev/null 2>"${PRIVATE_DIR}/child/ssh.err"; then
+      statuses=("${PIPESTATUS[@]}")
+    fi
+    err="$(head -c 4096 -- "${PRIVATE_DIR}/child/ssh.err" 2>/dev/null)" || err=""
+    if ((statuses[0] == 0 && statuses[1] == 0)); then
+      new_base "${ds}" "${JOB_SNAPSHOT}"
+      JD_RESULT[i]=ok
+      JD_SENT[i]="${JD_SIZE[i]}"
+      log "sent ${name}"
+      continue
+    fi
+    failed=1
+    JOB_RESULT=send_failed
+    if ((statuses[1] == 3)) && [[ "${err}" =~ twinraid-guard:\ refused\ ([a-z][a-z-]{0,39}) ]]; then
+      refused="${BASH_REMATCH[1]}"
+      if [[ "${refused}" == target-modified ]]; then
+        JOB_RESULT=target_modified
+      else
+        JOB_RESULT=target_refused
+        JOB_REASON=refused_other
+        if in_list "${refused}" "${SEND_REFUSALS[@]}"; then
+          JOB_REASON="${refused//-/_}"
+        fi
+      fi
+    elif ((statuses[1] != 0)); then
+      ssh_failure "${statuses[1]}" "${err}"
+      JOB_REASON="${SSH_CODE}"
+    else
+      JOB_REASON=send_error
+    fi
+    JD_RESULT[i]="${JOB_RESULT}"
+    log "sending ${name} failed (${JOB_RESULT}${JOB_REASON:+ ${JOB_REASON}})"
+  done
+  if ((failed)); then
+    JOB_STATE=failed
+    return 0
+  fi
+  JOB_STATE="done"
+  JOB_RESULT=ok
+  retention_klein
+}
+
+# Aufbewahrung auf Klein (Konzept 3.6, E25b): eigene Snapshots älter als snapshot_keep_days
+# (creation, Uhr von Klein); nie mit Hold (die Basis), nie mit Klon, nie der Snapshot eines
+# offenen Jobs, nie mit -r.
+retention_klein() {
+  local name ds i limit destroyed=0 failed=0 snap clones
+  now
+  limit=$((NOW - SNAPSHOT_KEEP_DAYS * DAY))
+  for name in "${DATASETS[@]+"${DATASETS[@]}"}"; do
+    ds="${POOL}/${name}"
+    own_snapshots "${ds}" || continue
+    for i in "${!OS_NAMES[@]}"; do
+      if ((OS_HOLDS[i] > 0 || OS_CREATED[i] >= limit)); then
+        continue
+      fi
+      if [[ "${OS_NAMES[i]}" == "${JOB_SNAPSHOT}" ]] && job_is_open; then
+        continue
+      fi
+      snap="${ds}@${OS_NAMES[i]}"
+      clones="$(zfs_call "${ZFS}" get -H -o value -- clones "${snap}" 2>/dev/null)" || continue
+      if [[ -n "${clones}" && "${clones}" != - ]]; then
+        continue
+      fi
+      if zfs_call "${ZFS}" destroy -- "${snap}" >/dev/null 2>&1; then
+        destroyed=$((destroyed + 1))
+      else
+        failed=$((failed + 1))
+      fi
+    done
+  done
+  if ((destroyed > 0 || failed > 0)); then
+    log "retention: ${destroyed} own snapshots destroyed, ${failed} failed"
+  fi
+}
+
+run_child() {
+  local kind="$1" parent="$2" watcher
+  need_root
+  [[ "${parent}" =~ ^[0-9]{1,9}$ ]] || exit 2
+  load_config || exit 1
+  load_job_from "${PRIVATE_DIR}/job" || exit 1
+  watch_parent "${parent}" &
+  watcher=$!
+  case "${kind}" in
+    prepare) child_prepare ;;
+    send) child_send ;;
+    *) exit 2 ;;
+  esac
+  save_job "${PRIVATE_DIR}/child/job"
+  kill "${watcher}" 2>/dev/null || true
+}
+
+# --- Aufträge snapshot, prepare, confirm, send, close -------------------------------------
+
+order_snapshot() {
+  local name ds out used available stamp
+  local -a snapshots=()
+  if job_is_open; then
+    RESULT=job_open
+    return 0
+  fi
+  if ! zfs_ready; then
+    RESULT=zfs_unavailable
+    return 0
+  fi
+  if ((${#DATASETS[@]} == 0)); then
+    RESULT=no_datasets
+    return 0
+  fi
+  for name in "${DATASETS[@]}"; do
+    out="$(zfs_call "${ZFS}" list -H -o name,type -- "${POOL}/${name}" 2>/dev/null)" || out=""
+    if [[ "${out}" != "${POOL}/${name}"$'\t'filesystem ]]; then
+      RESULT=dataset_missing
+      return 0
+    fi
+  done
+  now
+  if ((LAST_SNAPSHOT_UP > 0 && LAST_SNAPSHOT_UP <= UP && UP - LAST_SNAPSHOT_UP < SNAPSHOT_GAP)); then
+    RESULT=too_soon
+    return 0
+  fi
+  out="$(zfs_call "${ZFS}" list -H -p -o used,available -- "${POOL}" 2>/dev/null)" || out=""
+  if [[ ! "${out}" =~ ^([0-9]{1,19})$'\t'([0-9]{1,19})$ ]]; then
+    RESULT=zfs_unavailable
+    return 0
+  fi
+  used="${BASH_REMATCH[1]}"
+  available="${BASH_REMATCH[2]}"
+  if ((available * 100 < SNAPSHOT_RESERVE_PERCENT * (used + available))); then
+    RESULT=snapshot_low_space
+    return 0
+  fi
+  for name in "${DATASETS[@]}"; do
+    ds="${POOL}/${name}"
+    if ! own_snapshots "${ds}" || ((${#OS_NAMES[@]} >= SNAPSHOT_LIMIT)); then
+      RESULT=snapshot_limit
+      return 0
+    fi
+  done
+  stamp="$(date -u -d "@${NOW}" +%Y%m%dT%H%M%SZ)"
+  for name in "${DATASETS[@]}"; do
+    snapshots+=("${POOL}/${name}@${SNAPSHOT_PREFIX}${stamp}")
+  done
+  # Ein Aufruf für alle Datasets: ein Pool, also atomar.
+  if ! zfs_call "${ZFS}" snapshot -o "${CREATED_BY}=source-guard" -- "${snapshots[@]}" >/dev/null 2>&1; then
+    RESULT=snapshot_failed
+    return 0
+  fi
+  LAST_SNAPSHOT_UP="${UP}"
+  write_atomic "${PRIVATE_DIR}/last_snapshot" "${UP}" 0600 || true
+  clear_job
+  JOB_ID="${O_SEQ}"
+  JOB_STATE=snapshot
+  JOB_SNAPSHOT="${SNAPSHOT_PREFIX}${stamp}"
+  JOB_CREATED="${NOW}"
+  # Ohne prepare, send oder close schließt der Wächter den Job nach CONFIRM_LIMIT.
+  JOB_DEADLINE=$((UP + CONFIRM_LIMIT))
+  for name in "${DATASETS[@]}"; do
+    JD_NAME+=("${name}")
+  done
+  save_job
+  log "snapshot ${JOB_SNAPSHOT} created for ${#DATASETS[@]} datasets (job ${JOB_ID})"
+  RESULT=created
+}
+
+order_prepare() {
+  if ! job_is_open; then
+    RESULT=no_job
+  elif [[ "${JOB_STATE}" != snapshot ]]; then
+    RESULT=wrong_state
+  elif ((RUN_OPEN)); then
+    RESULT=run_open
+  elif ! start_child prepare; then
+    RESULT=wrong_state
+  else
+    now
+    JOB_STATE=preparing
+    JOB_DEADLINE=$((UP + PREPARE_LIMIT))
+    save_job
+    RESULT=preparing
+  fi
+}
+
+order_confirm() {
+  if ! job_is_open; then
+    RESULT=no_job
+  elif [[ "${JOB_STATE}" != awaiting_confirm ]]; then
+    RESULT=not_needed
+  else
+    JOB_STATE=prepared
+    JOB_CONFIRMED=1
+    save_job
+    RESULT=confirmed
+  fi
+}
+
+order_send() {
+  if ! job_is_open; then
+    RESULT=no_job
+  elif [[ "${JOB_STATE}" != prepared ]]; then
+    RESULT=wrong_state
+  elif [[ "${JOB_SEND_READY}" != true ]]; then
+    RESULT=not_ready
+  elif ! start_child send; then
+    RESULT=wrong_state
+  else
+    now
+    JOB_STATE=sending
+    JOB_DEADLINE=$((UP + SEND_LIMIT))
+    save_job
+    RESULT=sending
+  fi
+}
+
+order_close() {
+  if ! job_is_open; then
+    RESULT=no_job
+    return 0
+  fi
+  stop_child
+  JOB_STATE=closed
+  JOB_RESULT=closed
+  JOB_DEADLINE=0
+  save_job
+  RESULT=closed
+}
+
+# --- Key „sync“ und Hostkey von Groß (init-key, trust-target) -----------------------------
+
+# IPv4-Adresse von target_host (Hostname über getent). Setzt TARGET_IP.
+target_ip() {
+  local out
+  TARGET_IP=""
+  if [[ "${TARGET_HOST}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    TARGET_IP="${TARGET_HOST}"
+    return 0
+  fi
+  out="$(getent ahostsv4 -- "${TARGET_HOST}" 2>/dev/null | head -1)" || return 1
+  [[ "${out}" =~ ^([0-9]{1,3}(\.[0-9]{1,3}){3})[[:space:]] ]] || return 1
+  TARGET_IP="${BASH_REMATCH[1]}"
+}
+
+cmd_init_key() {
+  local replace=0 src="" out pub
+  need_root
+  if [[ "${1:-}" == --new ]]; then
+    replace=1
+  elif [[ -n "${1:-}" ]]; then
+    usage
+  fi
+  load_config || die "Konfiguration ungültig: ${CONFIG_DETAIL} (Zeile ${CONFIG_LINE})"
+  [[ -n "${TARGET_HOST}" ]] || die "target_host fehlt in source-guard.conf"
+  target_ip || die "target_host lässt sich nicht auflösen"
+  out="$("${IP}" -4 route get "${TARGET_IP}" 2>/dev/null)" || out=""
+  if [[ "${out}" =~ [[:space:]]src[[:space:]]([0-9]{1,3}(\.[0-9]{1,3}){3}) ]]; then
+    src="${BASH_REMATCH[1]}"
+  fi
+  [[ -n "${src}" ]] || die "die eigene Adresse auf dem Weg zu ${TARGET_IP} ist unbekannt"
+  if ((replace)); then
+    rm -f -- "${SYNC_KEY}" "${SYNC_KEY}.pub"
+  fi
+  if [[ ! -f "${SYNC_KEY}" ]]; then
+    "${SSH_KEYGEN}" -q -t ed25519 -N '' -C twinraid-sync -f "${SYNC_KEY}" </dev/null >/dev/null ||
+      die "ssh-keygen ist gescheitert"
+    echo "Der Key sync wurde angelegt: ${SYNC_KEY}"
+  else
+    echo "Der Key sync ist schon vorhanden: ${SYNC_KEY}"
+  fi
+  pub="$(<"${SYNC_KEY}.pub")"
+  [[ "${pub}" =~ ^ssh-ed25519\ [A-Za-z0-9+/=]{20,200}\ twinraid-sync$ ]] ||
+    die "${SYNC_KEY}.pub hat nicht das erwartete Format"
+  echo "Auf Groß unter Users → root → SSH authorized keys eintragen:"
+  echo
+  echo "restrict,from=\"${src}\",command=\"/bin/bash /boot/config/twinraid/guard.sh sync\" ${pub}"
+}
+
+cmd_trust_target() {
+  local expected="" scan line fingerprint answer tmp
+  need_root
+  if [[ "${1:-}" == --fingerprint && -n "${2:-}" ]]; then
+    expected="$2"
+    [[ "${expected}" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || die "Fingerabdruck im Format SHA256:… angeben"
+  elif [[ -n "${1:-}" ]]; then
+    usage
+  fi
+  load_config || die "Konfiguration ungültig: ${CONFIG_DETAIL} (Zeile ${CONFIG_LINE})"
+  [[ -n "${TARGET_HOST}" ]] || die "target_host fehlt in source-guard.conf"
+  scan="$(timeout 15 "${SSH_KEYSCAN}" -t ed25519 -p "${TARGET_PORT}" -- "${TARGET_HOST}" 2>/dev/null)" || scan=""
+  line=""
+  while IFS= read -r answer; do
+    if [[ "${answer}" =~ ^(\[[A-Za-z0-9.-]+\]:[0-9]{1,5}|[A-Za-z0-9.-]+)\ ssh-ed25519\ [A-Za-z0-9+/=]{20,200}$ ]]; then
+      line="${answer}"
+    fi
+  done <<<"${scan}"
+  [[ -n "${line}" ]] || die "Groß antwortet nicht mit einem ed25519-Hostkey (ssh-keyscan)"
+  tmp="$(mktemp)"
+  printf '%s\n' "${line}" >"${tmp}"
+  fingerprint="$("${SSH_KEYGEN}" -l -f "${tmp}" 2>/dev/null | awk '{print $2}')" || fingerprint=""
+  [[ "${fingerprint}" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]] || {
+    rm -f -- "${tmp}"
+    die "Fingerabdruck nicht lesbar"
+  }
+  echo "Hostkey von Groß: ED25519 ${fingerprint}"
+  echo "Auf Groß vergleichen mit: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub"
+  if [[ -n "${expected}" ]]; then
+    if [[ "${expected}" != "${fingerprint}" ]]; then
+      rm -f -- "${tmp}"
+      die "Der Fingerabdruck stimmt nicht überein."
+    fi
+  else
+    printf 'Stimmt er überein? Mit yes bestätigen: '
+    IFS= read -r answer || answer=""
+    if [[ "${answer}" != yes ]]; then
+      rm -f -- "${tmp}"
+      die "Nicht bestätigt; nichts gespeichert."
+    fi
+  fi
+  write_atomic "${KNOWN_HOSTS}" "${line}"$'\n' 0600 || {
+    rm -f -- "${tmp}"
+    die "${KNOWN_HOSTS} ließ sich nicht schreiben"
+  }
+  rm -f -- "${tmp}"
+  echo "Hostkey gespeichert: ${KNOWN_HOSTS}"
+  ensure_dir "${BASE_DIR}" 0755 || die "${BASE_DIR} ist nicht nutzbar"
+  ensure_dir "${PRIVATE_DIR}" 0700 || die "${PRIVATE_DIR} ist nicht nutzbar"
+  if guard_check; then
+    echo "OK: guard.sh antwortet (${CHECK_LINES[0]})."
+  else
+    echo "Test mit check gescheitert: ${CHECK_RESULT}"
+    exit 1
+  fi
+}
+
 # --- Status ------------------------------------------------------------------------------
 
 ERROR=""
@@ -1307,6 +2588,140 @@ container_json() {
   JSON="${item}}"
 }
 
+# Zahl oder null; GUID als Text oder null; Code als Text oder null. Setzen JSON.
+json_value() {
+  case "$2" in
+    number) json_number "$1" ;;
+    guid) json_token "$1" "${GUID_RE}" ;;
+    code) json_token "$1" "${CODE_RE}" ;;
+  esac
+}
+
+# Liste fester Codes als JSON-Array. Setzt JSON.
+json_codes() {
+  local code list=""
+  for code in "$@"; do
+    if [[ "${code}" =~ ${CODE_RE} ]]; then
+      list+="${list:+,}\"${code}\""
+    fi
+  done
+  JSON="[${list}]"
+}
+
+# Ergebnis von guard.sh check aus den streng geprüften Zeilen (Konzept 3.6). Setzt JSON.
+# Die Treffer kommen zuerst nach match, weil json_number und json_token BASH_REMATCH
+# mit ihren eigenen Vergleichen überschreiben.
+check_json() {
+  local line item list="" summary=null field
+  local -a match=()
+  if [[ -z "${CHECK_RESULT}" ]]; then
+    JSON=null
+    return 0
+  fi
+  for line in "${CHECK_LINES[@]+"${CHECK_LINES[@]}"}"; do
+    if [[ "${line}" =~ ${CHECK_MIRROR_RE} ]]; then
+      match=("${BASH_REMATCH[@]}")
+      item='{"name":"'"${match[1]}"'","state":"'"${match[2]}"'"'
+      if [[ "${match[3]}" == - ]]; then
+        item+=',"props":null'
+      else
+        item+=',"props":"'"${match[3]}"'"'
+      fi
+      json_number "${match[4]}"
+      item+=',"count":'"${JSON}"
+      json_token "${match[5]}" "${GUID_RE}"
+      item+=',"newest_guid":'"${JSON}"
+      json_number "${match[6]}"
+      item+=',"newest_created":'"${JSON}"
+      json_number "${match[7]}"
+      item+=',"newest_received":'"${JSON}"
+      json_number "${match[8]}"
+      item+=',"oldest_created":'"${JSON}"'}'
+      list+="${list:+,}${item}"
+    elif [[ "${line}" =~ ${CHECK_SUMMARY_RE} ]]; then
+      match=("${BASH_REMATCH[@]}")
+      summary='{"root":"'"${match[1]}"'","conf":"'"${match[2]}"'"'
+      summary+=',"deleg":"'"${match[3]//-/_}"'","receive":"'"${match[4]}"'"'
+      for field in 5:clones 6:available 7:size 8:reserve_percent 9:keep_days 10:min_interval_minutes; do
+        json_number "${match[${field%%:*}]}"
+        summary+=',"'"${field#*:}"'":'"${JSON}"
+      done
+      summary+='}'
+    fi
+  done
+  json_token "${CHECK_RESULT}" "${CODE_RE}"
+  JSON='{"at":'"${CHECK_AT}"',"result":'"${JSON}"',"summary":'"${summary}"',"mirrors":['"${list}"']}'
+}
+
+# Der Job für den Status; beim Senden mit dem Fortschritt aus private/child/progress.
+job_json() {
+  local item list="" i field kind current=-1 bytes="" key value
+  if ((JOB_ID == 0)); then
+    JSON=null
+    return 0
+  fi
+  if [[ "${JOB_STATE}" == sending && -f "${PRIVATE_DIR}/child/progress" ]]; then
+    read -r key value <"${PRIVATE_DIR}/child/progress" 2>/dev/null || true
+    if [[ "${key:-}" =~ ^[0-9]{1,2}$ && "${value:-}" =~ ^[0-9]{1,19}$ ]]; then
+      current="${key}"
+      bytes="${value}"
+    fi
+  fi
+  item='{"id":'"${JOB_ID}"',"state":"'"${JOB_STATE}"'"'
+  json_token "${JOB_RESULT}" "${CODE_RE}"
+  item+=',"result":'"${JSON}"
+  json_token "${JOB_REASON}" "${CODE_RE}"
+  item+=',"reason":'"${JSON}"
+  json_token "${JOB_SNAPSHOT}" "${SNAPNAME_RE}"
+  item+=',"snapshot":'"${JSON}"',"created_at":'"${JOB_CREATED}"
+  if ((JOB_DEADLINE > 0)); then
+    item+=',"deadline":'"$((NOW + JOB_DEADLINE - UP))"
+  else
+    item+=',"deadline":null'
+  fi
+  if ((JOB_CONFIRMED)); then item+=',"confirmed":true'; else item+=',"confirmed":false'; fi
+  json_codes "${JOB_CONFIRM_REASONS[@]+"${JOB_CONFIRM_REASONS[@]}"}"
+  item+=',"confirm_reasons":'"${JSON}"
+  case "${JOB_SEND_READY}" in
+    true | false) item+=',"send_ready":'"${JOB_SEND_READY}" ;;
+    *) item+=',"send_ready":null' ;;
+  esac
+  json_codes "${JOB_BLOCKERS[@]+"${JOB_BLOCKERS[@]}"}"
+  item+=',"blockers":'"${JSON}"
+  for i in "${!JD_NAME[@]}"; do
+    local -a fields=()
+    for field in "${JD_FIELDS[@]}"; do
+      # shellcheck disable=SC2178 # Namensreferenz auf eine der Listen JD_*.
+      local -n jd_ref="JD_${field^^}"
+      value="${jd_ref[i]:-}"
+      unset -n jd_ref
+      if [[ "${field}" == sent && "${JOB_STATE}" == sending ]]; then
+        value=""
+        if ((current >= 0 && i < current)); then
+          value="${JD_SIZE[i]:-}"
+        elif ((i == current)); then
+          value="${bytes}"
+        fi
+      fi
+      case "${field}" in
+        base_guid) kind=guid ;;
+        name | mode | base_type | problem | result) kind=text ;;
+        *) kind=number ;;
+      esac
+      if [[ "${kind}" == text ]]; then
+        jd_pattern "${field}"
+        json_token "${value}" "${PATTERN}"
+      else
+        json_value "${value}" "${kind}"
+      fi
+      fields+=("\"${field}\":${JSON}")
+    done
+    list+="${list:+,}{$(IFS=,; printf '%s' "${fields[*]}")}"
+  done
+  item+=',"datasets":['"${list}"']}'
+  JSON="${item}"
+}
+
 write_status() {
   local json item i list="" present
   now
@@ -1345,12 +2760,19 @@ write_status() {
   json+=',"max_deletions":'"${MAX_DELETIONS}"
   json+=',"snapshot_keep_days":'"${SNAPSHOT_KEEP_DAYS}"
   json+=',"snapshot_reserve_percent":'"${SNAPSHOT_RESERVE_PERCENT}"'}'
-  # Ziel für das Senden (ab v0.5.1): nur ob eingetragen und der Port, keine Adresse.
-  if [[ -n "${TARGET_HOST}" ]]; then
-    json+=',"target":{"configured":true,"port":'"${TARGET_PORT}"'}'
-  else
-    json+=',"target":{"configured":false,"port":'"${TARGET_PORT}"'}'
-  fi
+  # Ziel für das Senden: ob eingetragen, Port, Key und Hostkey vorhanden, letztes check;
+  # keine Adresse.
+  present=false
+  if [[ -n "${TARGET_HOST}" ]]; then present=true; fi
+  json+=',"target":{"configured":'"${present}"',"port":'"${TARGET_PORT}"
+  present=false
+  if [[ -f "${SYNC_KEY}" && ! -L "${SYNC_KEY}" ]]; then present=true; fi
+  json+=',"key":'"${present}"
+  present=false
+  if [[ -f "${KNOWN_HOSTS}" && ! -L "${KNOWN_HOSTS}" ]]; then present=true; fi
+  json+=',"known_host":'"${present}"
+  check_json
+  json+=',"check":'"${JSON}"'}'
   for i in "${!ALLOW[@]}"; do
     json_token "${ALLOW[i]}" "${CONTAINER_RE}"
     item='{"name":'"${JSON}"
@@ -1414,10 +2836,25 @@ write_status() {
     json_number "${DS_REFERENCED[i]:-}"
     item+=',"referenced":'"${JSON}"
     json_token "${DS_COMPRESSION[i]:-}" "${COMPRESSION_RE}"
-    item+=',"compression":'"${JSON}"'}'
+    item+=',"compression":'"${JSON}"
+    json_number "${DS_SNAPSHOTS[i]:-}"
+    item+=',"snapshots":'"${JSON}"
+    json_number "${DS_OLDEST[i]:-}"
+    item+=',"oldest_snapshot_at":'"${JSON}"
+    if [[ "${DS_BASE_GUID[i]:-}" =~ ${GUID_RE} && "${DS_BASE_CREATED[i]:-}" =~ ^[0-9]{1,12}$ ]]; then
+      item+=',"base":{"guid":"'"${DS_BASE_GUID[i]}"'","created_at":'"${DS_BASE_CREATED[i]}"'}'
+    else
+      item+=',"base":null'
+    fi
+    case "${DS_BOOKMARK[i]:-}" in
+      true | false) item+=',"bookmark":'"${DS_BOOKMARK[i]}"'}' ;;
+      *) item+=',"bookmark":null}' ;;
+    esac
     list+="${list:+,}${item}"
   done
   json+=',"datasets":['"${list}"'],"self_dataset":"'"${SELF_DATASET_STATE}"'"}'
+  job_json
+  json+=',"job":'"${JSON}"
   if ((LAST_SEQ >= MAX_SEQ)); then
     json+=',"seq_exhausted":true'
   else
@@ -1448,7 +2885,7 @@ parent_pid() {
 
 run_guard() {
   local next_docker=0 next_containers=0 next_zfs=0 next_host=0 next_status=0
-  local was_docker=-1 sleeper="" run_lock first_parent
+  local was_docker=-1 sleeper="" first_parent value
   need_root
   now
   STARTED_AT="${NOW}"
@@ -1458,14 +2895,37 @@ run_guard() {
   ensure_dir "${PRIVATE_DIR}" 0700 || die "private/ ist nicht nutzbar"
   # Eigene Sperre: Nie lesen zwei Wächter gleichzeitig Aufträge, auch nicht kurz nach
   # einem Neustart, während ein alter Wächter noch endet.
-  exec {run_lock}>>"${PRIVATE_DIR}/run.lock"
-  if ! flock -w 10 "${run_lock}"; then
+  exec {RUN_LOCK}>>"${PRIVATE_DIR}/run.lock"
+  if ! flock -w 10 "${RUN_LOCK}"; then
     log "another guard process still runs, ending"
     exit 1
   fi
   init_private
   if ! load_config; then
     log "config invalid: ${CONFIG_DETAIL} in line ${CONFIG_LINE}"
+  fi
+  # Job und letztes check (ab Version 2). Ein Kindprozess eines früheren Wächters lebt nur
+  # nach kill -9 noch; er wird beendet, sein Job gilt als gescheitert.
+  stop_stale_child
+  if [[ -f "${PRIVATE_DIR}/job" ]] && ! load_job_from "${PRIVATE_DIR}/job"; then
+    log "saved job is unreadable and was dropped"
+    rm -f -- "${PRIVATE_DIR}/job"
+  fi
+  case "${JOB_STATE}" in
+    preparing | sending)
+      JOB_STATE=failed
+      JOB_RESULT=interrupted
+      JOB_DEADLINE=0
+      save_job
+      log "job ${JOB_ID}: failed (interrupted)"
+      ;;
+  esac
+  load_check_from "${PRIVATE_DIR}/check" || true
+  if [[ -f "${PRIVATE_DIR}/last_snapshot" ]]; then
+    value="$(<"${PRIVATE_DIR}/last_snapshot")"
+    if [[ "${value}" =~ ^[0-9]{1,12}$ ]]; then
+      LAST_SNAPSHOT_UP="${value}"
+    fi
   fi
   trap on_term TERM INT
   log "started (version ${VERSION})"
@@ -1507,6 +2967,16 @@ run_guard() {
       next_host=$((NOW + HOST_INTERVAL))
     fi
     check_deadman
+    poll_child
+    check_job_deadline
+    # Aufbewahrung auf Klein einmal täglich, wenn kein Job offen ist (nach dem Senden
+    # erledigt sie der Kindprozess).
+    if [[ "${ZFS_STATE}" == ok && -z "${CONFIG_ERROR}" ]] && ! job_is_open &&
+      ((LAST_RETENTION_UP == 0 || UP - LAST_RETENTION_UP >= RETENTION_INTERVAL)); then
+      retention_klein
+      LAST_RETENTION_UP="${UP}"
+      next_zfs=0
+    fi
     if [[ -z "${LAYOUT_ERROR}" ]]; then
       handle_request
     fi
@@ -1522,6 +2992,8 @@ run_guard() {
   if [[ -n "${sleeper}" ]]; then
     kill "${sleeper}" 2>/dev/null || true
   fi
+  # Ein laufendes prepare oder send endet mit dem Wächter (Konzept 3.6).
+  interrupt_job
   # Nur auf ausdrücklichen Befehl (stop) zuerst finish; nicht beim Herunterfahren.
   if [[ -f "${PRIVATE_DIR}/stop.request" ]] && ((RUN_OPEN)); then
     docker_check || true
@@ -1598,7 +3070,7 @@ supervise() {
 }
 
 cmd_start() {
-  local lock
+  local lock i
   need_root
   ensure_dir "${BASE_DIR}" 0755 || die "${BASE_DIR} ist nicht nutzbar"
   ensure_dir "${PRIVATE_DIR}" 0700 || die "${PRIVATE_DIR} ist nicht nutzbar"
@@ -1610,7 +3082,16 @@ cmd_start() {
   flock -u "${lock}"
   exec {lock}>&-
   setsid /bin/bash "${SELF}" supervise </dev/null >/dev/null 2>&1 &
-  echo "Der Wächter wurde gestartet."
+  # Höchstens 5 s warten, bis die Überwachungsschleife ihre PID geschrieben hat, damit
+  # status direkt danach stimmt (D2).
+  for ((i = 0; i < 50; i++)); do
+    if supervisor_pid; then
+      echo "Der Wächter wurde gestartet."
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "Der Wächter wurde gestartet, meldet sich aber noch nicht; in einigen Sekunden status aufrufen."
 }
 
 cmd_stop() {
@@ -1806,6 +3287,7 @@ usage() {
   cat >&2 <<'EOF'
 Aufruf: source-guard.sh start | stop | restart | status | check-config | reset-run-interval
         source-guard.sh selftest <Container> | selftest-deadman <Container>
+        source-guard.sh init-key [--new] | trust-target [--fingerprint SHA256:…]
 EOF
   exit 2
 }
@@ -1829,7 +3311,19 @@ case "${command}" in
     [[ $# -eq 2 ]] || usage
     cmd_selftest_deadman "$2"
     ;;
+  init-key)
+    [[ $# -le 2 ]] || usage
+    cmd_init_key "${2:-}"
+    ;;
+  trust-target)
+    [[ $# -le 3 ]] || usage
+    cmd_trust_target "${2:-}" "${3:-}"
+    ;;
   supervise) supervise ;;
   run) run_guard ;;
+  child)
+    [[ $# -eq 3 ]] || usage
+    run_child "$2" "$3"
+    ;;
   *) usage ;;
 esac

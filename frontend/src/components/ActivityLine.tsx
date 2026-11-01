@@ -12,7 +12,10 @@ interface ActivityLineProps {
   vmName: string;
 }
 
-type Hint = { key: "forceNow" } | { key: "forceAndShutdownUntil"; until: string };
+type Hint =
+  | { key: "forceNow" }
+  | { key: "forceAndShutdownUntil"; until: string }
+  | { key: "deviceBusyVms"; vms: string };
 
 // Ergebnisse, deren Hinweis vom aktuellen Status abhängt (Konzept 4.2, ab v0.4.1).
 const CONDITIONAL = new Set([
@@ -20,6 +23,7 @@ const CONDITIONAL = new Set([
   "boot_timeout",
   "shutdown_timeout",
   "other_vms_running",
+  "vm_device_busy",
 ]);
 
 /**
@@ -47,6 +51,11 @@ function currentHint(
     case "other_vms_running":
       // Die Begründung mit den Namen steht schon am gesperrten Button.
       return status.other_vms_running?.length ? "stillApplies" : null;
+    case "vm_device_busy":
+      // Solange weitere VMs laufen, mit ihren Namen (Konzept 3.5, ab v0.5.1).
+      return status.other_vms_running?.length
+        ? { key: "deviceBusyVms", vms: status.other_vms_running.join(", ") }
+        : null;
     default:
       return status.target.state === "online" ? "checkShutdown" : null;
   }
@@ -81,6 +90,8 @@ export function ActivityLine({ activity, status, tile, vmName }: ActivityLinePro
   let hintText: string | null = null;
   if (hint === "checkWake" || hint === "checkShutdown") {
     hintText = t(`actions.hints.${hint}`);
+  } else if (hint && hint !== "stillApplies" && hint.key === "deviceBusyVms") {
+    hintText = t("actions.hints.deviceBusyVms", { vms: hint.vms });
   } else if (hint && hint !== "stillApplies") {
     const own =
       hint.key === "forceNow"

@@ -29,6 +29,7 @@ CONCEPT_COMMANDS = {
     "vm_start",
     "vm_stop",
     "vm_force_stop",
+    "sync_dry_run",
     "sync_start",
     "sync_cancel",
     "sync_confirm_deletions",

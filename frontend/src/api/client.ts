@@ -151,6 +151,22 @@ async function runAction(name: ActionName): Promise<void> {
   }
 }
 
+/**
+ * Bricht den laufenden Probelauf ab (Konzept 4.3). Einziger Parameter ist die Kennung,
+ * die der Worker vergeben hat; false, wenn der Worker ablehnt (kein solcher Lauf).
+ */
+async function cancelSync(jobId: string): Promise<boolean> {
+  try {
+    await request(`/api/sync/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409) {
+      return false;
+    }
+    throw error;
+  }
+  return true;
+}
+
 async function session(signal?: AbortSignal): Promise<SessionInfo> {
   const info = await getJson<SessionInfo>("/api/auth/session", signal);
   setCsrfToken(info.csrf_token);
@@ -168,4 +184,5 @@ export const api = {
   tls: (signal?: AbortSignal) => getJson<TlsInfo>("/api/tls", signal),
   acknowledgeCaChange,
   runAction,
+  cancelSync,
 };

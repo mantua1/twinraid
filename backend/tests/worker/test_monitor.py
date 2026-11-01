@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.jobs import FakeJobs
 from tests.support.worker import make_handler
-from twinraid.integrations.mocks.jobs import MockJobSwitch
 from twinraid.shared.ipc import GetStatus, OkResponse
 from twinraid.shared.status import (
     NOT_CHECKED,
@@ -76,7 +76,7 @@ async def test_changes_are_logged_once(caplog: pytest.LogCaptureFixture) -> None
 async def test_get_status_combines_monitor_job_and_password(tmp_path: Path) -> None:
     monitor = StatusMonitor(SequenceProvider(_status(ONLINE)), clock=lambda: NOW)
     await monitor.check_once()
-    switch = MockJobSwitch(tmp_path / "flag")
+    switch = FakeJobs()
     handler = make_handler(tmp_path, status=monitor, jobs=switch)
     response = await handler.handle(GetStatus(command="get_status"))
     assert isinstance(response, OkResponse)

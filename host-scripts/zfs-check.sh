@@ -37,6 +37,12 @@ readonly FILE_POOL_PREFIX=twinraid-check-
 readonly FILE_POOL_SIZE=1G
 readonly MEASURE_BYTES=536870912
 readonly GIB=1073741824
+# Benutzer für den Empfang ohne root, wie guard.sh ab Version 3 (Konzept 3.7, E27): feste
+# UID und GID ohne Eintrag in /etc/passwd, nie nobody oder eine UID von Samba oder Containern.
+readonly RECV_UID=64000
+readonly RECV_GID=64000
+# Rechte, die ein Empfang ohne root laut zfs-allow(8) mindestens braucht.
+readonly RECV_BASE_PERMS=receive:append,create,mount
 # Feste Befehlszeile für den Empfang, wie guard.sh sie ab Version 3 verwendet (Konzept 3.7).
 # Dazu kommt je Spiegel -o mountpoint=<fester Ort>; alle Werte gelten mit Quelle local.
 readonly RECEIVE_OPTIONS=(
@@ -64,12 +70,13 @@ readonly CLONE_OPTIONS=(
 )
 
 failures=0
+RECV_ERROR=""
+PROPS_OFF=""
 ROOT=""
 RUN_ID=""
 FILE_POOL=""
 FILE_PATH=""
 ALTROOT=""
-ALLOWED_USER=""
 CREATED_ROOT=0
 CREATED_POOL=0
 XATTR_SET=0
@@ -146,22 +153,33 @@ received_properties() {
   done
 }
 
+# Hängt einen Spiegel aus (ein schon eingehängter nach einem inkrementellen Empfang) und
+# sperrt ihn mit canmount=noauto: Er bleibt auch nach einem Neustart ausgehängt, bis er von
+# Hand zurückgesetzt ist (Konzept 3.7).
+lock_mirror() {
+  if [[ "$(value_of mounted "$1")" == yes ]]; then
+    zfs unmount -- "$1" >/dev/null 2>&1 || true
+  fi
+  zfs set -- canmount=noauto "$1" >/dev/null 2>&1 || true
+}
+
 # Wie guard.sh nach dem Empfang (Konzept 3.7): erst prüfen, dann einhängen, dann den Ort
-# prüfen. Rückgabe: 0 eingehängt am festen Ort, 2 Eigenschaften aus dem Strom (bleibt
-# ausgehängt, gesperrt mit canmount=noauto), 3 Einhängen gescheitert oder falscher Ort
-# (wieder ausgehängt).
+# prüfen. Rückgabe: 0 eingehängt am festen Ort, 2 Eigenschaften aus dem Strom (gesperrt),
+# 4 ein fester Wert fehlt (props-not-applied, gesperrt), 3 Einhängen gescheitert oder falscher
+# Ort (wieder ausgehängt).
 verify_and_mount() {
   local target="$1" where
   mirror_mountpoint "${target}"
   RECEIVED_FOUND="$(received_properties "${target}")"
   if [[ -n "${RECEIVED_FOUND}" ]]; then
-    # Ein schon eingehängter Spiegel (inkrementeller Empfang) wird ausgehängt; canmount=noauto
-    # hält ihn auch nach einem Neustart ausgehängt, bis er von Hand zurückgesetzt ist.
-    if [[ "$(value_of mounted "${target}")" == yes ]]; then
-      zfs unmount -- "${target}" >/dev/null 2>&1 || true
-    fi
-    zfs set -- canmount=noauto "${target}" >/dev/null 2>&1 || true
+    lock_mirror "${target}"
     return 2
+  fi
+  # Fehlt dem Empfang ein Recht, übergeht zfs receive das -o mit Exit-Code 0; der Wert hat
+  # dann die Quelle default oder inherited, nicht received. Pflicht nach jedem Empfang.
+  if ! mirror_properties_ok "${target}"; then
+    lock_mirror "${target}"
+    return 4
   fi
   if [[ "$(value_of mounted "${target}")" != yes ]]; then
     zfs mount -- "${target}" >/dev/null 2>&1 || return 3
@@ -217,6 +235,51 @@ same_content() {
 
 snapshots_of() { zfs list -H -t snapshot -o name -s createtxg -- "$1" 2>/dev/null || true; }
 
+# Wie check_mirror_properties, aber ohne Ausgabe: 0, wenn alle festen Werte und der feste
+# Ort am Spiegel stehen, Quelle local. Abweichende Namen in PROPS_OFF.
+mirror_properties_ok() {
+  local dataset="$1" i pair name value
+  PROPS_OFF=""
+  mirror_mountpoint "${dataset}"
+  for ((i = 0; i < ${#RECEIVE_OPTIONS[@]}; i++)); do
+    if [[ "${RECEIVE_OPTIONS[i]}" != -o ]]; then
+      continue
+    fi
+    pair="${RECEIVE_OPTIONS[i + 1]}"
+    name="${pair%%=*}"
+    value="${pair#*=}"
+    if [[ "$(value_of "${name}" "${dataset}")" != "${value}" ||
+      "$(prop_source "${name}" "${dataset}")" != local ]]; then
+      PROPS_OFF+=" ${name}"
+    fi
+  done
+  if [[ "$(value_of mountpoint "${dataset}")" != "${MOUNT_SHOWN}" ||
+    "$(prop_source mountpoint "${dataset}")" != local ]]; then
+    PROPS_OFF+=" mountpoint"
+  fi
+  [[ -z "${PROPS_OFF}" ]]
+}
+
+# Verstellt alle festen Eigenschaften als root, damit ein folgender Empfang zeigen muss, ob
+# seine -o wirken: vererbbare werden zurückgesetzt (nicht mehr local), die übrigen bekommen
+# einen abweichenden Wert.
+reset_fixed_properties() {
+  local i name
+  for ((i = 0; i < ${#RECEIVE_OPTIONS[@]}; i++)); do
+    if [[ "${RECEIVE_OPTIONS[i]}" != -o ]]; then
+      continue
+    fi
+    name="${RECEIVE_OPTIONS[i + 1]%%=*}"
+    case "${name}" in
+      canmount) zfs set -- canmount=noauto "$1" >/dev/null 2>&1 || true ;;
+      quota | refquota) zfs set -- "${name}=10G" "$1" >/dev/null 2>&1 || true ;;
+      reservation | refreservation) zfs set -- "${name}=1M" "$1" >/dev/null 2>&1 || true ;;
+      *) zfs inherit -- "${name}" "$1" >/dev/null 2>&1 || true ;;
+    esac
+  done
+  zfs inherit -- mountpoint "$1" >/dev/null 2>&1 || true
+}
+
 # Alle mit -o gesetzten Werte und der feste Ort müssen am Spiegel stehen, Quelle local.
 # Mit "gesperrt" wird canmount=noauto statt on erwartet.
 check_mirror_properties() {
@@ -264,7 +327,7 @@ remove_tree() {
     printf 'zfs-check: %s trägt %s nicht; nichts entfernt\n' "${root}" "${PROPERTY}" >&2
     return 1
   fi
-  zfs unallow -u "${ALLOWED_USER:-nobody}" -- receive:append,mount,create "${root}" >/dev/null 2>&1 || true
+  zfs unallow -u "${RECV_UID}" -- "${root}" >/dev/null 2>&1 || true
   while ((progress)); do
     progress=0
     names="$(zfs list -H -t snapshot -o name -r -- "${root}" 2>/dev/null || true)"
@@ -381,6 +444,12 @@ prepare_target() {
   zpool list -H -o name -- "${POOL}" >/dev/null 2>&1 || stop "Pool ${POOL} fehlt"
   if [[ "$(zfs get -H -o value -- type "${MIRROR_ROOT}" 2>/dev/null)" != filesystem ]]; then
     stop "${MIRROR_ROOT} fehlt; zuerst den Schritt Groß prüfen ausführen (Share twinraid-mirror anlegen)"
+  fi
+  # Mit der Delegation für guard.sh (E27) erbte das Test-Dataset alle Rechte; Z1b und die
+  # Prüfung von receive:append lieferten dann falsche Ergebnisse (Konzept 5.6).
+  if [[ -n "$(zfs allow -- "${MIRROR_ROOT}" 2>/dev/null)" ]]; then
+    zfs allow -- "${MIRROR_ROOT}" >&2
+    stop "auf ${MIRROR_ROOT} oder ${POOL} sind Rechte delegiert; vorher entfernen, etwa mit: zfs unallow -u ${RECV_UID} ${MIRROR_ROOT} (nach dem Lauf nach docs/EINRICHTUNG.md neu setzen)"
   fi
   if zfs list -H -o name -- "${TARGET_ROOT}" >/dev/null 2>&1; then
     zfs list -H -t all -o name -r -- "${TARGET_ROOT}" >&2
@@ -854,59 +923,316 @@ report_x() {
 # ROOT, mit einem Benutzer ohne Rechte; die Rechte gelten nur auf ROOT und werden am
 # Ende entfernt. Ein Ergebnis in jede Richtung ist kein FEHLER, sondern ein Befund.
 check_receive_append() {
-  local src="${ROOT}/src" deleg="${ROOT}/delegiert" uid gid user=nobody incremental full reason
+  local src="${ROOT}/src" deleg="${ROOT}/delegiert" incremental full reason
   echo "== receive:append"
   if ! command -v setpriv >/dev/null; then
     info "receive:append: setpriv fehlt; nicht geprüft"
     return 0
   fi
-  uid="$(id -u "${user}" 2>/dev/null)" || {
-    info "receive:append: Benutzer nobody fehlt; nicht geprüft"
-    return 0
-  }
-  gid="$(id -g "${user}")"
   send_receive "${deleg}" "${src}@a" >/dev/null 2>&1 || {
     bad "receive:append: Test-Dataset nicht angelegt"
     return 0
   }
   zfs set -- "${PROPERTY}=${RUN_ID}" "${deleg}"
   # receive:append braucht laut zfs-allow(8) zusätzlich mount und create.
-  if ! zfs allow -u "${user}" -- receive:append,mount,create "${ROOT}" >/dev/null 2>&1; then
-    info "receive:append: in dieser Version von OpenZFS nicht verfügbar"
+  if ! zfs allow -u "${RECV_UID}" -- "${RECV_BASE_PERMS}" "${ROOT}" >/dev/null 2>&1; then
+    info "receive:append: in dieser Version von OpenZFS nicht verfügbar oder UID ${RECV_UID} nicht angenommen"
     return 0
   fi
-  ALLOWED_USER="${user}"
   incremental="$(mktemp)"
   full="$(mktemp)"
   zfs send -L -c -e -i "${src}@a" "${src}@b" >"${incremental}"
   zfs send -L -c -e "${src}@a" >"${full}"
-  if reason="$(setpriv --reuid "${uid}" --regid "${gid}" --clear-groups -- \
-    zfs receive -u -- "${deleg}" <"${incremental}" 2>&1)"; then
+  if reason="$(as_receiver zfs receive -u -- "${deleg}" <"${incremental}" 2>&1)"; then
     info "receive:append: inkrementeller Empfang als Benutzer ohne root klappt"
   else
     reason="${reason%%$'\n'*}"
     info "receive:append: inkrementeller Empfang als Benutzer ohne root scheitert (${reason//[^A-Za-z0-9 :._\/@-]/})"
   fi
   # Bewusst -F, als Benutzer ohne root und nur auf das eigene Test-Dataset: genau das
-  # soll receive:append verhindern (Konzept 3.7). Es ist die einzige Stelle mit -F.
-  if setpriv --reuid "${uid}" --regid "${gid}" --clear-groups -- \
-    zfs receive -u -F -- "${deleg}" <"${full}" >/dev/null 2>&1; then
+  # soll receive:append verhindern (Konzept 3.7).
+  if as_receiver zfs receive -u -F -- "${deleg}" <"${full}" >/dev/null 2>&1; then
     info "receive:append: Empfang mit -F wurde NICHT verhindert; trägt nicht als zweite Sperre"
   else
     info "receive:append: Empfang mit -F wurde verhindert"
   fi
-  if setpriv --reuid "${uid}" --regid "${gid}" --clear-groups -- \
-    zfs destroy -- "${deleg}@a" >/dev/null 2>&1; then
+  if as_receiver zfs destroy -- "${deleg}@a" >/dev/null 2>&1; then
     info "receive:append: Löschen eines Snapshots wurde NICHT verhindert"
   else
     info "receive:append: Löschen eines Snapshots wurde verhindert"
   fi
   rm -f -- "${incremental}" "${full}"
-  if zfs unallow -u "${user}" -- receive:append,mount,create "${ROOT}" >/dev/null 2>&1; then
+  if zfs unallow -u "${RECV_UID}" -- "${ROOT}" >/dev/null 2>&1; then
     ok "receive:append: Recht wieder entfernt"
-    ALLOWED_USER=""
   else
     bad "receive:append: Recht nicht entfernt"
+  fi
+}
+
+# --- Z1b: Empfang ohne root mit der vollen festen Befehlszeile (Konzept 3.7, E27) ---------
+
+# Führt einen Befehl als UID/GID 64000 aus: ohne Gruppen, ohne Capabilities, no_new_privs.
+as_receiver() {
+  setpriv --reuid "${RECV_UID}" --regid "${RECV_GID}" --clear-groups --inh-caps=-all \
+    --bounding-set=-all --no-new-privs -- "$@"
+}
+
+# Empfang mit der festen Befehlszeile als UID 64000. Erste Fehlerzeile in RECV_ERROR.
+receive_as_receiver() {
+  local target="$1" err rc=0
+  shift
+  mirror_mountpoint "${target}"
+  err="$(zfs send -L -c -e "$@" | as_receiver zfs receive "${RECEIVE_OPTIONS[@]}" \
+    -o "mountpoint=${MOUNT_VALUE}" -- "${target}" 2>&1 >/dev/null)" || rc=$?
+  RECV_ERROR="${err%%$'\n'*}"
+  RECV_ERROR="${RECV_ERROR//[^A-Za-z0-9 :._\/@-]/}"
+  return "${rc}"
+}
+
+# Setzt für UID 64000 auf dem Parent genau diese Rechte.
+grant_receiver() {
+  zfs unallow -u "${RECV_UID}" -- "$1" >/dev/null 2>&1 || true
+  zfs allow -u "${RECV_UID}" -- "$2" "$1" >/dev/null 2>&1
+}
+
+# Entfernt ein Dataset dieses Laufs als root: erst die Snapshots einzeln, nie -r.
+drop_dataset() {
+  local snap
+  while IFS= read -r snap; do
+    if [[ -n "${snap}" ]]; then
+      zfs destroy -- "${snap}" >/dev/null 2>&1 || true
+    fi
+  done < <(snapshots_of "$1")
+  zfs destroy -- "$1" >/dev/null 2>&1 || true
+}
+
+# Rechte für die festen -o: der Name der Eigenschaft, eigene Eigenschaften als userprop.
+receive_property_perms() {
+  local i name list=() seen=" "
+  for ((i = 0; i < ${#RECEIVE_OPTIONS[@]}; i++)); do
+    if [[ "${RECEIVE_OPTIONS[i]}" != -o ]]; then
+      continue
+    fi
+    name="${RECEIVE_OPTIONS[i + 1]%%=*}"
+    if [[ "${name}" == *:* ]]; then
+      name=userprop
+    fi
+    if [[ "${seen}" != *" ${name} "* ]]; then
+      list+=("${name}")
+      seen+="${name} "
+    fi
+  done
+  list+=(mountpoint)
+  printf '%s\n' "${list[@]}"
+}
+
+# Ein Versuch mit diesen Rechten: vollständig in ein neues Dataset und inkrementell in einen
+# Spiegel, den root vollständig empfangen und eingehängt hat (wie bei guard.sh). Gelungen nur,
+# wenn danach alle festen Werte mit Quelle local am Spiegel stehen: zfs receive übergeht ein
+# -o ohne das passende Recht mit Exit-Code 0. Vor dem inkrementellen Empfang setzt root die
+# Werte zurück, damit sich zeigt, ob die -o auch dort wirken.
+Z1B_TRIAL=0
+Z1B_STEP=""
+z1b_trial() {
+  local parent="$1" perms="$2" src="$3" n full incr ok=0
+  grant_receiver "${parent}" "${perms}" || return 1
+  Z1B_TRIAL=$((Z1B_TRIAL + 1))
+  n="${Z1B_TRIAL}"
+  full="${parent}/v${n}"
+  incr="${parent}/i${n}"
+  Z1B_STEP=vollständig
+  if receive_as_receiver "${full}" "${src}@a" && mirror_properties_ok "${full}"; then
+    Z1B_STEP=inkrementell
+    if send_receive "${incr}" "${src}@a" >/dev/null 2>&1; then
+      reset_fixed_properties "${incr}"
+      if receive_as_receiver "${incr}" -i "${src}@a" "${src}@b" && mirror_properties_ok "${incr}"; then
+        ok=1
+      fi
+    fi
+  fi
+  drop_dataset "${full}"
+  drop_dataset "${incr}"
+  ((ok))
+}
+
+# Ein absichtlich fehlendes Recht: zfs receive endet mit Exit-Code 0, übergeht aber das -o.
+# Die Prüfung nach dem Empfang muss sperren wie bei received-properties (props-not-applied).
+check_missing_right() {
+  local parent="$1" perms="$2" src="$3" missing="${1}/ohne-recht" list=() reduced="" right=""
+  local q rc source
+  IFS=, read -r -a list <<<"${perms}"
+  # Bevorzugt exec (ein Spiegel mit exec=on wäre gefährlich), sonst das erste Recht für eine
+  # Eigenschaft der festen Befehlszeile.
+  if [[ ",${perms}," == *",exec,"* ]]; then
+    right="exec"
+  else
+    for q in "${list[@]}"; do
+      if [[ ",${RECV_BASE_PERMS},userprop,mountpoint," != *",${q},"* ]]; then
+        right="${q}"
+        break
+      fi
+    done
+  fi
+  for q in "${list[@]}"; do
+    if [[ "${q}" != "${right}" ]]; then
+      reduced+="${reduced:+,}${q}"
+    fi
+  done
+  if [[ -z "${right}" ]]; then
+    info "Z1b: kein Recht für ein festes -o in der Liste; Fall mit fehlendem Recht entfällt"
+    return 0
+  fi
+  grant_receiver "${parent}" "${reduced}" || bad "Z1b: Rechte ohne ${right} nicht gesetzt"
+  rc=0
+  receive_as_receiver "${missing}" "${src}@a" || rc=$?
+  if ((rc == 0)); then
+    info "Z1b: ohne Recht ${right}: zfs receive endet mit Exit-Code 0"
+  else
+    info "Z1b: ohne Recht ${right}: zfs receive scheitert (Code ${rc}: ${RECV_ERROR})"
+  fi
+  if zfs list -H -o name -- "${missing}" >/dev/null 2>&1; then
+    source="$(prop_source "${right}" "${missing}")"
+    if [[ "${source}" != local && "${source}" != received ]]; then
+      ok "Z1b: ohne Recht ${right}: Wert nicht gesetzt, Quelle ${source} (nicht received)"
+    else
+      bad "Z1b: ohne Recht ${right}: Quelle ${source}"
+    fi
+    rc=0
+    verify_and_mount "${missing}" || rc=$?
+    if ((rc == 4)) && [[ "$(value_of mounted "${missing}")" == no &&
+      "$(value_of canmount "${missing}")" == noauto &&
+      "$(prop_source canmount "${missing}")" == local ]]; then
+      ok "Z1b: fehlendes Recht: gesperrt (props-not-applied), nicht eingehängt, canmount=noauto"
+    else
+      bad "Z1b: fehlendes Recht nicht gesperrt (Code ${rc})"
+    fi
+    drop_dataset "${missing}"
+  fi
+  grant_receiver "${parent}" "${perms}" || bad "Z1b: Rechte nicht wiederhergestellt"
+}
+
+check_receive_unprivileged() {
+  local src="${ROOT}/z1b-quelle" parent="${ROOT}/z1b" mirror perms all p kept=() dir rc line
+  echo "== Z1b: Empfang ohne root mit der festen Befehlszeile"
+  if ! command -v setpriv >/dev/null; then
+    info "Z1b: setpriv fehlt; nicht geprüft"
+    return 0
+  fi
+  zfs create -o "${PROPERTY}=${RUN_ID}" -- "${src}" >/dev/null
+  dir="$(mountpoint_of "${src}")"
+  printf 'eins\n' >"${dir}/eins.txt"
+  zfs snapshot -- "${src}@a"
+  printf 'zwei\n' >"${dir}/zwei.txt"
+  zfs snapshot -- "${src}@b"
+  printf 'drei\n' >"${dir}/drei.txt"
+  zfs snapshot -- "${src}@c"
+  zfs create -o "${PROPERTY}=${RUN_ID}" -- "${parent}" >/dev/null
+  if ! zfs allow -u "${RECV_UID}" -- "${RECV_BASE_PERMS}" "${parent}" >/dev/null 2>&1; then
+    info "Z1b: zfs allow nimmt die numerische UID ${RECV_UID} nicht an; Rückfrage nötig (Konzept 3.7)"
+    return 0
+  fi
+  ok "Z1b: zfs allow nimmt die numerische UID ${RECV_UID} an"
+  mirror="${parent}/basis"
+  if ! receive_as_receiver "${mirror}" "${src}@a"; then
+    info "Z1b: nur ${RECV_BASE_PERMS}: Empfang scheitert (${RECV_ERROR})"
+  elif mirror_properties_ok "${mirror}"; then
+    info "Z1b: nur ${RECV_BASE_PERMS}: Empfang klappt mit allen festen Werten"
+  else
+    info "Z1b: nur ${RECV_BASE_PERMS}: Exit-Code 0, aber diese festen Werte fehlen:${PROPS_OFF}"
+    if [[ -n "${RECV_ERROR}" ]]; then
+      info "Z1b: erste Meldung von zfs receive: ${RECV_ERROR}"
+    fi
+  fi
+  drop_dataset "${mirror}"
+  mapfile -t all < <(receive_property_perms)
+  perms="${RECV_BASE_PERMS}"
+  for p in "${all[@]}"; do
+    perms+=",${p}"
+  done
+  if ! z1b_trial "${parent}" "${perms}" "${src}"; then
+    bad "Z1b: Empfang ohne root (${Z1B_STEP}) scheitert auch mit allen Rechten (${RECV_ERROR}; fehlend:${PROPS_OFF})"
+    zfs unallow -u "${RECV_UID}" -- "${parent}" >/dev/null 2>&1 || true
+    return 0
+  fi
+  ok "Z1b: Empfang ohne root mit allen Rechten klappt (vollständig und inkrementell)"
+  # Ein Recht nach dem anderen streichen, solange der Empfang noch klappt.
+  kept=("${all[@]}")
+  for p in "${all[@]}"; do
+    local candidate=() q
+    for q in "${kept[@]}"; do
+      if [[ "${q}" != "${p}" ]]; then
+        candidate+=("${q}")
+      fi
+    done
+    perms="${RECV_BASE_PERMS}"
+    for q in "${candidate[@]+"${candidate[@]}"}"; do
+      perms+=",${q}"
+    done
+    if z1b_trial "${parent}" "${perms}" "${src}"; then
+      kept=("${candidate[@]+"${candidate[@]}"}")
+    fi
+  done
+  perms="${RECV_BASE_PERMS}"
+  for q in "${kept[@]+"${kept[@]}"}"; do
+    perms+=",${q}"
+  done
+  info "Z1b: nötige Rechte: ${perms}"
+  grant_receiver "${parent}" "${perms}" || bad "Z1b: Rechte nicht gesetzt"
+  while IFS= read -r line; do
+    info "Z1b: zfs allow: ${line//[^A-Za-z0-9 ,:._\/@+-]/}"
+  done < <(zfs allow -- "${parent}" 2>/dev/null || true)
+  # Der ganze Ablauf wie bei guard.sh: Empfang ohne root, alles Weitere als root.
+  mirror="${parent}/spiegel"
+  if receive_as_receiver "${mirror}" "${src}@a"; then ok "Z1b: vollständiger Empfang ohne root"; else
+    bad "Z1b: vollständiger Empfang ohne root (${RECV_ERROR})"
+    return 0
+  fi
+  rc=0
+  verify_and_mount "${mirror}" || rc=$?
+  if ((rc == 0)); then
+    ok "Z1b: als root eingehängt am festen Ort, keine Eigenschaft aus dem Strom"
+  else
+    bad "Z1b: Einhängen als root (Code ${rc})"
+  fi
+  check_mirror_properties "${mirror}" "Z1b: feste Werte nach dem Empfang ohne root"
+  expect_success "Z1b: twinraid:received als root gesetzt" \
+    zfs set -- "twinraid:received=$(date +%s)" "${mirror}@a"
+  if receive_as_receiver "${mirror}" -i "${src}@a" "${src}@b"; then
+    ok "Z1b: inkrementeller Empfang ohne root (Spiegel eingehängt)"
+  else
+    bad "Z1b: inkrementeller Empfang ohne root (${RECV_ERROR})"
+  fi
+  rc=0
+  verify_and_mount "${mirror}" || rc=$?
+  if ((rc == 0)); then ok "Z1b: nach dem inkrementellen Empfang eingehängt"; else
+    bad "Z1b: Einhängen nach dem inkrementellen Empfang (Code ${rc})"
+  fi
+  # Gegenprobe als UID 64000. Bewusst -F, nur auf das eigene Test-Dataset (Konzept 3.7).
+  if zfs send -L -c -e "${src}@c" | as_receiver zfs receive -u -F -- "${mirror}" >/dev/null 2>&1; then
+    bad "Z1b: Empfang mit -F wurde NICHT verhindert"
+  else
+    ok "Z1b: Empfang mit -F verhindert"
+  fi
+  expect_failure "Z1b: Löschen eines Snapshots verhindert" as_receiver zfs destroy -- "${mirror}@a"
+  # Auf den neuesten Snapshot ginge ein Rollback ohne -r; verhindern muss es das fehlende Recht.
+  expect_failure "Z1b: Rollback verhindert" as_receiver zfs rollback -- "${mirror}@b"
+  # Ein leeres Dataset ohne Snapshots ließe sich ohne -r löschen; ebenso nur mit dem Recht.
+  zfs create -o "${PROPERTY}=${RUN_ID}" -- "${parent}/leer" >/dev/null
+  expect_failure "Z1b: Löschen eines Datasets verhindert" as_receiver zfs destroy -- "${parent}/leer"
+  zfs destroy -- "${parent}/leer" >/dev/null 2>&1 || true
+  if as_receiver zfs set -- readonly=off "${mirror}" >/dev/null 2>&1; then
+    info "Z1b: zfs set readonly=off als UID ${RECV_UID}: möglich (Recht readonly delegiert)"
+    zfs set -- readonly=on "${mirror}"
+  else
+    info "Z1b: zfs set readonly=off als UID ${RECV_UID}: verhindert"
+  fi
+  expect_success "Z1b: Löschen eines alten Snapshots als root (Aufbewahrung)" \
+    zfs destroy -- "${mirror}@a"
+  check_missing_right "${parent}" "${perms}" "${src}"
+  if zfs unallow -u "${RECV_UID}" -- "${parent}" >/dev/null 2>&1; then
+    ok "Z1b: Rechte wieder entfernt"
+  else
+    bad "Z1b: Rechte nicht entfernt"
   fi
 }
 
@@ -1021,6 +1347,7 @@ case "${MODE}" in
     fi
     run_cases
     check_receive_append
+    check_receive_unprivileged
     if [[ "${MODE}" == target ]]; then
       measure_memory
     fi

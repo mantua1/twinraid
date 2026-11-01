@@ -89,6 +89,13 @@ TEST_SCRIPT="$(template_value PostArgs)"
 
 guard() { /bin/bash "${GUARD}" "$@"; }
 
+# Pause zwischen zwei Läufen aufheben. reset-run-interval kehrt zurück, sobald der Wächter die
+# Anfrage übernommen hat; status.json schreibt er im nächsten Durchlauf, und selftest liest sie.
+lift_pause() {
+  guard reset-run-interval >/dev/null
+  wait_status run_allowed_at null 15
+}
+
 # Ein Feld aus status.json, Schlüssel mit Punkten getrennt; null für fehlende Werte.
 status_field() {
   python3 - "${STATUS}" "$1" <<'PY'
@@ -243,7 +250,7 @@ expect_equal "request: regular empty file of root, 0600" "$(stat -c '%F %U %a' "
 expect_equal "state/: root, 0755" "$(stat -c '%U %a' "${BASE}/state")" "root 755"
 expect_equal "private/: root, 0700" "$(stat -c '%U %a' "${BASE}/private")" "root 700"
 expect_equal "status.json: 0644" "$(stat -c '%a' "${STATUS}")" 644
-expect_equal "protocol 1" "$(status_field protocol)" 1
+expect_equal "protocol 2" "$(status_field protocol)" 2
 expect_equal "zfs unavailable on the runner, guard still active" "$(status_field zfs.state)" unavailable
 
 echo "== Container und Konfiguration"
@@ -350,8 +357,9 @@ send finish
 for name in "${OTHER}" sg-twin-image sg-twin-label sg-twin-mount sg-twin-varrun "${APP}"; do
   expect_equal "${name} still runs" "$(running_state "${name}")" true
 done
+# Ohne ZFS auf dem Runner (der ZFS-Teil läuft in docker/source-guard-sync-test.sh).
 send snapshot
-expect_equal "snapshot not supported in version 1" "${RESULT}" not_supported
+expect_equal "snapshot without ZFS" "${RESULT}" zfs_unavailable
 
 echo "== Angriffe aus dem Container"
 for attempt in "rm -f /srv/worker/source-guard/request" \
@@ -382,7 +390,7 @@ sleep 2
 expect_equal "old number is ignored" "$(status_field run)" null
 expect_not_contains "marker not in status.json" "$(cat "${STATUS}")" leakmarker4711
 expect_not_contains "marker not in syslog" "$(syslog)" leakmarker4711
-guard reset-run-interval >/dev/null
+lift_pause
 send begin
 expect_equal "valid order after the attacks" "${RESULT}" opened
 send finish
@@ -398,7 +406,7 @@ chown 0 "${REQUEST}"
 expect_wait "recovers after owner change" error null
 
 echo "== Totmannschalter (30 s)"
-guard reset-run-interval >/dev/null
+lift_pause
 send begin
 send "stop ${TEST}" 40
 expect_equal "stopped for deadman test" "${RESULT}" stopped
@@ -410,16 +418,16 @@ echo "== selftest"
 docker stop -t 1 "${APP}" >/dev/null
 out="$(guard selftest "${TEST}" 2>&1)" || true
 expect_contains "selftest refuses during the pause" "${out}" reset-run-interval
-guard reset-run-interval >/dev/null
+lift_pause
 out="$(guard selftest "${TEST}" 2>&1)" || true
 expect_contains "selftest with the test container" "${out}" "OK: angehalten und wieder gestartet."
-guard reset-run-interval >/dev/null
+lift_pause
 out="$(guard selftest "${OTHER}" 2>&1)" || true
 expect_contains "selftest with a refused container" "${out}" "OK: abgelehnt (not_allowed)"
 docker start "${APP}" >/dev/null
 
 echo "== Neustarts"
-guard reset-run-interval >/dev/null
+lift_pause
 send begin
 send "stop ${TEST}" 40
 started="$(status_field started_at)"

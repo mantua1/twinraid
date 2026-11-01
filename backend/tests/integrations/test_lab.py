@@ -14,9 +14,15 @@ from twinraid.integrations.mocks.lab import (
     set_flag,
     tour_flag,
 )
-from twinraid.integrations.mocks.status import SCENARIO
+from twinraid.integrations.mocks.status import MOCK_ARC_MAX, MOCK_C_MAX_UNLIMITED, SCENARIO
 from twinraid.shared.actions import ActionOutcome
-from twinraid.shared.status import ResourceState, StatusNotice, StatusReason, WatchRetry
+from twinraid.shared.status import (
+    ResourceState,
+    StatusNotice,
+    StatusReason,
+    TargetZfs,
+    WatchRetry,
+)
 
 pytestmark = pytest.mark.anyio
 NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
@@ -199,6 +205,16 @@ def test_fault_names_are_fixed(tmp_path: Path) -> None:
         "source-guard-inactive",
         "source-guard-lost",
         "source-guard-start-failed",
+        "sync-deletions",
+        "sync-empty-source",
+        "sync-target-refused",
+        "target-exists",
+        "target-clone",
+        "sync-send-error",
+        "sync-slow",
+        "vm-device-busy",
+        "vm-memory-low",
+        "arc-unlimited",
     )
     for name in ("../etc", "api-forbidden"):
         with pytest.raises(ValueError, match="unknown fault"):
@@ -289,3 +305,55 @@ async def test_no_pause_while_the_target_is_off(tmp_path: Path) -> None:
     status = await lab.get_status()
     assert status.vm.reason is StatusReason.TARGET_OFFLINE
     assert status.watch_retry is None
+
+
+async def test_arc_values_only_while_the_target_answers(tmp_path: Path) -> None:
+    """Werte des ARC aus der Statuszeile von vm-watch (guard.sh 3, Konzept 3.5)."""
+    clock = Clock()
+    lab = _lab(tmp_path, clock)
+    assert (await lab.get_status()).target_zfs is None
+    await lab.wake()
+    clock.now = 30
+    status = await lab.get_status()
+    assert status.target_zfs == TargetZfs(arc_max=MOCK_ARC_MAX, c_max=MOCK_ARC_MAX)
+    assert StatusNotice.TARGET_ARC_UNLIMITED not in status.notices
+    _fault(tmp_path, "arc-unlimited")
+    status = await lab.get_status()
+    assert status.target_zfs == TargetZfs(arc_max=0, c_max=MOCK_C_MAX_UNLIMITED)
+    assert StatusNotice.TARGET_ARC_UNLIMITED in status.notices
+    # Ohne Statuszeile (VM-Dienst nicht bereit) gibt es auch keine Werte des ARC.
+    _fault(tmp_path, "libvirt-down")
+    status = await lab.get_status()
+    assert status.target_zfs is None
+    assert StatusNotice.TARGET_ARC_UNLIMITED not in status.notices
+
+
+@pytest.mark.parametrize(
+    ("fault", "outcome"),
+    [
+        ("vm-memory-low", ActionOutcome.VM_MEMORY_LOW),
+        ("vm-device-busy", ActionOutcome.VM_DEVICE_BUSY),
+    ],
+)
+async def test_vm_start_refused_like_guard_sh_3(
+    tmp_path: Path, fault: str, outcome: ActionOutcome
+) -> None:
+    lab, _clock = await _booted(tmp_path)
+    _fault(tmp_path, fault)
+    with pytest.raises(ActionError) as caught:
+        await lab.start_vm()
+    assert caught.value.outcome is outcome
+    status = await lab.get_status()
+    assert status.vm.state is ResourceState.OFFLINE
+    # Ein belegtes Gerät heißt: Eine weitere VM läuft und nutzt es.
+    others = ("Test-VM",) if fault == "vm-device-busy" else ()
+    assert status.other_vms_running == others
+
+
+async def test_memory_check_comes_first(tmp_path: Path) -> None:
+    lab, _clock = await _booted(tmp_path)
+    _fault(tmp_path, "vm-memory-low")
+    _fault(tmp_path, "vm-device-busy")
+    with pytest.raises(ActionError) as caught:
+        await lab.start_vm()
+    assert caught.value.outcome is ActionOutcome.VM_MEMORY_LOW

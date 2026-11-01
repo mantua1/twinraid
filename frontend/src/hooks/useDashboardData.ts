@@ -20,6 +20,8 @@ export interface DashboardData {
   acknowledgeCaChange: () => Promise<void>;
   // Fordert eine Aktion an; Fortschritt und Ergebnis kommen über den Live-Status.
   runAction: (name: ActionName) => Promise<ActionRequestResult>;
+  // Bricht den laufenden Probelauf ab; false, wenn das nicht geklappt hat.
+  cancelSync: (jobId: string) => Promise<boolean>;
 }
 
 interface StaticData {
@@ -116,5 +118,21 @@ export function useDashboardData(onUnauthorized: () => void): DashboardData {
     [onUnauthorized, refreshAudit],
   );
 
-  return { ...data, stream, acknowledgeCaChange, runAction };
+  const cancelSync = useCallback(
+    async (jobId: string): Promise<boolean> => {
+      try {
+        const done = await api.cancelSync(jobId);
+        refreshAudit();
+        return done;
+      } catch (error) {
+        if (error instanceof UnauthorizedError) {
+          onUnauthorized();
+        }
+        return false;
+      }
+    },
+    [onUnauthorized, refreshAudit],
+  );
+
+  return { ...data, stream, acknowledgeCaChange, runAction, cancelSync };
 }

@@ -13,5 +13,11 @@ ssh-keygen -A
 # Die Gaming-VM und eine zweite VM, beide aus. power.conf legt der Test an.
 printf '[{"uuid": "%s", "name": "%s", "state": "shut off"},' "${FAKE_VM_UUID}" "${FAKE_VM_NAME}" >/state/vms.json
 printf ' {"uuid": "7c6b5a49-3827-4161-9504-f3e2d1c0b9a8", "name": "Second VM", "state": "shut off"}]\n' >>/state/vms.json
+# Nachgebautes zfs (Modus sync, ab v0.5.1): Pool und Wurzel wie nach „Groß prüfen“ und
+# die Delegation aus der Anleitung (Konzept 3.7). Der Empfang läuft wirklich als UID 64000
+# und schreibt in dieselben Dateien.
+cp /opt/fake/zfs-state.json /state/zfs.json
+touch /state/zfs.log
+chmod 0666 /state/zfs.json /state/zfs.log
 python3 /opt/fake/fake_target.py &
 exec /usr/sbin/sshd -D -e

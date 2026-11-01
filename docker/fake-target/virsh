@@ -6,12 +6,15 @@ Nur die Aufrufe, die guard.sh macht. Zustand im Ordner FAKE_VIRSH_STATE
 
   vms.json              [{"uuid": …, "name": …, "state": "running"}, …]
                         state wie bei virsh: running, idle, paused, in shutdown,
-                        shut off, crashed, pmsuspended, no state
+                        shut off, crashed, pmsuspended, no state; optional
+                        "memory_kib" für "Max memory" bei dominfo (Standard 524288)
   libvirt-down          vorhanden: der VM-Dienst läuft nicht (Exit 1)
   virsh-hang            vorhanden: virsh antwortet nicht (schläft 60 s)
   vm-hang               vorhanden: "shutdown" wird ignoriert (VM reagiert nicht auf ACPI)
   other-vm-on-shutdown  vorhanden: bei "shutdown" startet eine weitere VM
                         (die erste in vms.json, die nicht gemeint ist)
+  device-busy           vorhanden: "start" scheitert, weil ein durchgereichtes Gerät
+                        von einer anderen VM benutzt wird (Meldung wie libvirt)
   virsh.log             jeder Aufruf als Zeile mit den Argumenten
 """
 
@@ -76,10 +79,22 @@ def main(arguments: list[str]) -> None:
         say(find(vms, domain(rest))["state"] + "\n")
     elif command == "domname":
         say(find(vms, domain(rest))["name"] + "\n")
+    elif command == "dominfo":
+        vm = find(vms, domain(rest))
+        say(f"Id:             -\nName:           {vm['name']}\nUUID:           {vm['uuid']}")
+        say(f"OS Type:        hvm\nState:          {vm['state']}\nCPU(s):         4")
+        memory = vm.get("memory_kib", 524288)
+        say(f"Max memory:     {memory} KiB\nUsed memory:    {memory} KiB\nPersistent:     yes\n")
     elif command == "start":
         vm = find(vms, domain(rest))
         if vm["state"] != "shut off":
             fail("Requested operation is not valid: domain is already running")
+        if (STATE / "device-busy").exists():
+            sys.stderr.write(f"error: Failed to start domain '{vm['name']}'\n")
+            fail(
+                "Requested operation is not valid: PCI device 0000:01:00.0 is in use by "
+                "driver QEMU, domain Other VM"
+            )
         vm["state"] = "running"
         save(vms)
         say(f"Domain '{vm['name']}' started")

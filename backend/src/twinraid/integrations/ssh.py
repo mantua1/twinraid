@@ -41,8 +41,9 @@ KEYSCAN_TIMEOUT_SECONDS = 15.0
 REMOTE_USER = "root"
 KEY_TYPE = "ssh-ed25519"
 GUARD_PATH = "/boot/config/twinraid/guard.sh"
-# TwinRaid 0.4.3 braucht guard.sh Version 2 (Modus status, Befehle ohne Parameter).
-REQUIRED_GUARD_VERSION = 2
+# TwinRaid 0.5.1 braucht guard.sh Version 3 (Statuszeile mit dem ARC, Speicherprüfung
+# vor vm-start, Modus sync; Konzept 3.5). Version 2 kam mit TwinRaid 0.4.3.
+REQUIRED_GUARD_VERSION = 3
 # guard.sh antwortet auf "check" mit "twinraid-guard <Version> <Modus> ok".
 GUARD_CHECK_PATTERN = re.compile(r"twinraid-guard (\d+) (status|power) ok", re.ASCII)
 # Exit-Codes von guard.sh: 2 abgelehnt, 3 erlaubt, aber von einer Prüfung abgewiesen.
@@ -58,6 +59,10 @@ _REFUSALS: dict[str, ActionOutcome] = {
     "vm-state-unknown": ActionOutcome.VM_SERVICE_UNAVAILABLE,
     # Auf Groß laufen schon zwei vm-watch-Schleifen; eine alte endet bald.
     "watch-busy": ActionOutcome.WATCH_INTERRUPTED,
+    # Ab Version 3: Start der VM (E25e) und poweroff während eines Empfangs (Konzept 3.5).
+    "memory-low": ActionOutcome.VM_MEMORY_LOW,
+    "device-busy": ActionOutcome.VM_DEVICE_BUSY,
+    "sync-running": ActionOutcome.SYNC_RUNNING,
 }
 _MAX_OUTPUT_BYTES = 64 * 1024
 # Feste Meldungen von OpenSSH (LC_ALL=C) und ihre Bedeutung.
@@ -257,7 +262,13 @@ class SshPower(GuardClient):
     """Die Aktionen im Modus "power"; die VM bestimmt power.conf auf Groß."""
 
     async def vm_start(self) -> None:
-        await self._request("vm-start", max(self._timeout, VM_START_TIMEOUT_SECONDS))
+        """Speicherprüfung und virsh start auf Groß; andere Fehler von virsh: vm_start_failed."""
+        try:
+            await self._request("vm-start", max(self._timeout, VM_START_TIMEOUT_SECONDS))
+        except SshError as error:
+            if error.outcome is ActionOutcome.REMOTE_FAILED:
+                raise SshError(ActionOutcome.VM_START_FAILED, error.detail) from None
+            raise
 
     async def vm_shutdown(self) -> None:
         """ACPI-Signal an die VM (virsh shutdown); erzwingt nichts (E8)."""

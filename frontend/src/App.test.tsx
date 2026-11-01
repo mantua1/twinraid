@@ -240,10 +240,21 @@ describe("live status", () => {
     expect(screen.getByText("Nicht erreichbar")).toHaveClass("text-destructive");
   });
 
-  it("shows a running copy job", async () => {
-    installFakeApi({ authenticated: true, status: { ...STATUS, job_running: true } });
+  it("shows a running dry run", async () => {
+    const running = {
+      kind: "dry_run" as const,
+      job_id: "0123456789abcdef0123456789abcdef",
+      step: "snapshot" as const,
+      started_at: "2026-10-13T12:00:00Z",
+    };
+    installFakeApi({
+      authenticated: true,
+      status: { ...STATUS, job_running: true, sync: { ...STATUS.sync, running } },
+    });
     render(<App />);
-    expect(await screen.findByText("Ein Kopierjob läuft.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Probelauf läuft: Snapshot auf Unraid Klein wird angelegt …"),
+    ).toBeInTheDocument();
   });
 
   it("reports an unavailable worker", async () => {

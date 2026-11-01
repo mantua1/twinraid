@@ -26,9 +26,6 @@ _MAX_HOSTNAME_LENGTH = 253
 
 _MAC_RE = re.compile(r"[0-9A-Fa-f]{2}([:-])(?:[0-9A-Fa-f]{2}\1){4}[0-9A-Fa-f]{2}", re.ASCII)
 
-# Zeichen, die rsync in Filterregeln als Muster auswertet.
-_PATH_PATTERN_CHARS = frozenset("*?[]\\")
-_MAX_PATH_LENGTH = 1024
 _MAX_DISPLAY_LENGTH = 64
 _MAX_VM_NAME_LENGTH = 128
 
@@ -53,30 +50,6 @@ def validate_share_name(value: str) -> str:
             f"share {value!r} must never be synced: mirroring it would destroy docker.img, "
             "libvirt.img or VM disks on the target"
         )
-    return value
-
-
-def validate_relative_path(value: str) -> str:
-    """Pfad relativ zu /mnt/user, z. B. "appdata/twinraid"."""
-    if value == "":
-        raise ValueError("path must not be empty")
-    if len(value) > _MAX_PATH_LENGTH:
-        raise ValueError(f"path is longer than {_MAX_PATH_LENGTH} characters")
-    if has_control_chars(value):
-        raise ValueError(f"path {value!r} contains control or invisible characters")
-    if value.startswith("/"):
-        raise ValueError(f"path {value!r} must be relative to /mnt/user (no leading '/')")
-    if any(ch in _PATH_PATTERN_CHARS for ch in value):
-        raise ValueError(
-            f"path {value!r} must not contain the wildcard characters * ? [ ] or a backslash"
-        )
-    for part in value.split("/"):
-        if part == "":
-            raise ValueError(f"path {value!r} must not contain empty parts ('//' or trailing '/')")
-        if part in {".", ".."}:
-            raise ValueError(f"path {value!r} must not contain '.' or '..' parts")
-        if part.startswith("-"):
-            raise ValueError(f"path {value!r} must not contain parts starting with '-'")
     return value
 
 

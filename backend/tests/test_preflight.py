@@ -43,3 +43,26 @@ def test_fails_with_invalid_config(
     monkeypatch.setenv("TWINRAID_CONFIG", str(bad))
     assert main() == 1
     assert "sync.shares[2]: share 'system' must never be synced" in capsys.readouterr().err
+
+
+def test_logs_warnings_of_the_configuration(capsys: pytest.CaptureFixture[str]) -> None:
+    """Der Zeitplan der Beispielkonfiguration läuft erst ab Phase 6 (Konzept 4.8)."""
+    assert main() == 0
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert "the schedule is not run" in err
+
+
+def test_fails_with_a_non_empty_exclude(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Eine nicht leere Liste täuschte einen Schutz vor, den es nicht mehr gibt (Konzept 6.3)."""
+    bad = tmp_path / "old.yaml"
+    bad.write_text(
+        EXAMPLE_CONFIG.read_text().replace(
+            "  copy_templates: false", "  copy_templates: false\n  exclude:\n    - appdata/twinraid"
+        )
+    )
+    monkeypatch.setenv("TWINRAID_CONFIG", str(bad))
+    assert main() == 1
+    assert "exclude is no longer supported since v0.5.1" in capsys.readouterr().err

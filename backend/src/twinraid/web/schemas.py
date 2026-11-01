@@ -21,6 +21,9 @@ class EnabledActions(StrictModel):
     wake: bool
     vm: bool
     shutdown: bool
+    # Ab v0.5.1: „Nur Probelauf“ (sync_dry_run oder sync) und der echte Sync (ab v0.5.2).
+    sync_dry_run: bool
+    sync: bool
 
 
 class AppInfo(StrictModel):

@@ -55,23 +55,19 @@ actions:
   wake: false                  # Groß wecken (Wake-on-LAN)
   vm: false                    # VM starten, herunterfahren, erzwingen
   shutdown: false              # Groß herunterfahren
+  sync_dry_run: false          # „Nur Probelauf“, schreibt nie nach Groß (ab v0.5.1)
+  sync: false                  # echter Sync, erlaubt auch den Probelauf (ab v0.5.2)
 
 sync:
-  shares:                      # identische Namen auf beiden Servern
-    - appdata
-    - dokumente
-    - medien
-  appdata_share: appdata
-  exclude:                     # wird nicht kopiert (relativ zu /mnt/user)
-    - appdata/twinraid
-  protect_on_target:           # wird auf Groß nie gelöscht
-    - appdata/_twinraid
-  max_deletions: 1000
-  stop_containers: true
-  never_stop:                  # werden für den Konsistenzlauf nie gestoppt
-    - twinraid
-  copy_templates: true
-  schedule:
+  shares:                      # Datasets mainpool/<Share> auf Klein, Spiegel
+    - appdata                  #   mainpool/twinraid-mirror/<Share> auf Groß;
+    - dokumente                #   dieselben Namen in source-guard.conf (Klein)
+    - medien                   #   und mirror.conf (Groß), siehe Konzept 4.3
+  stop_containers: true        # Container der Erlaubnisliste des Wächters für den Snapshot anhalten
+  never_stop: []               # zusätzlich nie anhalten; TwinRaid selbst ist immer ausgenommen
+  copy_templates: false        # ohne Wirkung bis v0.5.4
+  # Die Löschgrenze (max_deletions) steht in source-guard.conf auf Klein.
+  schedule:                    # wird erst ab Phase 6 ausgeführt
     enabled: true
     timezone: "Europe/Berlin"  # IANA-Zeitzone
     days: [sun]                # mon, tue, wed, thu, fri, sat, sun

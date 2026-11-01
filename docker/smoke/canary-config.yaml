@@ -44,12 +44,6 @@ sync:
   shares:
     - canaryapp7q
     - canaryshare7q
-  appdata_share: canaryapp7q
-  exclude:
-    - canaryapp7q/canaryexclude7q
-  protect_on_target:
-    - canaryapp7q/canaryprotect7q
-  max_deletions: 1000
   stop_containers: true
   never_stop:
     - canarycontainer7q

@@ -27,7 +27,7 @@ from twinraid import __version__
 from twinraid.config import TwinRaidConfig
 from twinraid.shared.actions import ActionName
 from twinraid.shared.addresses import TlsAddresses
-from twinraid.shared.ipc import ErrorCode
+from twinraid.shared.ipc import ErrorCode, JobId
 from twinraid.shared.mode import RunMode
 from twinraid.shared.passwords import VerifyOutcome
 from twinraid.shared.status import StatusSnapshot
@@ -392,7 +392,9 @@ def _register_api_routes(
             target=config.servers.target.name,
             vm=config.gaming_vm.display_name,
         ),
-        read_only=not (enabled.wake or enabled.vm or enabled.shutdown),
+        read_only=not (
+            enabled.wake or enabled.vm or enabled.shutdown or enabled.sync_dry_run or enabled.sync
+        ),
         actions=enabled,
         vm_shutdown_timeout_minutes=config.gaming_vm.shutdown_timeout_minutes,
     )
@@ -429,6 +431,20 @@ def _register_api_routes(
                 detail = "rejected"
             return JSONResponse({"detail": detail}, status_code=409)
         await _run(audit.record, audit_action, AuditResult.REQUESTED, ip)
+        return JSONResponse({"detail": "accepted"}, status_code=202)
+
+    @api.post("/api/sync/{job_id}/cancel")
+    async def cancel_sync(request: Request, job_id: JobId) -> Response:
+        """Bricht den laufenden Probelauf ab. Nur die vom Worker vergebene Kennung (Konzept 3.2)."""
+        ip = client_ip(request)
+        try:
+            await worker.cancel_sync(job_id)
+        except WorkerUnavailableError:
+            return JSONResponse({"detail": "worker_unavailable"}, status_code=503)
+        except WorkerCommandError:
+            await _run(audit.record, AuditAction.SYNC_CANCEL, AuditResult.REJECTED, ip)
+            return JSONResponse({"detail": "rejected"}, status_code=409)
+        await _run(audit.record, AuditAction.SYNC_CANCEL, AuditResult.REQUESTED, ip)
         return JSONResponse({"detail": "accepted"}, status_code=202)
 
     @api.get("/api/audit")
@@ -552,9 +568,16 @@ def _register_event_routes(
 def enabled_actions(settings: WebSettings) -> EnabledActions:
     """Im Simulationsmodus alles; im Modus real nur actions.* (Konzept 4.2)."""
     if settings.mode is RunMode.MOCK:
-        return EnabledActions(wake=True, vm=True, shutdown=True)
+        return EnabledActions(wake=True, vm=True, shutdown=True, sync_dry_run=True, sync=True)
     actions = settings.config.actions
-    return EnabledActions(wake=actions.wake, vm=actions.vm, shutdown=actions.shutdown)
+    return EnabledActions(
+        wake=actions.wake,
+        vm=actions.vm,
+        shutdown=actions.shutdown,
+        # sync erlaubt auch den Probelauf (Konzept 4.2, E19).
+        sync_dry_run=actions.sync_dry_run or actions.sync,
+        sync=actions.sync,
+    )
 
 
 def _frontend_file(path: Path, media_type: str) -> Response:

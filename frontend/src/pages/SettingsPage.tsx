@@ -2,20 +2,20 @@ import { ArrowLeft, Download, KeyRound, Power, ShieldCheck } from "lucide-react"
 import { useTranslation } from "react-i18next";
 
 import { CA_CERTIFICATE_URL } from "@/api/client";
-import type { AppInfo, SourceGuardStatus, StatusNotice, TlsInfo } from "@/api/types";
+import type { AppInfo, StatusNotice, StatusSnapshot, TargetZfs, TlsInfo } from "@/api/types";
 import { ErrorNotice } from "@/components/ErrorNotice";
 import { NoticeList } from "@/components/NoticeList";
 import { SourceGuardCard } from "@/components/SourceGuardCard";
+import { SyncSettingsCard } from "@/components/SyncSettingsCard";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatBytes } from "@/lib/format";
 
 interface SettingsPageProps {
   info: AppInfo | null;
   tls: TlsInfo | null;
-  // Hinweise aus dem Live-Status, z. B. zu Unraid Connect auf Groß.
-  notices: readonly StatusNotice[];
-  // Wächter auf Klein aus dem Live-Status (ab v0.5.0); null, solange er fehlt.
-  sourceGuard: SourceGuardStatus | null;
+  // Live-Status: Hinweise, Wächter auf Klein, ARC von Groß und Sync; null, solange er fehlt.
+  status: StatusSnapshot | null;
   onBack: () => void;
 }
 
@@ -116,8 +116,30 @@ function CertificateCard({ tls }: { tls: TlsInfo | null }) {
   );
 }
 
+/** Grenze des ZFS-Caches auf Groß aus der Statuszeile von vm-watch (Konzept 3.5). */
+function ArcLine({ zfs }: { zfs: TargetZfs | null }) {
+  const { t, i18n } = useTranslation();
+  const bytes = (value: number | null) =>
+    value === null ? "?" : formatBytes(i18n.resolvedLanguage, value);
+  if (zfs === null) {
+    return t("settings.connection.arcUnknown");
+  }
+  return t("settings.connection.arcValue", {
+    max: zfs.arc_max === 0 ? t("settings.connection.arcUnset") : bytes(zfs.arc_max),
+    effective: bytes(zfs.c_max),
+  });
+}
+
 /** Wie TwinRaid mit Groß spricht: SSH über guard.sh, ohne API-Key (Konzept 3.5). */
-function ConnectionCard({ info, notices }: { info: AppInfo; notices: readonly StatusNotice[] }) {
+function ConnectionCard({
+  info,
+  notices,
+  zfs,
+}: {
+  info: AppInfo;
+  notices: readonly StatusNotice[];
+  zfs: TargetZfs | null;
+}) {
   const { t } = useTranslation();
   const name = info.names.target;
   const targetNotices = notices.filter((notice) => notice.startsWith("target_"));
@@ -137,13 +159,19 @@ function ConnectionCard({ info, notices }: { info: AppInfo; notices: readonly St
           {t("settings.connection.ssh", { name })}
         </p>
         <p className="text-sm text-muted-foreground">{t("settings.connection.webgui")}</p>
+        <dl className="grid gap-1 text-sm sm:grid-cols-[max-content_1fr] sm:gap-x-6">
+          <dt className="font-medium">{t("settings.connection.arc")}</dt>
+          <dd data-testid="target-arc">
+            <ArcLine zfs={zfs} />
+          </dd>
+        </dl>
         <NoticeList notices={targetNotices} target={name} />
       </CardContent>
     </Card>
   );
 }
 
-const ACTION_GROUPS = ["wake", "vm", "shutdown"] as const;
+const ACTION_GROUPS = ["wake", "vm", "shutdown", "sync_dry_run", "sync"] as const;
 
 /** Welche Aktionen im Modus real freigeschaltet sind (Konzept 4.2). */
 function ActionsCard({ info }: { info: AppInfo }) {
@@ -179,8 +207,10 @@ function ActionsCard({ info }: { info: AppInfo }) {
   );
 }
 
-export function SettingsPage({ info, tls, notices, sourceGuard, onBack }: SettingsPageProps) {
+export function SettingsPage({ info, tls, status, onBack }: SettingsPageProps) {
   const { t } = useTranslation();
+  const notices = status?.notices ?? [];
+  const names = info === null ? null : { source: info.names.source, target: info.names.target };
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-6">
       <div className="flex items-center justify-between gap-2">
@@ -204,8 +234,23 @@ export function SettingsPage({ info, tls, notices, sourceGuard, onBack }: Settin
           <CertificateCard tls={tls} />
         </CardContent>
       </Card>
-      {info !== null && <ConnectionCard info={info} notices={notices} />}
-      {info !== null && <SourceGuardCard guard={sourceGuard} name={info.names.source} />}
+      {info !== null && (
+        <ConnectionCard info={info} notices={notices} zfs={status?.target_zfs ?? null} />
+      )}
+      {names !== null && (
+        <SourceGuardCard
+          guard={status?.source_guard ?? null}
+          name={names.source}
+          target={names.target}
+        />
+      )}
+      {names !== null && status !== null && (
+        <SyncSettingsCard
+          levels={status.sync.levels}
+          check={status.source_guard.details?.target_check ?? null}
+          names={names}
+        />
+      )}
       {info !== null && <ActionsCard info={info} />}
     </div>
   );

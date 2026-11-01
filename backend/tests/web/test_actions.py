@@ -47,7 +47,9 @@ def test_login_is_required(tmp_path: Path) -> None:
     assert worker.actions == []
 
 
-@pytest.mark.parametrize("name", ["vm_reboot", "sync_start", "VM_START", "vm_start;rm"])
+@pytest.mark.parametrize(
+    "name", ["vm_reboot", "sync_cancel", "sync_confirm_deletions", "VM_START", "vm_start;rm"]
+)
 def test_only_fixed_actions_exist(tmp_path: Path, name: str) -> None:
     worker = FakeWorker()
     client, csrf = _client(tmp_path, worker)
@@ -100,3 +102,66 @@ def test_request_body_is_ignored(tmp_path: Path) -> None:
     )
     assert response.status_code == 202
     assert worker.actions == [ActionName.VM_START]
+
+
+# --- Probelauf abbrechen (Konzept 4.3, ab v0.5.1) ---------------------------------------
+
+JOB_ID = "0123456789abcdef0123456789abcdef"
+
+
+def test_cancel_dry_run(tmp_path: Path) -> None:
+    worker = FakeWorker()
+    client, csrf = _client(tmp_path, worker)
+    response = client.post(f"/api/sync/{JOB_ID}/cancel", headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 202
+    assert response.json() == {"detail": "accepted"}
+    assert worker.cancelled == [JOB_ID]
+    assert _audit(client)[0] == ("sync_cancel", "requested", CLIENT_IP)
+
+
+def test_cancel_needs_login_and_csrf(tmp_path: Path) -> None:
+    worker = FakeWorker()
+    (tmp_path / "anonymous").mkdir()
+    anonymous = make_client(make_app(tmp_path / "anonymous", worker))
+    assert anonymous.post(f"/api/sync/{JOB_ID}/cancel").status_code == 401
+    client, _ = _client(tmp_path, worker)
+    assert client.post(f"/api/sync/{JOB_ID}/cancel").status_code == 403
+    assert worker.cancelled == []
+
+
+@pytest.mark.parametrize(
+    "job_id",
+    [
+        JOB_ID.upper(),
+        JOB_ID[:-1],
+        JOB_ID + "0",
+        "../" + JOB_ID[3:],
+        "0123456789abcdef0123456789abcdeg",
+    ],
+)
+def test_cancel_takes_only_a_job_id(tmp_path: Path, job_id: str) -> None:
+    """Der einzige Parameter ist die vom Worker vergebene Kennung (Konzept 3.2)."""
+    worker = FakeWorker()
+    client, csrf = _client(tmp_path, worker)
+    response = client.post(f"/api/sync/{job_id}/cancel", headers={"X-CSRF-Token": csrf})
+    assert response.status_code in {404, 422}
+    assert worker.cancelled == []
+    assert "sync_cancel" not in worker.calls
+
+
+def test_cancel_rejected_by_the_worker(tmp_path: Path) -> None:
+    worker = FakeWorker()
+    worker.action_error = WorkerCommandError(ErrorCode.INVALID_REQUEST, "no such job")
+    client, csrf = _client(tmp_path, worker)
+    response = client.post(f"/api/sync/{JOB_ID}/cancel", headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 409
+    assert response.json() == {"detail": "rejected"}
+    assert _audit(client)[0] == ("sync_cancel", "rejected", CLIENT_IP)
+
+
+def test_cancel_with_the_worker_down(tmp_path: Path) -> None:
+    worker = FakeWorker()
+    client, csrf = _client(tmp_path, worker)
+    worker.available = False
+    response = client.post(f"/api/sync/{JOB_ID}/cancel", headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 503

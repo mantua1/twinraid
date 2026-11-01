@@ -7,10 +7,10 @@ import { CaChangeNotice } from "@/components/CaChangeNotice";
 import { ErrorNotice } from "@/components/ErrorNotice";
 import { HistoryTile } from "@/components/HistoryTile";
 import { NoticeList } from "@/components/NoticeList";
-import { PlaceholderTile } from "@/components/PlaceholderTile";
 import { RetryLine } from "@/components/RetryLine";
 import { SourceGuardPanel } from "@/components/SourceGuardPanel";
 import { StatusTile } from "@/components/StatusTile";
+import { SyncTile } from "@/components/SyncTile";
 import type { DashboardData } from "@/hooks/useDashboardData";
 import { formatTime, roundUpToMinute } from "@/lib/format";
 
@@ -41,6 +41,7 @@ export function Dashboard({ data }: { data: DashboardData }) {
   // Für die Begründung „Auf <Server> laufen noch weitere VMs: <Namen> …“ (Konzept 4.2).
   const otherVms = status?.other_vms_running ?? [];
   const blockerValues = {
+    source: names.source,
     target: names.target,
     vms: otherVms.join(", "),
   };
@@ -201,19 +202,16 @@ export function Dashboard({ data }: { data: DashboardData }) {
             blockerValues={blockerValues}
           />
         </StatusTile>
-        <PlaceholderTile
-          testId="tile-sync"
-          title={t("tiles.sync.title")}
-          description={t("tiles.sync.description")}
-          empty={status?.job_running === true ? t("tiles.sync.running") : t("tiles.sync.empty")}
-        >
-          {nextSync !== null && (
-            <p className="text-sm" data-testid="next-sync">
-              {t("guard.nextSync", { time: nextSync })}
-            </p>
-          )}
-        </PlaceholderTile>
-        <HistoryTile className="sm:col-span-2" entries={data.audit} />
+        <SyncTile
+          className="sm:col-span-2"
+          status={status}
+          names={names}
+          nextSync={nextSync}
+          blockerValues={blockerValues}
+          onRun={data.runAction}
+          onCancel={data.cancelSync}
+        />
+        <HistoryTile className="sm:col-span-2 lg:col-span-1" entries={data.audit} />
       </div>
     </div>
   );

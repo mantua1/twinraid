@@ -12,6 +12,7 @@ import pytest
 from tests.support.passwords import TEST_PASSWORD
 from tests.support.worker import make_handler
 from tests.web.helpers import BASE_URL, CLIENT_IP, make_app
+from twinraid.shared.actions import ActionBlocker
 from twinraid.shared.ipc import ErrorCode, SyncStart
 from twinraid.shared.passwords import VerifyOutcome
 from twinraid.web.worker_client import WorkerClient, WorkerCommandError, WorkerUnavailableError
@@ -69,4 +70,6 @@ async def test_client_reports_rejected_command(worker_socket: Path) -> None:
     client = WorkerClient(worker_socket)
     with pytest.raises(WorkerCommandError) as excinfo:
         await client.send(SyncStart(command="sync_start"))
-    assert excinfo.value.error is ErrorCode.NOT_IMPLEMENTED
+    # In v0.5.1 gibt es nur den Probelauf; der Sync kommt mit v0.5.2.
+    assert excinfo.value.error is ErrorCode.ACTION_BLOCKED
+    assert excinfo.value.blocked_by is ActionBlocker.NEXT_VERSION

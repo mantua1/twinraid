@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Nachgebautes findmnt für guard.sh: nur "findmnt -n -o TARGET -S <Dataset>".
+
+Liest den Zustand des nachgebauten zfs (FAKE_ZFS_STATE, Standard /state): Ein
+eingehängtes Dataset hängt an "mounted_at", sonst an seinem mountpoint mit Quelle local.
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+STATE = Path(os.environ.get("FAKE_ZFS_STATE", "/state"))
+arguments = sys.argv[1:]
+if len(arguments) != 5 or arguments[:4] != ["-n", "-o", "TARGET", "-S"]:
+    sys.stderr.write("this fake only knows findmnt -n -o TARGET -S <source>\n")
+    sys.exit(2)
+objects = json.loads((STATE / "zfs.json").read_text())["objects"]
+found = objects.get(arguments[4])
+if not found or not found.get("mounted"):
+    sys.exit(1)
+target = found.get("mounted_at") or found["props"].get("mountpoint", [""])[0]
+if not target:
+    sys.exit(1)
+sys.stdout.write(target + "\n")

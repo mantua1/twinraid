@@ -5,6 +5,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from cryptography import x509
 from fastapi.testclient import TestClient
 
@@ -45,7 +46,13 @@ def test_info_contains_mode_and_names(tmp_path: Path) -> None:
         "default_language": "de",
         "names": {"source": "Unraid Klein", "target": "Unraid Groß", "vm": "Gaming-VM"},
         "read_only": False,
-        "actions": {"wake": True, "vm": True, "shutdown": True},
+        "actions": {
+            "wake": True,
+            "vm": True,
+            "shutdown": True,
+            "sync_dry_run": True,
+            "sync": True,
+        },
         "vm_shutdown_timeout_minutes": 3,
     }
 
@@ -56,7 +63,13 @@ def test_info_in_real_mode_is_read_only(tmp_path: Path) -> None:
     info = client.get("/api/info").json()
     assert info["mode"] == "real"
     assert info["read_only"] is True
-    assert info["actions"] == {"wake": False, "vm": False, "shutdown": False}
+    assert info["actions"] == {
+        "wake": False,
+        "vm": False,
+        "shutdown": False,
+        "sync_dry_run": False,
+        "sync": False,
+    }
 
 
 def test_info_in_real_mode_shows_enabled_actions(tmp_path: Path) -> None:
@@ -68,7 +81,29 @@ def test_info_in_real_mode_shows_enabled_actions(tmp_path: Path) -> None:
     login(client)
     info = client.get("/api/info").json()
     assert info["read_only"] is False
-    assert info["actions"] == {"wake": False, "vm": True, "shutdown": False}
+    assert info["actions"] == {
+        "wake": False,
+        "vm": True,
+        "shutdown": False,
+        "sync_dry_run": False,
+        "sync": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("switch", "dry_run", "sync"),
+    [("sync_dry_run", True, False), ("sync", True, True)],
+)
+def test_info_shows_the_dry_run(tmp_path: Path, switch: str, dry_run: bool, sync: bool) -> None:
+    """actions.sync erlaubt auch den Probelauf (Konzept 4.2, E19); kein „Nur Statusanzeige“."""
+    text = EXAMPLE_CONFIG.read_text().replace(f"  {switch}: false", f"  {switch}: true")
+    config = tmp_path / "config.yaml"
+    config.write_text(text)
+    client = make_client(make_app(tmp_path, mode=RunMode.REAL, config_path=config))
+    login(client)
+    info = client.get("/api/info").json()
+    assert info["read_only"] is False
+    assert (info["actions"]["sync_dry_run"], info["actions"]["sync"]) == (dry_run, sync)
 
 
 def test_status_from_worker(tmp_path: Path) -> None:
@@ -81,6 +116,8 @@ def test_status_from_worker(tmp_path: Path) -> None:
     assert body.pop("notices") == []
     assert body.pop("watch_retry") is None
     assert body.pop("source_guard")["state"] == "not_mounted"
+    assert body.pop("target_zfs") is None
+    assert body.pop("sync")["running"] is None
     assert body == {
         "source": unknown,
         "target": unknown,

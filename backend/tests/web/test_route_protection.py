@@ -70,7 +70,7 @@ def test_every_other_route_rejects_requests_without_session(app: WebApp) -> None
 
 
 # Gültige Werte für Pfadparameter, damit jede Route einmal erfolgreich aufgerufen wird.
-PATH_SAMPLES = {"{action}": "vm_start"}
+PATH_SAMPLES = {"{action}": "vm_start", "{job_id}": "0123456789abcdef0123456789abcdef"}
 
 
 def test_every_api_route_works_with_session(app: WebApp) -> None:
