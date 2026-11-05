@@ -98,15 +98,15 @@ KIB_PER_GIB = 1024 * 1024
     ("available_gib", "vm_gib", "arc_gib", "starts"),
     [
         (16, 0.5, None, True),
-        # Genau die VM plus 1 GiB Abstand reicht.
-        (5, 4, None, True),
-        (4.999, 4, None, False),
+        # Genau die VM plus 2 GiB Abstand reicht (Test M1).
+        (6, 4, None, True),
+        (5.999, 4, None, False),
         # Der ARC über c_min zählt mit; MemAvailable enthält ihn nicht (Z1).
-        (3, 4, (6, 4), True),
-        (3, 4, (5, 4), False),
+        (3, 4, (7, 4), True),
+        (3, 4, (6, 4), False),
         # Unter c_min gibt ZFS nichts ab; abgezogen wird aber auch nichts.
-        (5, 4, (1, 2), True),
-        (4, 4, (1, 2), False),
+        (6, 4, (1, 2), True),
+        (5, 4, (1, 2), False),
     ],
 )
 def test_vm_start_checks_free_memory(
@@ -716,7 +716,7 @@ def test_repository_script_uses_fixed_paths_and_version() -> None:
     assert "readonly ZFS_MODULE=/sys/module/zfs\n" in text
     assert 'readonly ARC_MAX_FILE="${ZFS_MODULE}/parameters/zfs_arc_max"\n' in text
     assert "readonly ARCSTATS=/proc/spl/kstat/zfs/arcstats\n" in text
-    assert "readonly MEMORY_MARGIN=1073741824\n" in text
+    assert "readonly MEMORY_MARGIN=2147483648\n" in text
     assert "readonly RECEIVE_LOCK=/var/run/twinraid-guard-receive.lock\n" in text
     assert "readonly POWEROFF_LOCK_SECONDS=900\n" in text
 

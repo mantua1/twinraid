@@ -48,8 +48,8 @@ readonly MEMINFO=/proc/meminfo
 readonly ZFS_MODULE=/sys/module/zfs
 readonly ARC_MAX_FILE="${ZFS_MODULE}/parameters/zfs_arc_max"
 readonly ARCSTATS=/proc/spl/kstat/zfs/arcstats
-# Sicherheitsabstand beim Start der VM: 1 GiB (Konzept 3.5; nach Test M1 neu bewertet).
-readonly MEMORY_MARGIN=1073741824
+# Sicherheitsabstand beim Start der VM: 2 GiB (Konzept 3.5, Ergebnis von Test M1).
+readonly MEMORY_MARGIN=2147483648
 # Zeitlimits für virsh in Sekunden.
 readonly QUERY_TIMEOUT=10
 readonly START_TIMEOUT=90
