@@ -1452,6 +1452,14 @@ grep -n -E '^ *(exclude|protect_on_target|appdata_share|max_deletions):' twinrai
 
 Die Kopie brauchst du nur für den Rückweg in 15.2: 0.5.0 verlangt diese Schlüssel. Zeigt `grep` Zeilen, die Datei mit `nano twinraid.yaml` öffnen und diese Schlüssel löschen, **samt der Listeneinträge darunter** (Zeilen, die mit `-` beginnen). Speichern mit `Strg+O`, `Enter`, beenden mit `Strg+X`. Danach zeigt derselbe `grep`-Befehl nichts mehr.
 
+**Pflichtschlüssel unter `sync` prüfen.** Unter `sync` müssen `stop_containers`, `never_stop` und `copy_templates` stehen, in der Datei und in der Kopie für den Rückweg. Fehlt einer, startet der Container nicht. Das Log von `twinraid.preflight` nennt dann den Schlüssel, zum Beispiel `sync.stop_containers: required key is missing`.
+
+```bash
+grep -c -E '^ +(stop_containers|never_stop|copy_templates):' twinraid.yaml twinraid.yaml.vor-0.5.1
+```
+
+Beide Zeilen der Ausgabe müssen auf `:3` enden. Zeigt eine Zeile weniger, die betreffende Datei mit `nano` öffnen und den fehlenden Schlüssel unter `sync:` ergänzen, genauso eingerückt wie `shares:`. Die Werte aus `config.example.yaml` sind `stop_containers: true`, `never_stop: []` und `copy_templates: false`. Danach den `grep`-Befehl wiederholen.
+
 **Das Update direkt danach einspielen (15.2).** TwinRaid liest die Datei nur beim Start: Es läuft weiter, aber 0.5.0 startet mit der geänderten Datei nicht mehr, etwa nach einem Neustart von Klein.
 
 ### 15.2 Test G10: Update in der richtigen Reihenfolge
@@ -1472,14 +1480,17 @@ stat -c '%U:%G %a %n' \
 
 | Pfad | Erwartet | Warum |
 |---|---|---|
-| `config` | für alle lesbar und betretbar: Rechte enden auf `5` oder `7` | Worker und Web-Prozess lesen hier als „alle anderen“, wenn der Ordner nicht root gehört |
+| `config` | für alle lesbar und betretbar: Rechte enden auf `5` oder `7`, richtig ist `755` | Worker und Web-Prozess lesen hier als „alle anderen“, wenn der Ordner nicht root gehört |
 | `twinraid.yaml` | für alle lesbar: Rechte enden auf `4`, `5`, `6` oder `7` | ebenso |
 | `data` | `root:root 755` | sonst startet TwinRaid nicht (5.9 im Konzept) |
-| `data/secrets` | `root:root 700` | Key und Passwort-Hash; nur root liest sie |
+| `data/secrets` | `root:<beliebige Gruppe> 700` | Key und Passwort-Hash; nur root liest sie |
 | `…/in/request` | `root:root 600` | Auftragsdatei des Wächters |
 | `…/state` | `root:root 755` | Status des Wächters |
 
 Weicht etwas ab, erst beheben (bei `data` und `secrets`: Abschnitt 17, „Rechte des Datenordners zurückgesetzt“).
+
+- **Gruppe von `data/secrets`:** Sie bleibt vom Anlegen im Container und erscheint auf dem Host oft als `UNKNOWN` (10001). Das ist unbedenklich; es zählen nur der Besitzer root und die Rechte `700`.
+- **`config` mit `777`:** Das funktioniert, richtig ist aber `755`. Unraid setzt `appdata` oft auf `777`, zum Beispiel über *New Permissions*. Korrigieren mit `chmod 755 /mnt/user/appdata/twinraid/config`.
 
 > **Skripte nie direkt nach `/boot/config/twinraid/` laden.** Erst nach `/tmp`, dann die SHA-256 vergleichen, dann kopieren und mit `mv` ersetzen. Die laufende Sitzung `vm-watch` (`guard.sh`) und der laufende Wächter lesen ihr Skript während der Ausführung nach; `mv` lässt ihnen die alte Datei. Sie bekommen die neue erst beim nächsten Start.
 
@@ -1563,7 +1574,10 @@ Rechte `stat` wie vorher.
 
    ```bash
    cp -p /mnt/user/appdata/twinraid/config/twinraid.yaml.vor-0.5.1 /mnt/user/appdata/twinraid/config/twinraid.yaml
+   grep -c -E '^ +(stop_containers|never_stop|copy_templates):' /mnt/user/appdata/twinraid/config/twinraid.yaml
    ```
+
+   Erwartet: `3`. Bei einer kleineren Zahl fehlt ein Pflichtschlüssel, und 0.5.0 startet nicht. Dann den Schlüssel wie in 15.1 ergänzen.
 
 2. **Klein:** Reiter **Docker** → Symbol *TwinRaid* → **Edit** → **Repository** `ghcr.io/mantua1/twinraid:0.5.0` → **Apply**.
 3. **Groß:** `guard.sh` Version 2 zurückholen:

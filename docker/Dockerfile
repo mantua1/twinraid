@@ -15,7 +15,7 @@ ARG OPENSSH_VERSION=1:10.0p1-7+deb13u4
 FROM ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 AS uv
 
 # --- Stufe 1: Frontend bauen -------------------------------------------------
-FROM node:24-trixie-slim@sha256:173f125896c3b47ddf056734c7ea789d04595a6a08769a8f78e0df642781fb66 AS frontend
+FROM node:26-trixie-slim@sha256:e4db4c914bf8ad241bd24804fc25d272d89bad97e68cdc8a1414862790a02c39 AS frontend
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
 RUN npm ci --ignore-scripts --no-audit
