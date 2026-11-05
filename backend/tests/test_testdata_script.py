@@ -4,10 +4,12 @@ Läuft ohne root; Besitzer und die Datei ohne Rechte prüft der CI-Test mit echt
 (docker/source-guard-sync-test.sh). Der Umfang ist für die Tests kleiner.
 """
 
+import json
 import os
 import re
 import stat
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -292,3 +294,191 @@ def test_no_eval_and_fixed_path() -> None:
     assert not re.search(r"\beval\b", text)
     assert "export PATH=/usr/sbin:/usr/bin:/sbin:/bin\n" in text
     assert "export LC_ALL=C\n" in text
+
+
+# --- Spiegel auf Groß: verify-latest, verify-container (ab v0.5.2) -----------------------
+
+MIRROR = "mainpool/twinraid-mirror/twinraidtest"
+FAKE_ZFS = """#!{python}
+import json, sys
+state = json.load(open({state!r}))
+argv = sys.argv[1:]
+dataset = state["dataset"]
+if argv[:-1] == ["list", "-H", "-t", "snapshot", "-d", "1", "-o", "name", "-s", "createtxg", "--"]:
+    if argv[-1] != dataset:
+        sys.exit(1)
+    for name in state["snapshots"]:
+        print(f"{{dataset}}@{{name}}")
+    sys.exit(0)
+if argv[:4] == ["get", "-H", "-o", "value"] and len(argv) == 7 and argv[5] == "--":
+    if argv[6] != dataset or argv[4] not in ("mountpoint", "mounted"):
+        sys.exit(1)
+    print(state[argv[4]])
+    sys.exit(0)
+sys.exit(99)
+"""
+
+
+def mirror_setup(
+    tmp_path: Path,
+    *,
+    snapshots: tuple[str, ...] = ("twinraid-20261101T000000Z",),
+    mounted: str = "yes",
+) -> tuple[Path, Path]:
+    """Skript mit nachgebautem zfs und einem Spiegel unter <tmp>/mirror; gibt Skript und
+    Einhängepunkt des Spiegels zurück."""
+    root = tmp_path / "mirror"
+    mountpoint = root / "twinraidtest"
+    mountpoint.mkdir(parents=True)
+    state = tmp_path / "zfs.json"
+    state.write_text(
+        json.dumps(
+            {
+                "dataset": MIRROR,
+                "snapshots": list(snapshots),
+                "mountpoint": str(mountpoint),
+                "mounted": mounted,
+            }
+        )
+    )
+    fake = tmp_path / "zfs"
+    fake.write_text(FAKE_ZFS.format(python=sys.executable, state=str(state)))
+    fake.chmod(0o755)
+    text = SCRIPT.read_text(encoding="utf-8")
+    replacements = {
+        **SMALLER,
+        "ZFS": str(fake),
+        "MIRROR_ROOTS": f"({root} /mnt/user/twinraid-mirror)",
+    }
+    for name, value in replacements.items():
+        text, count = re.subn(
+            rf"^readonly {name}=.*$", f"readonly {name}={value}", text, flags=re.M
+        )
+        assert count == 1
+    script = tmp_path / "testdata.sh"
+    script.write_text(text, encoding="utf-8")
+    return script, mountpoint
+
+
+def snapshot_dir(mountpoint: Path, name: str) -> Path:
+    path = mountpoint / ".zfs" / "snapshot" / name
+    path.mkdir(parents=True)
+    return path
+
+
+def test_verify_latest_checks_the_newest_snapshot(tmp_path: Path) -> None:
+    script, mountpoint = mirror_setup(
+        tmp_path, snapshots=("twinraid-20261101T000000Z", "twinraid-20261102T000000Z")
+    )
+    # Im älteren Snapshot liegen keine Testdaten; geprüft wird nur der neueste.
+    snapshot_dir(mountpoint, "twinraid-20261101T000000Z")
+    newest = snapshot_dir(mountpoint, "twinraid-20261102T000000Z")
+    assert run(script, "create", str(newest / "testdata")).returncode == 0
+    result = run(script, "verify-latest")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Snapshot: twinraid-20261102T000000Z" in result.stdout
+    assert "Keine Abweichung (Lauf 0)." in result.stdout
+
+
+def test_verify_latest_finds_differences(tmp_path: Path) -> None:
+    script, mountpoint = mirror_setup(tmp_path)
+    folder = snapshot_dir(mountpoint, "twinraid-20261101T000000Z") / "testdata"
+    assert run(script, "create", str(folder)).returncode == 0
+    (folder / "gross" / "zufall-1.bin").write_bytes(b"anders")
+    result = run(script, "verify-latest", MIRROR)
+    assert result.returncode == 1
+    assert "ABWEICHUNG" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("snapshots", "mounted", "message"),
+    [
+        ((), "yes", "hat keinen Snapshot"),
+        (("twinraid-20261101T000000Z",), "no", "nicht eingehängt"),
+        (("bad name",), "yes", "Unerwarteter Snapshot-Name"),
+    ],
+)
+def test_verify_latest_refuses(
+    tmp_path: Path, snapshots: tuple[str, ...], mounted: str, message: str
+) -> None:
+    script, _mountpoint = mirror_setup(tmp_path, snapshots=snapshots, mounted=mounted)
+    result = run(script, "verify-latest")
+    assert result.returncode == 2
+    assert message in result.stderr
+
+
+@pytest.mark.parametrize(
+    "dataset", ["pool/twinraidtest", "mainpool/../etc", "mainpool/a/b/c", "mainpool/-x", "mainpool"]
+)
+def test_verify_latest_checks_the_dataset_name(tmp_path: Path, dataset: str) -> None:
+    script, _mountpoint = mirror_setup(tmp_path)
+    result = run(script, "verify-latest", dataset)
+    assert result.returncode == 2
+    assert "Ungültiges Dataset" in result.stderr
+
+
+def test_verify_refuses_the_mounted_mirror(tmp_path: Path) -> None:
+    """Im eingehängten Spiegel kann eine alte ACL stehen (Konzept 3.7); nur im Snapshot."""
+    script, mountpoint = mirror_setup(tmp_path)
+    folder = mountpoint / "testdata"
+    assert run(script, "create", str(folder)).returncode == 0
+    for path in (str(folder), str(folder).replace("/mirror/", "//mirror/")):
+        result = run(script, "verify", path)
+        assert result.returncode == 2
+        assert "eingehängte Spiegel" in result.stderr
+        assert "verify-latest" in result.stderr
+    snapshot = snapshot_dir(mountpoint, "twinraid-20261101T000000Z") / "testdata"
+    assert run(script, "create", str(snapshot)).returncode == 0
+    assert run(script, "verify", str(snapshot)).returncode == 0
+
+
+@pytest.mark.parametrize(
+    ("log", "message"),
+    [
+        (
+            "zaehler 1\nzaehler 2\nsauber beendet\n",
+            "Testcontainer war beim Snapshot sauber angehalten.",
+        ),
+        ("zaehler 1\nzaehler 2\n", "Testcontainer lief beim Snapshot (zaehler 2)."),
+        ("", "leer"),
+        ("zaehler 1\n$(rm -rf /)\n", "Die letzte Zeile im Log des Testcontainers ist unbekannt."),
+    ],
+)
+def test_verify_container(tmp_path: Path, log: str, message: str) -> None:
+    script, mountpoint = mirror_setup(tmp_path)
+    folder = snapshot_dir(mountpoint, "twinraid-20261101T000000Z")
+    (folder / "testcontainer").mkdir()
+    (folder / "testcontainer" / "log").write_text(log)
+    by_dataset = run(script, "verify-container")
+    assert by_dataset.returncode == 0, by_dataset.stderr
+    assert "Snapshot: twinraid-20261101T000000Z" in by_dataset.stdout
+    assert message in by_dataset.stdout
+    by_folder = run(script, "verify-container", str(folder))
+    assert by_folder.returncode == 0
+    assert message in by_folder.stdout
+
+
+def test_verify_container_without_a_log(tmp_path: Path) -> None:
+    script, mountpoint = mirror_setup(tmp_path)
+    snapshot_dir(mountpoint, "twinraid-20261101T000000Z")
+    result = run(script, "verify-container")
+    assert result.returncode == 2
+    assert "testcontainer/log" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "arguments", [["verify-latest", MIRROR, "zu-viel"], ["verify-container", MIRROR, "zu-viel"]]
+)
+def test_usage_of_the_mirror_commands(script: Path, arguments: list[str]) -> None:
+    result = run(script, *arguments)
+    assert result.returncode == 2
+    assert "verify-latest [Dataset]" in result.stderr
+
+
+def test_mirror_defaults() -> None:
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert f"readonly DEFAULT_DATASET={MIRROR}\n" in text
+    assert "readonly ZFS=zfs\n" in text
+    assert (
+        "readonly MIRROR_ROOTS=(/mnt/mainpool/twinraid-mirror /mnt/user/twinraid-mirror)\n" in text
+    )

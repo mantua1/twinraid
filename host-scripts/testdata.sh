@@ -4,11 +4,18 @@
 #   testdata.sh create [Ordner]   legt die Testdaten mit allen Sonderfällen und die Prüfliste an
 #   testdata.sh change [Ordner]   ändert sie auf bekannte Weise und schreibt die Prüfliste neu
 #   testdata.sh verify [Ordner]   vergleicht den Ordner mit der Prüfliste, ändert nichts
+#   testdata.sh verify-latest [Dataset]
+#                                 verify im neuesten Snapshot des Datasets (ab v0.5.2)
+#   testdata.sh verify-container [Dataset|Ordner]
+#                                 war der Testcontainer beim Snapshot sauber angehalten? (ab v0.5.2)
 #
 # Ohne Ordner gilt /mnt/mainpool/twinraidtest/testdata. create und change schreiben nur in
 # einen Ordner namens testdata, und change nur, wenn dort die Kennung von create liegt.
-# verify liest nur; es läuft deshalb auch in einem schreibgeschützten Spiegel auf Groß
-# (/mnt/mainpool/twinraid-mirror/twinraidtest/testdata) oder in einem Snapshot.
+# verify liest nur; es läuft deshalb auch in einem Snapshot, auf Groß etwa unter
+# /mnt/mainpool/twinraid-mirror/twinraidtest/.zfs/snapshot/<Name>/testdata. Den eingehängten
+# Spiegel selbst prüft es nicht: Dort kann der Kernel nach einem inkrementellen Empfang noch
+# eine alte ACL zeigen, obwohl sie richtig angekommen ist (Konzept 3.7). verify-latest und
+# verify-container nehmen ohne Angabe den Spiegel mainpool/twinraid-mirror/twinraidtest.
 #
 # Die Prüfliste hält je Eintrag Art, Rechte, Besitzer, Zeitstempel, Größe, Hardlinks, SHA-256
 # und bei den Sonderfällen xattrs und ACLs fest. Was ein Dateisystem nicht kann, vermerkt sie
@@ -37,6 +44,15 @@ readonly CHANGE_MODIFY=20
 readonly CHANGE_RENAME=10
 readonly CHANGE_ADD=30
 readonly TEXT_LINE="TwinRaid-Testdaten: Dieser Text ist erfunden und wiederholt sich."
+# Spiegel auf Groß (ab v0.5.2): verify lehnt den eingehängten Spiegel ab, auch über /mnt/user.
+readonly ZFS=zfs
+readonly DEFAULT_DATASET=mainpool/twinraid-mirror/twinraidtest
+readonly DATASET_PATTERN='^mainpool(/[A-Za-z0-9][A-Za-z0-9._-]{0,63}){1,2}$'
+readonly SNAPSHOT_PATTERN='^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'
+readonly MIRROR_ROOTS=(/mnt/mainpool/twinraid-mirror /mnt/user/twinraid-mirror)
+# Der Testcontainer schreibt beim Anhalten diese Zeile in testcontainer/log der Test-Share.
+readonly CONTAINER_LOG=testcontainer/log
+readonly CONTAINER_CLEAN="sauber beendet"
 
 XATTR=no
 ACL=no
@@ -49,6 +65,7 @@ die() {
 
 usage() {
   echo "Aufruf: testdata.sh create|change|verify [Ordner]" >&2
+  echo "        testdata.sh verify-latest [Dataset] | verify-container [Dataset|Ordner]" >&2
   exit 2
 }
 
@@ -394,9 +411,72 @@ cmd_change() {
   summary
 }
 
+# Im eingehängten Spiegel kann eine alte ACL stehen (Konzept 3.7); geprüft wird dort nur in
+# einem Snapshot. realpath fasst doppelte Schrägstriche und Links zusammen.
+check_not_mounted_mirror() {
+  local dir="$1" real root
+  real="$(realpath -e -- "${dir}" 2>/dev/null)" || return 0
+  for root in "${MIRROR_ROOTS[@]}"; do
+    if [[ "${real}/" == "${root}/"* && "${real}" != */.zfs/snapshot/* ]]; then
+      die "${dir} ist der eingehängte Spiegel; geprüft wird nur im Snapshot: testdata.sh verify-latest"
+    fi
+  done
+}
+
+# Neuester Snapshot eines Datasets und sein Ordner unter .zfs/snapshot. Setzt SNAPSHOT_NAME
+# und SNAPSHOT_DIR. Liest nur.
+latest_snapshot() {
+  local dataset="$1" newest mountpoint mounted
+  [[ "${dataset}" =~ ${DATASET_PATTERN} ]] || die "Ungültiges Dataset: ${dataset}"
+  newest="$("${ZFS}" list -H -t snapshot -d 1 -o name -s createtxg -- "${dataset}" 2>/dev/null |
+    tail -n 1)" || newest=""
+  [[ "${newest}" == "${dataset}@"* ]] || die "${dataset} hat keinen Snapshot."
+  SNAPSHOT_NAME="${newest#"${dataset}@"}"
+  [[ "${SNAPSHOT_NAME}" =~ ${SNAPSHOT_PATTERN} ]] || die "Unerwarteter Snapshot-Name."
+  mountpoint="$("${ZFS}" get -H -o value mountpoint -- "${dataset}" 2>/dev/null)" || mountpoint=""
+  mounted="$("${ZFS}" get -H -o value mounted -- "${dataset}" 2>/dev/null)" || mounted=""
+  check_path "${mountpoint}"
+  [[ "${mounted}" == yes ]] ||
+    die "${dataset} ist nicht eingehängt (gesperrt?); siehe docs/WIEDERHERSTELLUNG.md."
+  SNAPSHOT_DIR="${mountpoint}/.zfs/snapshot/${SNAPSHOT_NAME}"
+}
+
+cmd_verify_latest() {
+  latest_snapshot "$1"
+  echo "Snapshot: ${SNAPSHOT_NAME}"
+  cmd_verify "${SNAPSHOT_DIR}/testdata"
+}
+
+# Letzte Zeile des Logs des Testcontainers im Snapshot: „sauber beendet“ heißt, er war beim
+# Snapshot angehalten (Konzept 4.3, Test 6a). Ein Ordner muss die Wurzel eines Snapshots
+# der Test-Share sein, etwa …/.zfs/snapshot/<Name>.
+cmd_verify_container() {
+  local target="$1" dir last
+  if [[ "${target}" == /* ]]; then
+    check_path "${target}"
+    dir="${target}"
+  else
+    latest_snapshot "${target}"
+    echo "Snapshot: ${SNAPSHOT_NAME}"
+    dir="${SNAPSHOT_DIR}"
+  fi
+  [[ -f "${dir}/${CONTAINER_LOG}" ]] || die "In ${dir} liegt kein ${CONTAINER_LOG}."
+  last="$(tail -n 1 -- "${dir}/${CONTAINER_LOG}")"
+  if [[ "${last}" == "${CONTAINER_CLEAN}" ]]; then
+    echo "Testcontainer war beim Snapshot sauber angehalten."
+  elif [[ "${last}" =~ ^zaehler\ [0-9]{1,12}$ ]]; then
+    echo "Testcontainer lief beim Snapshot (${last})."
+  elif [[ -z "${last}" ]]; then
+    echo "Das Log des Testcontainers war beim Snapshot leer (er leert es alle 10 Minuten)."
+  else
+    echo "Die letzte Zeile im Log des Testcontainers ist unbekannt."
+  fi
+}
+
 cmd_verify() {
   local dir="$1" differences lines
   check_path "${dir}"
+  check_not_mounted_mirror "${dir}"
   [[ -f "${dir}/${LIST}" ]] || die "In ${dir} liegt keine Prüfliste."
   read_header "${dir}/${LIST}"
   cd -- "${dir}"
@@ -415,5 +495,7 @@ case "${1:-}" in
   create) [[ $# -le 2 ]] || usage; cmd_create "${2:-${DEFAULT_DIR}}" ;;
   change) [[ $# -le 2 ]] || usage; cmd_change "${2:-${DEFAULT_DIR}}" ;;
   verify) [[ $# -le 2 ]] || usage; cmd_verify "${2:-${DEFAULT_DIR}}" ;;
+  verify-latest) [[ $# -le 2 ]] || usage; cmd_verify_latest "${2:-${DEFAULT_DATASET}}" ;;
+  verify-container) [[ $# -le 2 ]] || usage; cmd_verify_container "${2:-${DEFAULT_DATASET}}" ;;
   *) usage ;;
 esac
