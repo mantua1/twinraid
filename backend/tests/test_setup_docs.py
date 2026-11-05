@@ -1,6 +1,5 @@
 """Die Anleitungen nennen dieselben Werte wie die Host-Skripte (Konzept 3.7, ab v0.5.1)."""
 
-import hashlib
 import re
 
 import pytest
@@ -15,6 +14,13 @@ RECOVERY = (REPO_ROOT / "docs" / "WIEDERHERSTELLUNG.md").read_text(encoding="utf
 ROLLBACK = {
     "guard.sh": "af4afe98fc11b20565194d7c22b293c165ee279efd79932878c31b5c80b42940",
     "source-guard.sh": "ca2f12f98dcae89c524b2f361dc6de5e5c3adfdd240fcbc336dc89a6b7939d3a",
+}
+# Stand von v0.5.1, den Abschnitt 15 lädt (git show v0.5.1:host-scripts/<Datei> | sha256sum).
+# Die Skripte ändern sich mit v0.5.2; deren Werte prüft der Test für Abschnitt 16.
+RELEASE_0_5_1 = {
+    "guard.sh": "c5f69807b76eb74af373361c47ecad3e39e718c278df10edba0e2bad40cae47f",
+    "source-guard.sh": "d4f05ada883386b365520296312f916fc57d0a283725c0b3c8d5d3ce0f85d647",
+    "testdata.sh": "ca4b8833cfde011242f08cf67cd72d5fd7a08e14f3f3db3811076888f864a019",
 }
 
 
@@ -115,11 +121,10 @@ def test_scripts_are_taken_from_the_current_release() -> None:
     assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _rollback_section())) == {"v0.5.0"}
 
 
-@pytest.mark.parametrize("name", ["guard.sh", "source-guard.sh", "testdata.sh"])
-def test_documented_hashes_match_the_files(name: str) -> None:
-    current = hashlib.sha256((REPO_ROOT / "host-scripts" / name).read_bytes()).hexdigest()
+@pytest.mark.parametrize("name", sorted(RELEASE_0_5_1))
+def test_documented_hashes_are_those_of_the_release(name: str) -> None:
     documented = set(re.findall(rf"([0-9a-f]{{64}})  /tmp/{re.escape(name)}", _without_rollback()))
-    assert documented == {current}
+    assert documented == {RELEASE_0_5_1[name]}
 
 
 @pytest.mark.parametrize("name", sorted(ROLLBACK))
