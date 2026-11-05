@@ -152,6 +152,9 @@ def _set_running(containers: list[Container], ref: str, *, running: bool, fail_k
     if found.get(fail_key):
         _err("Error: failed")
         return 1
+    # "stop_seconds": docker stop dauert so lange, etwa bis SIGKILL nach stop_timeout.
+    if not running:
+        time.sleep(float(found.get("stop_seconds", 0)))
     found["running"] = running
     _save("containers.json", containers)
     return 0
@@ -580,6 +583,10 @@ def main(tool: str, argv: list[str]) -> int:
     if tool == "findmnt":
         return _findmnt(argv)
     if tool == "logger":
+        # "logger-slow": die Meldung zur aufgehobenen Pause braucht 1 s. So liegt sie sicher
+        # zwischen Übernahme der Anfrage und neuem Status (Test von reset-run-interval).
+        if _flag("logger-slow") and any("pause between runs lifted" in a for a in argv):
+            time.sleep(1)
         return 0
     if tool == "ssh":
         return _ssh(argv)

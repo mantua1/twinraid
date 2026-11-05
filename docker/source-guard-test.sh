@@ -40,6 +40,7 @@ TEST=twinraid-testcontainer
 APP=sg-twinraid
 OTHER=sg-other
 STOPPED=sg-stopped
+SLOW=sg-slow
 SELF_IMAGE_TAG=ghcr.io/mantua1/twinraid:sg-test
 
 failures=0
@@ -89,11 +90,11 @@ TEST_SCRIPT="$(template_value PostArgs)"
 
 guard() { /bin/bash "${GUARD}" "$@"; }
 
-# Pause zwischen zwei Läufen aufheben. reset-run-interval kehrt zurück, sobald der Wächter die
-# Anfrage übernommen hat; status.json schreibt er im nächsten Durchlauf, und selftest liest sie.
+# Pause zwischen zwei Läufen aufheben. Ab Version 3 meldet reset-run-interval Erfolg erst, wenn
+# status.json die Pause nicht mehr zeigt; selftest liest den Status direkt danach.
 lift_pause() {
   guard reset-run-interval >/dev/null
-  wait_status run_allowed_at null 15
+  expect_equal "pause lifted when reset-run-interval returns" "$(status_field run_allowed_at)" null
 }
 
 # Ein Feld aus status.json, Schlüssel mit Punkten getrennt; null für fehlende Werte.
@@ -204,7 +205,7 @@ cleanup() {
   guard stop >/dev/null 2>&1 || true
   pkill -f "${GUARD} (supervise|run)" 2>/dev/null || true
   systemctl start docker.socket docker.service >/dev/null 2>&1 || true
-  docker rm -f "${TEST}" "${APP}" "${OTHER}" "${STOPPED}" sg-twin-image sg-twin-label sg-twin-mount \
+  docker rm -f "${TEST}" "${APP}" "${OTHER}" "${STOPPED}" "${SLOW}" sg-twin-image sg-twin-label sg-twin-mount \
     sg-twin-varrun \
     >/dev/null 2>&1 || true
   docker rmi "${SELF_IMAGE_TAG}" >/dev/null 2>&1 || true
@@ -338,7 +339,7 @@ if [[ "$(status_field run_allowed_at)" =~ ^[0-9]+$ ]]; then pass "status names t
   fail "run_allowed_at missing"
 fi
 expect_contains "reset-run-interval" "$(guard reset-run-interval)" aufgehoben
-expect_wait "pause lifted" run_allowed_at null
+expect_equal "pause lifted in the status right away" "$(status_field run_allowed_at)" null
 expect_contains "syslog: pause lifted" "$(syslog)" "pause between runs lifted"
 
 echo "== Ablehnungen"
@@ -413,6 +414,42 @@ expect_equal "stopped for deadman test" "${RESULT}" stopped
 expect_wait "deadman fired" last_run.reason deadman_heartbeat 60
 expect_equal "test container runs after deadman" "$(running_state "${TEST}")" true
 expect_contains "syslog: deadman" "$(syslog)" "deadman: no heartbeat"
+
+echo "== Langsamer stop: länger als die Herzschlag-Frist (ab Version 3)"
+# sleep als PID 1 übergeht SIGTERM; docker stop dauert also stop_timeout_seconds (40 s), länger
+# als die Herzschlag-Frist (30 s). Danach beginnt die Frist neu, der Lauf bleibt offen.
+docker run -d --name "${SLOW}" --network none "${BUSYBOX}" sleep 86400 >/dev/null
+write_conf "allow ${TEST}
+allow ${SLOW}
+heartbeat_timeout_seconds 30
+stop_timeout_seconds 40
+"
+guard restart >/dev/null
+expect_wait "guard with slow stop config" error null 30
+lift_pause
+closed_before="$(status_field last_run.closed_at)"
+send begin
+expect_equal "begin before the slow stop" "${RESULT}" opened
+send "stop ${SLOW}" 70
+expect_equal "slow container stopped" "${RESULT}" stopped
+sleep 3
+expect_equal "run still open after the slow stop" "$(status_field run.stopped.0.name)" "${SLOW}"
+expect_equal "no deadman after the slow stop" "$(status_field last_run.closed_at)" "${closed_before}"
+send finish
+expect_equal "finish after the slow stop" "${RESULT}" finished
+expect_equal "slow container runs again" "$(running_state "${SLOW}")" true
+expect_equal "run ended by finish" "$(status_field last_run.reason)" finish
+docker rm -f "${SLOW}" >/dev/null
+write_conf "allow ${TEST}
+allow ${STOPPED}
+allow sg-missing
+allow ${prefix}
+heartbeat_timeout_seconds 30
+stop_timeout_seconds 10
+dataset twinraidtest
+"
+guard restart >/dev/null
+expect_wait "guard back to the test config" error null 30
 
 echo "== selftest"
 docker stop -t 1 "${APP}" >/dev/null

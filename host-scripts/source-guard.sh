@@ -1,5 +1,5 @@
 #!/bin/bash
-# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 2 (Konzept 3.6).
+# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 3 (Konzept 3.6).
 #
 # Ablage auf Klein: /boot/config/twinraid/source-guard.sh, Konfiguration daneben in
 # source-guard.conf (Vorlage: host-scripts/source-guard.conf.example). Gestartet wird
@@ -25,6 +25,9 @@
 # Senden mit zfs send über SSH mit dem Key „sync“. prepare und send laufen in einem
 # Kindprozess; der Status zeigt Job und Fortschritt (Konzept 3.6, „Job, Prüfen und
 # Senden“). Snapshots löscht nur der Wächter selbst nach seiner Regel, nie auf Auftrag.
+# Version 3 (TwinRaid v0.5.2) bleibt bei Protokoll 2: stop setzt die Herzschlag-Frist neu,
+# reset-run-interval meldet Erfolg erst nach dem neuen Status, und der alte Hold der Basis
+# wird nur frei, wenn die neue Basis ihren Hold hat.
 #
 # Ins Syslog (Kennung twinraid-source-guard) kommen nur feste Texte, Codes, Zahlen
 # und geprüfte Container-Namen, nie der Inhalt der Auftragsdatei.
@@ -33,7 +36,7 @@ export LC_ALL=C
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 
-readonly VERSION=2
+readonly VERSION=3
 readonly PROTOCOL=2
 readonly CONF=/boot/config/twinraid/source-guard.conf
 readonly BASE_DIR=/run/twinraid-source-guard
@@ -513,6 +516,9 @@ LAST_RUN_OPENED=0
 LAST_RUN_CLOSED=0
 # Ende des letzten Laufs in Laufzeit (UP), für die Pause zwischen zwei Läufen; 0: keine Pause.
 LAST_RUN_CLOSED_UP=0
+# reset-run-interval ist übernommen, die Anfragedatei wird nach dem nächsten Status gelöscht.
+RESET_PENDING=0
+STATUS_WRITTEN=0
 LAST_RUN_REASON=""
 LAST_RUN_IDS=()
 LAST_RUN_NAMES=()
@@ -912,10 +918,13 @@ run_wait() {
   fi
 }
 
-# source-guard.sh reset-run-interval legt diese Datei an; nur root auf Klein kann das.
+# source-guard.sh reset-run-interval legt diese Datei an; nur root auf Klein kann das. Gelöscht
+# wird sie erst in finish_reset_request, nachdem write_status den neuen Status geschrieben hat:
+# Der Befehl wartet auf das Löschen, und danach soll status.json die Pause schon nicht mehr
+# zeigen (ab Version 3).
 check_reset_request() {
-  if [[ -f "${PRIVATE_DIR}/reset-run-interval" ]]; then
-    rm -f -- "${PRIVATE_DIR}/reset-run-interval"
+  if [[ -f "${PRIVATE_DIR}/reset-run-interval" ]] && ((RESET_PENDING == 0)); then
+    RESET_PENDING=1
     LAST_RUN_CLOSED_UP=0
     if ((LAST_RUN)); then
       save_last_run
@@ -923,6 +932,20 @@ check_reset_request() {
     log "pause between runs lifted by root on Klein"
     STATUS_DIRTY=1
   fi
+}
+
+finish_reset_request() {
+  if ((RESET_PENDING && STATUS_WRITTEN)); then
+    rm -f -- "${PRIVATE_DIR}/reset-run-interval"
+    RESET_PENDING=0
+  fi
+}
+
+# Herzschlag-Frist des offenen Laufs neu beginnen (ping, nach stop); nie die Höchstzeit.
+extend_heartbeat() {
+  now
+  RUN_HEARTBEAT=$((UP + HEARTBEAT_TIMEOUT))
+  save_run
 }
 
 check_deadman() {
@@ -1017,9 +1040,7 @@ execute_order() {
       ;;
     ping)
       if ((RUN_OPEN)); then
-        now
-        RUN_HEARTBEAT=$((UP + HEARTBEAT_TIMEOUT))
-        save_run
+        extend_heartbeat
         RESULT=extended
       else
         RESULT=no_run
@@ -1027,6 +1048,11 @@ execute_order() {
       ;;
     stop)
       order_stop "${container}"
+      # Während docker stop kann kein ping ankommen. Danach beginnt die Herzschlag-Frist neu,
+      # gleich mit welchem Ergebnis; die Höchstzeit des Laufs bleibt (ab Version 3).
+      if ((RUN_OPEN)); then
+        extend_heartbeat
+      fi
       ;;
     finish)
       if ((RUN_OPEN == 0)); then
@@ -2136,14 +2162,19 @@ progress_reader() {
 }
 
 # Nach einem erfolgreichen Senden: Hold an den neuen Snapshot, Lesezeichen, alter Hold frei.
+# Den alten Hold gibt es nur frei, wenn der neue sitzt (ab Version 3); sonst bliebe keine
+# Basis gehalten. Ein liegengebliebener alter Hold wird beim nächsten erfolgreichen Senden
+# mit freigegeben: Freigegeben wird jeder eigene Hold außer dem am neuen Snapshot.
 new_base() {
-  local ds="$1" snapshot="$2" i
+  local ds="$1" snapshot="$2" i held=1
   if ! "${ZFS}" hold -- "${HOLD_TAG}" "${ds}@${snapshot}" >/dev/null 2>&1; then
-    log "dataset ${ds#"${POOL}/"}: hold on the new base failed"
+    held=0
+    log "dataset ${ds#"${POOL}/"}: hold on the new base failed, the old hold stays"
   fi
   if ! "${ZFS}" bookmark -- "${ds}@${snapshot}" "${ds}#${snapshot}" >/dev/null 2>&1; then
     log "dataset ${ds#"${POOL}/"}: bookmark failed"
   fi
+  ((held)) || return 0
   own_snapshots "${ds}" || return 0
   for i in "${!OS_NAMES[@]}"; do
     if [[ "${OS_NAMES[i]}" != "${snapshot}" ]] && ((OS_HOLDS[i] > 0)); then
@@ -2861,7 +2892,10 @@ write_status() {
     json+=',"seq_exhausted":false'
   fi
   json+='}'
-  if ! write_atomic "${STATUS_FILE}" "${json}"$'\n' 0644; then
+  if write_atomic "${STATUS_FILE}" "${json}"$'\n' 0644; then
+    STATUS_WRITTEN=1
+  else
+    STATUS_WRITTEN=0
     log_limited status_write "status.json could not be written"
   fi
   STATUS_DIRTY=0
@@ -2983,6 +3017,7 @@ run_guard() {
     now
     if ((STATUS_DIRTY || NOW >= next_status)); then
       write_status
+      finish_reset_request
       next_status=$((NOW + STATUS_INTERVAL))
     fi
     sleep "${LOOP_SLEEP}" &

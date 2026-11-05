@@ -995,6 +995,53 @@ def test_send_incremental_and_full(host: Host) -> None:
     assert f"job {job['id']}: done (ok)" in log
 
 
+def test_failed_hold_keeps_the_old_base_until_the_next_send(running: Host) -> None:
+    """Ab Version 3 (Konzept 3.6, „Snapshots auf Klein“): Scheitert der Hold an der neuen
+    Basis, bleibt der alte. Der nächste Lauf sucht die Basis über die GUID des Spiegels, nimmt
+    also den gesendeten Snapshot, und sein erfolgreiches Senden gibt den alten Hold frei."""
+    running.update_zfs(lambda z: z.update(fail=["hold"]))
+    prepared(running)
+    first = sent(running)
+    first_new = new_name(first)
+    assert (first["state"], first["result"]) == ("done", "ok")
+    assert first["datasets"][0]["result"] == "ok"
+    zfs = running.zfs()
+    first_guid = zfs["snapshots"][first_new]["guid"]
+    assert zfs["snapshots"][first_new]["holds"] == []
+    assert zfs["snapshots"][f"{DS}@{BASE}"]["holds"] == ["twinraid-base"]
+    assert zfs["bookmarks"][f"{DS}#{first['snapshot']}"]["guid"] == first_guid
+    assert not [c for c in running.calls("zfs") if c[0] == "release"]
+    assert "dataset twinraidtest: hold on the new base failed, the old hold stays" in (
+        running.syslog()
+    )
+    # Daran erkennt TwinRaid den Fall ohne neues Feld: gesendet mit ok, die gehaltene Basis
+    # ist aber älter als der Snapshot des Jobs (Hinweis source_base_hold_missing).
+    status = running.wait_status(
+        lambda s: (s["zfs"]["datasets"][0]["base"] or {}).get("guid") == BASE_GUID
+    )
+    assert status["zfs"]["datasets"][0]["base"]["created_at"] < status["job"]["created_at"]
+
+    running.update_zfs(lambda z: z.update(fail=[]))
+    running.answer_ssh(
+        check=check_answer({"twinraidtest": mirror(first_guid)}), receive={"default": {"rc": 0}}
+    )
+    time.sleep(1.1)  # zwei Snapshots in derselben Sekunde hätten denselben Namen
+    second = prepared(running)
+    assert second["datasets"][0]["mode"] == "incremental"
+    assert second["datasets"][0]["base_type"] == "snapshot"
+    assert second["datasets"][0]["base_guid"] == first_guid
+    second = sent(running)
+    second_new = new_name(second)
+    assert (second["state"], second["result"]) == ("done", "ok")
+    sends = [c for c in running.calls("zfs") if c[:2] == ["send", "-L"]]
+    assert sends[-1] == ["send", "-L", "-c", "-e", "-v", "-P", "-i", first_new, "--", second_new]
+    zfs = running.zfs()
+    assert zfs["snapshots"][second_new]["holds"] == ["twinraid-base"]
+    assert zfs["snapshots"][first_new]["holds"] == []
+    assert zfs["snapshots"][f"{DS}@{BASE}"]["holds"] == []
+    assert ["release", "--", "twinraid-base", f"{DS}@{BASE}"] in running.calls("zfs")
+
+
 def test_send_shows_progress(host: Host) -> None:
     host.update_zfs(lambda z: z.update(send_seconds=4))
     started(host)

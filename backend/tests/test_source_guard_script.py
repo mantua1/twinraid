@@ -59,7 +59,7 @@ def test_start_mounts_tmpfs_and_creates_files(host: Host) -> None:
     status = host.wait_status(lambda s: s["error"] is None)
     assert host.status_file.stat().st_mode & 0o777 == 0o644
     assert status["protocol"] == 2
-    assert status["version"] == 2
+    assert status["version"] == 3
     assert len(status["instance"]) == 16
     assert status["last_seq"] == 0
     assert status["last"] is None
@@ -326,6 +326,53 @@ def test_ping_moves_only_the_heartbeat(running: Host) -> None:
     assert abs(after["max_deadline"] - before["max_deadline"]) <= 1
 
 
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("twinraid-testcontainer", "stopped"),
+        ("stopped-one", "not_running"),
+        ("other", "not_allowed"),
+    ],
+)
+def test_stop_moves_only_the_heartbeat(running: Host, name: str, expected: str) -> None:
+    """Ab Version 3 beginnt die Herzschlag-Frist nach jedem stop neu, gleich mit welchem
+    Ergebnis."""
+    running.send("begin")
+    before = running.status()["run"]
+    time.sleep(2.1)
+    assert running.send(f"stop {name}")["result"] == expected
+    after = running.status()["run"]
+    assert after["heartbeat_deadline"] > before["heartbeat_deadline"]
+    assert abs(after["max_deadline"] - before["max_deadline"]) <= 1
+
+
+def test_slow_stop_does_not_trigger_the_deadman(host: Host) -> None:
+    """Während docker stop kommt kein ping an; danach darf der Lauf nicht sofort enden."""
+    host.change_container("twinraid-testcontainer", stop_seconds=4)
+    process = host.start_run()
+    host.wait_status(lambda s: s["error"] is None)
+    host.send("begin")
+    # Herzschlag-Frist auf 2 s kürzen: 30 s sind das Minimum in source-guard.conf.
+    host.stop_run(process)
+    run_file = host.private / "run"
+    lines = run_file.read_text().splitlines()
+    soon = _uptime() + 2
+    run_file.write_text(
+        "\n".join(f"heartbeat {soon}" if line.startswith("heartbeat ") else line for line in lines)
+        + "\n"
+    )
+    host.start_run()
+    host.wait_status(lambda s: s["error"] is None and s["run"] is not None)
+    assert host.send("stop twinraid-testcontainer")["result"] == "stopped"
+    time.sleep(1.5)
+    status = host.status()
+    assert status["run"] is not None
+    assert status["last_run"] is None
+    assert not host.running("twinraid-testcontainer")
+    assert host.send("finish")["result"] == "finished"
+    assert host.running("twinraid-testcontainer")
+
+
 def test_containers_restart_in_reverse_order(host: Host) -> None:
     host.configure("allow twinraid-testcontainer\nallow other\n")
     host.start_run()
@@ -394,13 +441,19 @@ def test_pause_survives_a_restart(host: Host) -> None:
 def test_reset_run_interval_lifts_the_pause(host: Host) -> None:
     host.command("start")
     host.wait_status(lambda s: s["error"] is None)
-    host.send("begin")
-    host.send("finish")
-    assert host.send("begin")["result"] == "too_soon"
-    result = host.command("reset-run-interval")
-    assert result.returncode == 0, result.stderr
-    assert "aufgehoben" in result.stdout
-    host.wait_status(lambda s: s["run_allowed_at"] is None)
+    # Ab Version 3 steht die aufgehobene Pause schon im Status, wenn der Befehl Erfolg meldet.
+    # Vorher war das ein Wettlauf mit dem Rest des Durchlaufs; ein langsamer logger zwischen
+    # Übernahme und Status macht ihn sicher sichtbar.
+    host.flag("logger-slow")
+    for _ in range(2):
+        host.send("begin")
+        host.send("finish")
+        assert host.send("begin")["result"] == "too_soon"
+        result = host.command("reset-run-interval")
+        assert result.returncode == 0, result.stderr
+        assert "aufgehoben" in result.stdout
+        assert host.status()["run_allowed_at"] is None
+        assert not (host.private / "reset-run-interval").exists()
     assert host.send("begin")["result"] == "opened"
     assert "pause between runs lifted by root on Klein" in host.syslog()
     host.command("stop")
