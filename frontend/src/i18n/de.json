@@ -67,7 +67,8 @@
       "source_connect_plugin": "Auf {{target}} ist das Plugin Unraid Connect installiert. Dort liegt auf dem Boot-Medium der Key „sync“ (ab v0.5.1); mit Flash Backup läge eine unverschlüsselte Kopie davon in der Cloud von Unraid.",
       "source_flash_backup": "Flash Backup von Unraid Connect ist auf {{target}} aktiv.",
       "source_guard_allows_self": "Die Erlaubnisliste des Wächters auf {{target}} enthält den Container von TwinRaid. source-guard.conf prüfen: TwinRaid wird nie angehalten.",
-      "target_arc_unlimited": "Auf {{target}} ist keine Grenze für den ZFS-Cache eingetragen. Trage sie in Unraid unter Settings → Disk Settings ein."
+      "target_arc_unlimited": "Auf {{target}} ist keine Grenze für den ZFS-Cache eingetragen. Trage sie in Unraid unter Settings → Disk Settings ein.",
+      "source_base_hold_missing": "Die neue Basis von {{datasets}} auf {{target}} ist nicht gehalten; der nächste erfolgreiche Sync behebt das."
     }
   },
   "dashboard": {

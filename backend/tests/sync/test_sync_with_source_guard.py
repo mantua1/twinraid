@@ -20,7 +20,7 @@ from tests.conftest import EXAMPLE_CONFIG
 from tests.support.guard_status import mountinfo
 from tests.support.source_guard_host import Host, container_id, kill_leftovers, make_host
 from tests.support.worker import TestWorker, make_worker
-from tests.test_source_guard_jobs import CONF, setup, started
+from tests.test_source_guard_jobs import CONF, check_answer, setup, started
 from twinraid.config import TwinRaidConfig, load_config
 from twinraid.integrations.guard_orders import OrderTimings, RealGuardChannel
 from twinraid.integrations.mocks.lab import LabTimings
@@ -96,11 +96,13 @@ def host(tmp_path: Path) -> Iterator[Host]:
     kill_leftovers(tmp_path)
 
 
-async def _worker(host: Host, config: TwinRaidConfig | None = None) -> TestWorker:
+async def _worker(
+    host: Host, config: TwinRaidConfig | None = None, directory: str = "worker"
+) -> TestWorker:
     paths = _paths(host)
     channel = RealGuardChannel(paths, OrderTimings(poll_seconds=0.05))
     worker = make_worker(
-        host.tmp / "worker",
+        host.tmp / directory,
         RunMode.MOCK,
         config=config or _config(),
         source_guard=HostGuard(paths),
@@ -274,3 +276,68 @@ async def test_worker_restart_adopts_the_transfer(host: Host, tmp_path: Path) ->
     await _until(lambda: again.sync.snapshot().running is None)
     assert _outcome(again) == (ActionOutcome.SUCCESS, None)
     assert GuardOrder.CLOSE.value not in _orders(host)
+
+
+def _candidates(paths: GuardPaths) -> frozenset[str]:
+    return HostGuard(paths).report().hold_candidates
+
+
+def _mirror_at_newest(host: Host) -> None:
+    """Groß meldet im nächsten check den zuletzt gesendeten Snapshot als neuesten."""
+    zfs = host.zfs()
+    name = max(
+        (key for key in zfs["snapshots"] if key.startswith("mainpool/twinraidtest@")),
+        key=lambda key: zfs["snapshots"][key]["createtxg"],
+    )
+    snapshot = zfs["snapshots"][name]
+    line = (
+        f"state=mirror props=ok count=4 newest_guid={snapshot['guid']} "
+        f"newest_created={snapshot['creation']} newest_received={snapshot['creation'] + 5} "
+        "oldest_created=1750000000"
+    )
+    host.answer_ssh(check=check_answer({"twinraidtest": line}), receive={"default": {"rc": 0}})
+
+
+async def _run(worker: TestWorker, name: ActionName) -> ActionOutcome:
+    assert await worker.actions.request(name) is None
+    await _until(lambda: worker.sync.snapshot().running is None)
+    last = worker.sync.snapshot().last
+    assert last is not None
+    return last.outcome
+
+
+async def test_hold_notice_stays_until_a_successful_sync(host: Host, tmp_path: Path) -> None:
+    """Konzept 3.6: Der Hinweis bleibt nach dem Ende des Jobs, nach einem Neustart von TwinRaid
+    und nach einem Probelauf; erst ein erfolgreicher Sync mit Hold beseitigt ihn."""
+    config = _config(stop_containers=False)
+    paths = _paths(host)
+    host.update_zfs(lambda z: z.update(fail=["hold"]))
+    started(host)
+    (tmp_path / "klein" / "worker").mkdir()
+    worker = await _worker(host, config)
+    # Der Hold an der neuen Basis scheitert; gesendet ist trotzdem.
+    assert await _run(worker, ActionName.SYNC_START) is ActionOutcome.SUCCESS
+    await _until(lambda: _candidates(paths) == frozenset({"twinraidtest"}), 10)
+    # Der Job ist zu Ende und nicht mehr offen.
+    assert host.status()["job"]["state"] == "done"
+    await worker.close()
+
+    # Neustart von TwinRaid: neuer Worker, der Hinweis kommt wieder aus dem Status.
+    (tmp_path / "klein" / "worker2").mkdir()
+    again = await _worker(host, config, "worker2")
+    await again.sync.run()
+    assert _candidates(paths) == frozenset({"twinraidtest"})
+
+    # Probelauf: Sein Job ersetzt den gesendeten; der neue check kennt den gesendeten Snapshot.
+    _mirror_at_newest(host)
+    host.update_zfs(lambda z: z.update(fail=[]))
+    await asyncio.sleep(1.1)  # zwei Snapshots in derselben Sekunde hätten denselben Namen
+    assert await _run(again, ActionName.SYNC_DRY_RUN) is ActionOutcome.DRY_RUN_SUCCESS
+    assert host.status()["job"]["result"] == "closed"
+    assert _candidates(paths) == frozenset({"twinraidtest"})
+
+    # Erst ein erfolgreicher Sync setzt den Hold neu.
+    await asyncio.sleep(1.1)
+    assert await _run(again, ActionName.SYNC_START) is ActionOutcome.SUCCESS
+    await _until(lambda: _candidates(paths) == frozenset(), 10)
+    await again.close()

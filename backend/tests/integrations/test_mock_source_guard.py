@@ -184,6 +184,7 @@ def test_tour_shows_every_state(tmp_path: Path) -> None:
     assert notices == {
         StatusNotice.SOURCE_CONNECT_PLUGIN,
         StatusNotice.SOURCE_FLASH_BACKUP,
+        StatusNotice.SOURCE_BASE_HOLD_MISSING,
         StatusNotice.SOURCE_GUARD_ALLOWS_SELF,
     }
     assert {"on", "lz4", "off", None} <= compressions

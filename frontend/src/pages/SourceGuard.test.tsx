@@ -258,6 +258,30 @@ describe("tile Klein", () => {
     ).toEqual(["target_flash_backup"]);
   });
 
+  it("names the datasets whose base is not held", async () => {
+    const { source } = await openDashboard({
+      status: withGuard(
+        {
+          details: {
+            ...GUARD_DETAILS,
+            zfs: {
+              ...GUARD_DETAILS.zfs,
+              datasets: [
+                dataset("twinraidtest", true, { base_hold_missing: true }),
+                dataset("isos"),
+              ],
+            },
+          },
+        },
+        ["source_base_hold_missing"],
+      ),
+    });
+    const notice = within(source).getByTestId("status-notice");
+    expect(notice).toHaveTextContent(
+      "Die neue Basis von twinraidtest auf Unraid Klein ist nicht gehalten; der nächste erfolgreiche Sync behebt das.",
+    );
+  });
+
   it("explains it in English", async () => {
     const { user, source } = await openDashboard();
     await user.click(screen.getByRole("button", { name: "Englisch" }));

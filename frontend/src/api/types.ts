@@ -39,6 +39,8 @@ export const STATUS_NOTICES = [
   "source_guard_allows_self",
   // Kachel Groß, ab v0.5.1: keine Grenze für den ZFS-Cache eingetragen (Konzept 3.5).
   "target_arc_unlimited",
+  // Kachel Klein, ab v0.5.2: gehaltene Basis fehlt oder ist veraltet (Konzept 3.6).
+  "source_base_hold_missing",
 ] as const;
 export type StatusNotice = (typeof STATUS_NOTICES)[number];
 
@@ -171,6 +173,8 @@ export interface GuardDataset {
   oldest_snapshot_at: string | null;
   base_created_at: string | null;
   bookmark: boolean | null;
+  // Ab v0.5.2: Die gehaltene Basis fehlt oder ist veraltet (Hinweis source_base_hold_missing).
+  base_hold_missing: boolean;
 }
 
 export interface GuardZfs {

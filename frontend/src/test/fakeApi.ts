@@ -74,6 +74,7 @@ export function dataset(
     oldest_snapshot_at: null,
     base_created_at: null,
     bookmark: null,
+    base_hold_missing: false,
     ...extra,
   };
 }

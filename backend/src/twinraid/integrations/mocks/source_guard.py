@@ -298,6 +298,11 @@ def _plain(now: datetime, started: datetime, _t0: datetime) -> SourceGuardStatus
     return _active(now, started)
 
 
+def _hold_missing(now: datetime, started: datetime, _t0: datetime) -> SourceGuardStatus:
+    dataset = _ZFS.datasets[0].model_copy(update={"base_hold_missing": True})
+    return _active(now, started, zfs=_ZFS.model_copy(update={"datasets": (dataset,)}))
+
+
 # Rundlauf des Wächters (Konzept 6.4); ein Test prüft die Vollständigkeit.
 GUARD_SCENARIO: tuple[GuardStep, ...] = (
     _step(_plain),
@@ -313,6 +318,7 @@ GUARD_SCENARIO: tuple[GuardStep, ...] = (
     *(_invalid(problem) for problem in GuardStatusProblem),
     _step(_plain, StatusNotice.SOURCE_CONNECT_PLUGIN, StatusNotice.SOURCE_FLASH_BACKUP),
     _step(_allows_self, StatusNotice.SOURCE_GUARD_ALLOWS_SELF),
+    _step(_hold_missing, StatusNotice.SOURCE_BASE_HOLD_MISSING),
     _step(_missing_container),
     _step(_tour_run),
     _step(_tour_last_run(GuardRunEnd.FINISH, GuardRestart.STARTED, GuardRestart.ALREADY_RUNNING)),

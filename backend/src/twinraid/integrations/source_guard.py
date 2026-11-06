@@ -18,7 +18,7 @@ import os
 import re
 import stat
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal, Protocol
@@ -72,6 +72,10 @@ MOUNTINFO = Path("/proc/self/mountinfo")
 READ_INTERVAL_SECONDS = 5.0
 # Aktiv heißt: Herzschlag höchstens so alt (Konzept 3.6).
 FRESH_SECONDS = 30
+# Der Wächter liest seinen ZFS-Teil nur alle 30 s neu; so lange kann die gehaltene Basis nach
+# einem Senden noch alt im Status stehen. Der Hinweis source_base_hold_missing erscheint deshalb
+# erst, wenn die Bedingung so lange ohne Unterbrechung besteht (Konzept 3.6).
+HOLD_NOTICE_SECONDS = 60
 MAX_STATUS_BYTES = 64 * 1024
 # Protokoll 2 ab source-guard.sh Version 2 (TwinRaid v0.5.1, Konzept 3.6).
 PROTOCOL = 2
@@ -637,6 +641,86 @@ def _job(job: _Job) -> GuardJob:
     )
 
 
+def hold_missing(file: GuardFile) -> frozenset[str]:
+    """Datasets, deren gehaltene Basis fehlt oder veraltet ist (Konzept 3.6, „Lesen in TwinRaid“).
+
+    Erstens: im Job mit ok gesendet, die gehaltene Basis fehlt oder ist älter als der Snapshot
+    des Jobs. Zweitens, damit der Hinweis auch ohne diesen Job bleibt: Laut letztem check ist
+    der Spiegel ein eigener mit neuestem Snapshot, und die gehaltene Basis fehlt oder ist nicht
+    dieser Snapshot (andere GUID und älter). Beide Zeiten kommen von der Uhr von Klein.
+    """
+    job = file.job
+    sent = (
+        {item.name for item in job.datasets if item.result is GuardDatasetResult.OK}
+        if job is not None
+        else set()
+    )
+    check = file.target.check
+    mirrors = (
+        {mirror.name: mirror for mirror in check.mirrors}
+        if check is not None and check.result is GuardCheckResult.OK
+        else {}
+    )
+    names: set[str] = set()
+    for item in file.zfs.datasets:
+        if item.present is not True:
+            continue
+        base = item.base
+        if (
+            job is not None
+            and item.name in sent
+            and (base is None or base.created_at < job.created_at)
+        ):
+            names.add(item.name)
+        mirror = mirrors.get(item.name)
+        if (
+            mirror is not None
+            and mirror.state == "mirror"
+            and mirror.newest_guid is not None
+            and mirror.newest_created is not None
+            and (
+                base is None
+                or (base.guid != mirror.newest_guid and base.created_at < mirror.newest_created)
+            )
+        ):
+            names.add(item.name)
+    return frozenset(names)
+
+
+def with_hold_notice(report: GuardReport, names: frozenset[str]) -> GuardReport:
+    """Hinweis und Kennzeichen je Dataset für die Datasets, deren Basis nicht gehalten ist."""
+    details = report.status.details
+    if not names or details is None:
+        return report
+    datasets = tuple(
+        item.model_copy(update={"base_hold_missing": True}) if item.name in names else item
+        for item in details.zfs.datasets
+    )
+    zfs = details.zfs.model_copy(update={"datasets": datasets})
+    status = report.status.model_copy(update={"details": details.model_copy(update={"zfs": zfs})})
+    return replace(
+        report,
+        status=status,
+        notices=(*report.notices, StatusNotice.SOURCE_BASE_HOLD_MISSING),
+    )
+
+
+class HoldNoticeDelay:
+    """Meldet ein Dataset erst, wenn die Bedingung HOLD_NOTICE_SECONDS lang besteht."""
+
+    def __init__(self, seconds: float = HOLD_NOTICE_SECONDS) -> None:
+        self._seconds = seconds
+        self._since: dict[str, datetime] = {}
+
+    def confirmed(self, names: frozenset[str], now: datetime) -> frozenset[str]:
+        self._since = {name: self._since.get(name, now) for name in names}
+        return frozenset(
+            name
+            for name, since in self._since.items()
+            if (now - since).total_seconds() >= self._seconds
+        )
+
+
 def _notices(file: GuardFile, own_id: str | None) -> tuple[StatusNotice, ...]:
     notices: list[StatusNotice] = []
     if file.host.connect == "present":
@@ -656,6 +740,9 @@ class GuardReport:
     # Einträge in allowed mit der eigenen Container-ID (10.1); für sie schickt der Worker nie
     # stop. Nur im Worker, nie im Status.
     own_allowed: frozenset[str] = frozenset()
+    # Datasets, deren gehaltene Basis gerade fehlt oder veraltet ist (hold_missing); erst nach
+    # HOLD_NOTICE_SECONDS ohne Unterbrechung ein Hinweis (RealSourceGuard).
+    hold_candidates: frozenset[str] = frozenset()
 
 
 def evaluate(observation: GuardObservation, now: datetime) -> GuardReport:
@@ -721,6 +808,7 @@ def evaluate(observation: GuardObservation, now: datetime) -> GuardReport:
             for item in file.allowed
             if observation.own_id is not None and item.id == observation.own_id
         ),
+        hold_missing(file),
     )
 
 
@@ -758,9 +846,12 @@ class RealSourceGuard:
         self._clock = clock
         self._observation = NOT_READ
         self._logged: str | None = None
+        self._hold = HoldNoticeDelay()
 
     def report(self) -> GuardReport:
-        return evaluate(self._observation, self._clock())
+        now = self._clock()
+        report = evaluate(self._observation, now)
+        return with_hold_notice(report, self._hold.confirmed(report.hold_candidates, now))
 
     async def refresh(self) -> None:
         try:
