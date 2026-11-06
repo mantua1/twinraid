@@ -142,6 +142,13 @@ def _step(worker: TestWorker) -> SyncStep | None:
     return running.step if running is not None else None
 
 
+def _waiting(worker: TestWorker) -> tuple[bool, bool]:
+    """Abbruch angefordert, wartet auf den Container (Konzept 4.3, „Status“)."""
+    running = worker.sync.snapshot().running
+    assert running is not None
+    return running.cancelling, running.waiting_for_container
+
+
 # --- Verfügbarkeit ---------------------------------------------------------------------------
 
 
@@ -631,6 +638,8 @@ async def test_cancel_while_sending(tmp_path: Path) -> None:
     job_id = await _start(worker)
     await _until(lambda: _step(worker) is SyncStep.SENDING and GuardOrder.SEND in guard.orders)
     assert worker.sync.cancel(job_id) is True
+    # Ohne laufendes begin, stop oder finish wartet der Abbruch nicht auf den Container.
+    assert _waiting(worker) == (True, False)
     await _done(worker)
     assert _outcome(worker) == (ActionOutcome.CANCELLED, None)
     # close bricht die Übertragung ab; auf Groß bleibt der alte Stand (Konzept 4.3).
@@ -646,10 +655,12 @@ async def test_cancel_while_stopping_waits_for_the_stop(tmp_path: Path) -> None:
     await _online(worker)
     job_id = await _start(worker)
     await _until(lambda: GuardOrder.STOP in guard.orders)
+    assert _waiting(worker) == (False, False)
     assert worker.sync.cancel(job_id) is True
     await asyncio.sleep(0.05)
-    # Noch keine weitere Bestellung, solange stop läuft.
+    # Noch keine weitere Bestellung, solange stop läuft; die Kachel zeigt das (Konzept 4.3).
     assert _main_orders(guard) == [GuardOrder.BEGIN, GuardOrder.STOP]
+    assert _waiting(worker) == (True, True)
     guard.release.set()
     await _done(worker)
     assert _outcome(worker) == (ActionOutcome.CANCELLED, None)
@@ -826,6 +837,7 @@ async def test_cancel_while_begin_is_open_finishes_the_run(tmp_path: Path) -> No
     job_id = await _start(worker)
     await _until(lambda: GuardOrder.BEGIN in guard.orders)
     assert worker.sync.cancel(job_id) is True
+    assert _waiting(worker) == (True, True)
     guard.release.set()
     await _done(worker)
     assert _outcome(worker) == (ActionOutcome.CANCELLED, None)
@@ -842,6 +854,7 @@ async def test_cancel_while_finishing(tmp_path: Path) -> None:
     await _until(lambda: _step(worker) is SyncStep.STARTING_CONTAINERS)
     await _until(lambda: GuardOrder.FINISH in guard.orders)
     assert worker.sync.cancel(job_id) is True
+    assert _waiting(worker) == (True, True)
     guard.release.set()
     await _done(worker)
     assert _outcome(worker) == (ActionOutcome.CANCELLED, None)

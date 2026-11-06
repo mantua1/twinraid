@@ -181,6 +181,8 @@ class _Run:
     progress: ProgressTracker | None = None
     # Der Ablauf hat begonnen; vorher wirkt ein Abbruch erst zu Beginn des Ablaufs.
     started: bool = False
+    # begin, stop oder finish ist geschrieben, die Antwort steht noch aus.
+    run_order_pending: bool = False
 
     @property
     def action(self) -> ActionName:
@@ -326,6 +328,8 @@ class SyncCoordinator:
                 containers_stopped=run.containers_stopped,
                 confirmation=run.confirmation,
                 progress=run.progress.snapshot() if run.progress is not None else None,
+                cancelling=run.cancel_requested,
+                waiting_for_container=run.cancel_requested and run.run_order_pending,
             )
         return SyncStatus(
             running=running,
@@ -501,6 +505,7 @@ class SyncCoordinator:
         if order not in _RUN_ORDERS:
             return await self._channel.order(order, container, reply_seconds)
         task = asyncio.ensure_future(self._channel.order(order, container, reply_seconds))
+        run.run_order_pending = True
         try:
             result = await asyncio.shield(task)
         except asyncio.CancelledError:
@@ -509,6 +514,9 @@ class SyncCoordinator:
             with contextlib.suppress(Exception, asyncio.CancelledError):
                 self._track(run, order, await task)
             raise
+        finally:
+            if task.done():
+                run.run_order_pending = False
         self._track(run, order, result)
         return result
 

@@ -89,6 +89,10 @@ class SyncRun(StrictModel):
     containers_stopped: int = 0
     confirmation: SyncConfirmation | None = None
     progress: SyncProgress | None = None
+    # Abbruch angefordert; wartet er noch auf die Antwort zu begin, stop oder finish, zeigt
+    # die Kachel „wartet auf den Container“ (Konzept 4.3, „Status“).
+    cancelling: bool = False
+    waiting_for_container: bool = False
 
 
 class SyncResult(StrictModel):
