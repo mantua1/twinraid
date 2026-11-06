@@ -358,11 +358,11 @@
       "snapshot_low_space": "Zu wenig Platz auf mainpool für einen neuen Snapshot (Reserve laut source-guard.conf).",
       "snapshot_limit": "Zu viele eigene Snapshots (höchstens 50 je Dataset); ältere laufen nach snapshot_keep_days ab.",
       "prepare_failed": "Die Prüfung auf dem Quellserver ist fehlgeschlagen; Einzelheiten im Syslog (twinraid-source-guard).",
-      "job_timeout": "Die Prüfung hat zu lange gedauert; der Job wurde geschlossen.",
+      "job_timeout": "Der Job hat zu lange gedauert; der Wächter hat ihn geschlossen.",
       "target_check_failed": "Der Zielserver hat die Prüfung (check) nicht beantwortet.",
-      "target_refused": "Der Zielserver würde den Empfang ablehnen.",
+      "target_refused": "Der Zielserver lehnt den Empfang ab.",
       "base_missing": "Für einen inkrementellen Strom fehlt die Basis auf dem Quellserver.",
-      "self_dataset_missing": "appdata würde nicht gesendet, weil das eigene Dataset von TwinRaid fehlt.",
+      "self_dataset_missing": "appdata wird nicht gesendet, weil das eigene Dataset von TwinRaid fehlt.",
       "deletions_declined": "Die Löschungen wurden abgelehnt; nichts wurde gesendet.",
       "confirmation_timeout": "Die Löschungen wurden nicht rechtzeitig freigegeben; nichts wurde gesendet.",
       "container_restart_failed": "Gesendet, aber ein angehaltener Container läuft danach nicht wieder.",
@@ -551,7 +551,7 @@
   },
   "sync": {
     "schedule": "Zeitplan aus (ab Phase 6).",
-    "noRun": "Noch kein Probelauf.",
+    "noRun": "Noch kein Lauf.",
     "running": "Probelauf läuft: {{step}}",
     "last": "Letzter Probelauf ({{time}}): {{outcome}}",
     "reason": "Grund: {{reason}}",
@@ -587,7 +587,11 @@
       "sendReady": "Senden wäre möglich.",
       "blocked": "Senden wäre gesperrt:",
       "confirm": "Ein echter Sync würde vorher nach einer Freigabe fragen:",
-      "free": "{{target}}: {{free}} von {{size}} frei, Reserve {{reserve}} %."
+      "free": "{{target}}: {{free}} von {{size}} frei, Reserve {{reserve}} %.",
+      "titleSync": "Ergebnis des Syncs vom {{time}}",
+      "sent": "Gesendet",
+      "blockedSync": "Senden war gesperrt:",
+      "confirmSync": "Der Sync hat nach einer Freigabe gefragt:"
     },
     "mirrorStates": {
       "absent": "noch keiner",
@@ -644,8 +648,101 @@
       "config_invalid": "source-guard.conf ist ungültig",
       "misconfigured": "der Wächter ist falsch eingerichtet",
       "request_not_a_file": "die Auftragsdatei ist unbrauchbar",
-      "docker_unavailable": "Docker ist auf {{source}} nicht erreichbar"
+      "docker_unavailable": "Docker ist auf {{source}} nicht erreichbar",
+      "too_soon": "die Pause zwischen zwei Läufen gilt noch",
+      "no_run": "der Totmannschalter des Wächters hat den Lauf beendet, weil TwinRaid sich nicht rechtzeitig gemeldet hat; die Container laufen wieder",
+      "stop_failed": "docker stop ist für einen Container fehlgeschlagen",
+      "not_allowed": "ein Container steht nicht in der Erlaubnisliste des Wächters (allow) oder in deny",
+      "not_found": "ein Container wurde auf {{source}} nicht gefunden",
+      "denied_self": "TwinRaid selbst wird nie angehalten"
     },
-    "orderOther": "Ergebnis des Wächters: {{code}}"
+    "orderOther": "Ergebnis des Wächters: {{code}}",
+    "runningSync": "Sync läuft: {{step}}",
+    "lastSync": "Letzter Sync ({{time}}): {{outcome}}",
+    "cancelling": "Wird abgebrochen …",
+    "cancellingContainer": "Wird abgebrochen … (wartet auf den Container)",
+    "adopted": "Übertragung läuft weiter (vor dem Neustart begonnen).",
+    "containersStopped_one": "{{count}} Container auf {{source}} angehalten.",
+    "containersStopped_other": "{{count}} Container auf {{source}} angehalten.",
+    "confirmFailed": "Freigeben hat nicht geklappt. Bitte erneut versuchen.",
+    "tooSoon": "der Wächter auf {{source}} hält die Pause zwischen zwei Läufen ein; frühestens um {{time}}",
+    "kinds": {
+      "dry_run": "Probelauf",
+      "sync": "Sync"
+    },
+    "progress": {
+      "label": "Fortschritt beim Senden",
+      "amount": "{{percent}} % · {{sent}} von {{total}}",
+      "share": "Share {{share}}",
+      "eta": "{{rate}}/s · Restzeit {{remaining}} · fertig gegen {{time}}",
+      "measuring": "Restzeit wird berechnet …"
+    },
+    "confirmation": {
+      "title": "Löschungen freigeben?",
+      "deletions": "{{count}} Löschungen, mehr als max_deletions ({{max}}) in source-guard.conf.",
+      "shrunk": "Auf weniger als die Hälfte geschrumpft (neu / Basis): {{shares}}.",
+      "kept": "Freigegebene Löschungen bleiben in den älteren Snapshots auf {{target}} erhalten.",
+      "deadline": "Ohne Antwort schließt der Wächter den Job um {{time}}; dann wird nichts gesendet.",
+      "confirm": "Freigeben und senden",
+      "decline": "Ablehnen"
+    },
+    "dialog": {
+      "cancel": {
+        "title": "Sync abbrechen?",
+        "description": "Angehaltene Container startet TwinRaid wieder. Ein laufendes Senden bricht ab; auf {{target}} bleibt der bisherige Stand, und der nächste Sync sendet alle Änderungen erneut.",
+        "confirm": "Sync abbrechen"
+      },
+      "confirm": {
+        "title": "Löschungen freigeben und senden?",
+        "description": "{{target}} übernimmt die Löschungen in den Spiegel. Die bisherigen Stände bleiben in den Snapshots auf {{target}} erhalten, mindestens 30 Tage.",
+        "confirm": "Freigeben und senden"
+      }
+    },
+    "history": {
+      "title_one": "Letzter Lauf",
+      "title_other": "Letzte {{count}} Läufe",
+      "duration": "Dauer {{duration}}",
+      "sent": "{{sent}} gesendet",
+      "containers_one": "{{count}} Container angehalten",
+      "containers_other": "{{count}} Container angehalten",
+      "woke": "hat {{target}} geweckt",
+      "adopted": "nach einem Neustart übernommen"
+    },
+    "shareResults": {
+      "ok": "angekommen",
+      "skipped": "übersprungen",
+      "base_missing": "Basis fehlt",
+      "not_ready": "nicht bereit",
+      "send_failed": "gescheitert",
+      "target_refused": "abgelehnt",
+      "target_modified": "Ziel verändert"
+    },
+    "jobReasons": {
+      "name_denied": "{{target}} kennt den Share nicht (mirror.conf)",
+      "receive_busy": "auf {{target}} lief gerade ein anderer Empfang",
+      "mirror_root_missing": "auf {{target}} fehlt mainpool/twinraid-mirror",
+      "receiver_id_in_use": "UID oder GID 64000 ist auf {{target}} vergeben (receiver-id-in-use)",
+      "target_exists": "an der Stelle des Spiegels liegt ein fremdes Dataset (docs/EINRICHTUNG.md)",
+      "delegation_mismatch": "die Rechte für den Empfang (zfs allow) auf {{target}} stimmen nicht",
+      "props_mismatch": "ein Spiegel ist gesperrt (props-mismatch); Schritte in docs/WIEDERHERSTELLUNG.md",
+      "props_not_applied": "feste Eigenschaften kamen nicht an, der Spiegel ist gesperrt (props-not-applied); Schritte in docs/WIEDERHERSTELLUNG.md",
+      "clone_active": "auf {{target}} besteht ein Klon eines Spiegels",
+      "space_low": "auf {{target}} ist zu wenig Platz",
+      "too_soon": "der letzte Empfang in diesen Spiegel ist keine 10 Minuten her",
+      "received_properties": "der Strom brachte Eigenschaften mit, der Spiegel ist gesperrt (received-properties); Schritte in docs/WIEDERHERSTELLUNG.md",
+      "mount_mismatch": "der Spiegel hing nicht am erwarteten Ort und wurde wieder ausgehängt",
+      "refused_other": "guard.sh hat aus einem anderen Grund abgelehnt; Einzelheiten im Syslog von {{target}}",
+      "key_missing": "Key „sync“ fehlt auf {{source}} (source-guard.sh init-key)",
+      "host_untrusted": "Hostkey von {{target}} nicht bestätigt (source-guard.sh trust-target)",
+      "host_key_mismatch": "Hostkey von {{target}} hat sich geändert; prüfen und neu bestätigen",
+      "auth_failed": "{{target}} lehnt den Key „sync“ ab (Zeile in authorized_keys prüfen)",
+      "unreachable": "SSH auf {{target}} nicht erreichbar",
+      "denied": "guard.sh auf {{target}} lehnt ab (Version 3 kopiert?)",
+      "ssh_failed": "SSH-Verbindung fehlgeschlagen",
+      "base_missing": "die Basis auf {{source}} fehlt",
+      "not_ready": "ein Share war nicht bereit zum Senden",
+      "self_dataset_missing": "das eigene Dataset von TwinRaid fehlt",
+      "send_error": "zfs send ist auf {{source}} gescheitert; Einzelheiten im Syslog (twinraid-source-guard)"
+    }
   }
 }

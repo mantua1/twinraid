@@ -4,7 +4,13 @@ import userEvent from "@testing-library/user-event";
 import { act } from "react";
 import { describe, expect, it } from "vitest";
 
-import type { StatusSnapshot, SyncResult, SyncStatus } from "@/api/types";
+import type {
+  StatusSnapshot,
+  SyncHistoryEntry,
+  SyncResult,
+  SyncRun,
+  SyncStatus,
+} from "@/api/types";
 import {
   actionsSnapshot,
   CHECK,
@@ -17,6 +23,7 @@ import {
   REPORT,
   SHARE_REPORT,
   STATUS,
+  syncRun,
   type FakeServer,
 } from "@/test/fakeApi";
 
@@ -62,7 +69,7 @@ describe("buttons", () => {
     expect(within(sync).getByTestId("sync-schedule")).toHaveTextContent(
       "Zeitplan aus (ab Phase 6).",
     );
-    expect(within(sync).getByText("Noch kein Probelauf.")).toBeInTheDocument();
+    expect(within(sync).getByText("Noch kein Lauf.")).toBeInTheDocument();
     await user.click(dryRun);
     expect(server.actions).toEqual(["sync_dry_run"]);
     const call = server.calls.find((entry) => entry.url === "/api/actions/sync_dry_run");
@@ -100,12 +107,7 @@ describe("buttons", () => {
 });
 
 describe("running dry run", () => {
-  const running = {
-    kind: "dry_run" as const,
-    job_id: JOB_ID,
-    step: "preparing" as const,
-    started_at: "2026-10-13T12:00:00Z",
-  };
+  const running = syncRun();
 
   it("shows the step and cancels with the job id of the worker", async () => {
     const { server, user, sync } = await openDashboard({
@@ -258,6 +260,337 @@ describe("result", () => {
     );
     expect(within(sync).getByRole("button", { name: "Dry run only" })).toBeEnabled();
     expect(within(sync).getByTestId("sync-share")).toHaveTextContent("present · 5 snapshots");
+  });
+});
+
+describe("running sync", () => {
+  const sync = (overrides: Partial<SyncRun> = {}) =>
+    withSync(
+      { running: syncRun({ kind: "sync", ...overrides }), report: REPORT },
+      { job_running: true, actions: actionsSnapshot({ sync_dry_run: "busy", sync_start: "busy" }) },
+    );
+  const confirmation = {
+    reasons: ["deletions" as const, "shrunk" as const],
+    deletions: 1500,
+    max_deletions: 1000,
+    deadline: "2026-10-13T12:31:00Z",
+  };
+  const shrunkReport = {
+    ...REPORT,
+    awaiting_confirm: true,
+    confirm_reasons: ["deletions" as const, "shrunk" as const],
+    shares: [{ ...SHARE_REPORT, deleted: 1500, referenced: 300 * 1024 ** 2 }],
+  };
+
+  it("names the stopped containers", async () => {
+    const { sync: tile } = await openDashboard({
+      status: sync({ step: "stopping_containers", containers_stopped: 1 }),
+    });
+    expect(within(tile).getByTestId("sync-running")).toHaveTextContent(
+      "Sync läuft: Container auf Unraid Klein werden angehalten …",
+    );
+    expect(within(tile).getByTestId("sync-containers")).toHaveTextContent(
+      "1 Container auf Unraid Klein angehalten.",
+    );
+    expect(within(tile).getByRole("button", { name: "Jetzt synchronisieren" })).toBeDisabled();
+    // Sind die Container wieder gestartet, entfällt die Zeile.
+    emit(sync({ step: "preparing", containers_stopped: 1 }));
+    expect(within(tile).queryByTestId("sync-containers")).toBeNull();
+  });
+
+  it("asks before cancelling a sync", async () => {
+    const { server, user, sync: tile } = await openDashboard({ status: sync({ step: "sending" }) });
+    await user.click(within(tile).getByRole("button", { name: "Abbrechen" }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("Sync abbrechen?");
+    expect(dialog).toHaveTextContent("auf Unraid Groß bleibt der bisherige Stand");
+    await user.click(within(dialog).getByRole("button", { name: "Abbrechen" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(server.cancelled).toEqual([]);
+    await user.click(within(tile).getByRole("button", { name: "Abbrechen" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Sync abbrechen" }),
+    );
+    await waitFor(() => {
+      expect(server.cancelled).toEqual([JOB_ID]);
+    });
+    // Bis der Live-Status den Abbruch zeigt, bleibt der Button gesperrt.
+    expect(within(tile).getByRole("button", { name: "Abbrechen" })).toBeDisabled();
+  });
+
+  it.each([
+    [true, "Wird abgebrochen … (wartet auf den Container)"],
+    [false, "Wird abgebrochen …"],
+  ])("shows a cancel that waits for the container: %s", async (waiting, text) => {
+    const { sync: tile } = await openDashboard({
+      status: sync({
+        step: "stopping_containers",
+        cancelling: true,
+        waiting_for_container: waiting,
+      }),
+    });
+    expect(within(tile).getByTestId("sync-running")).toHaveTextContent(text);
+    expect(within(tile).getByTestId("sync-running")).not.toHaveTextContent("Sync läuft");
+    expect(within(tile).getByRole("button", { name: "Abbrechen" })).toBeDisabled();
+  });
+
+  it("locks confirm and decline while cancelling", async () => {
+    const { sync: tile } = await openDashboard({
+      status: sync({ step: "awaiting_confirm", confirmation, cancelling: true }),
+    });
+    expect(within(tile).getByRole("button", { name: "Freigeben und senden" })).toBeDisabled();
+    expect(within(tile).getByRole("button", { name: "Ablehnen" })).toBeDisabled();
+  });
+
+  it("asks for the deletions and confirms them after a dialog", async () => {
+    const {
+      server,
+      user,
+      sync: tile,
+    } = await openDashboard({
+      status: withSync(
+        {
+          running: syncRun({ kind: "sync", step: "awaiting_confirm", confirmation }),
+          report: shrunkReport,
+        },
+        { job_running: true },
+      ),
+    });
+    const box = within(tile).getByTestId("sync-confirmation");
+    expect(box).toHaveTextContent("Löschungen freigeben?");
+    expect(box).toHaveTextContent(
+      "1500 Löschungen, mehr als max_deletions (1000) in source-guard.conf.",
+    );
+    expect(box).toHaveTextContent(
+      "Auf weniger als die Hälfte geschrumpft (neu / Basis): twinraidtest: 300 MiB / 2,1 GiB.",
+    );
+    expect(box).toHaveTextContent(
+      "Freigegebene Löschungen bleiben in den älteren Snapshots auf Unraid Groß erhalten.",
+    );
+    const deadline = new Intl.DateTimeFormat("de", { timeStyle: "short" }).format(
+      new Date(confirmation.deadline),
+    );
+    expect(within(tile).getByTestId("sync-confirmation-deadline")).toHaveTextContent(
+      `Ohne Antwort schließt der Wächter den Job um ${deadline}; dann wird nichts gesendet.`,
+    );
+    // Ablehnen ersetzt hier das allgemeine Abbrechen.
+    expect(within(tile).queryByRole("button", { name: "Abbrechen" })).toBeNull();
+    await user.click(within(tile).getByRole("button", { name: "Freigeben und senden" }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("Löschungen freigeben und senden?");
+    await user.click(within(dialog).getByRole("button", { name: "Freigeben und senden" }));
+    await waitFor(() => {
+      expect(server.confirmed).toEqual([JOB_ID]);
+    });
+    const call = server.calls.find(
+      (entry) => entry.url === `/api/sync/${JOB_ID}/confirm-deletions`,
+    );
+    expect(call?.method).toBe("POST");
+    expect(call?.headers.get("X-CSRF-Token")).toBe(CSRF);
+    expect(within(tile).getByRole("button", { name: "Freigeben und senden" })).toBeDisabled();
+    expect(within(tile).getByRole("button", { name: "Ablehnen" })).toBeDisabled();
+    // Sobald der Sync sendet, ist Abbrechen wieder möglich.
+    emit(withSync({ running: syncRun({ kind: "sync", step: "sending" }), report: shrunkReport }));
+    expect(within(tile).getByRole("button", { name: "Abbrechen" })).toBeEnabled();
+  });
+
+  it("declines the deletions without a dialog", async () => {
+    const {
+      server,
+      user,
+      sync: tile,
+    } = await openDashboard({
+      status: sync({ step: "awaiting_confirm", confirmation }),
+    });
+    await user.click(within(tile).getByRole("button", { name: "Ablehnen" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => {
+      expect(server.cancelled).toEqual([JOB_ID]);
+    });
+    expect(server.confirmed).toEqual([]);
+  });
+
+  it("says so when confirming did not work", async () => {
+    const { user, sync: tile } = await openDashboard({
+      status: sync({ step: "awaiting_confirm", confirmation }),
+      confirmAccepted: false,
+    });
+    await user.click(within(tile).getByRole("button", { name: "Freigeben und senden" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Freigeben und senden" }),
+    );
+    expect(await within(tile).findByRole("alert")).toHaveTextContent(
+      "Freigeben hat nicht geklappt. Bitte erneut versuchen.",
+    );
+    expect(within(tile).getByRole("button", { name: "Freigeben und senden" })).toBeEnabled();
+  });
+
+  it("shows the progress while sending", async () => {
+    const progress = {
+      share: "twinraidtest",
+      sent: 150 * 1024 ** 2,
+      total: 350 * 1024 ** 2,
+      percent: 42,
+      rate: 25 * 1024 ** 2,
+      remaining_seconds: 125,
+      finish_at: "2026-10-13T12:05:00Z",
+    };
+    const { sync: tile } = await openDashboard({ status: sync({ step: "sending", progress }) });
+    expect(within(tile).getByTestId("sync-running")).toHaveTextContent(
+      "Sync läuft: Sendet nach Unraid Groß …",
+    );
+    const box = within(tile).getByTestId("sync-progress");
+    expect(box.querySelector("progress")).toHaveAttribute("value", "42");
+    expect(box).toHaveTextContent("42 % · 150 MiB von 350 MiB · Share twinraidtest");
+    const time = new Intl.DateTimeFormat("de", { timeStyle: "short" }).format(
+      new Date(progress.finish_at),
+    );
+    expect(within(tile).getByTestId("sync-eta")).toHaveTextContent(
+      `25 MiB/s · Restzeit 2 min 5 s · fertig gegen ${time}`,
+    );
+    emit(sync({ step: "sending", progress: { ...progress, rate: null, remaining_seconds: null } }));
+    expect(within(tile).getByTestId("sync-eta")).toHaveTextContent("Restzeit wird berechnet …");
+  });
+
+  it("names an adopted transfer", async () => {
+    const { sync: tile } = await openDashboard({
+      status: sync({ step: "sending", adopted: true }),
+    });
+    expect(within(tile).getByTestId("sync-adopted")).toHaveTextContent(
+      "Übertragung läuft weiter (vor dem Neustart begonnen).",
+    );
+  });
+
+  it("explains the cancel in English", async () => {
+    const { user, sync: tile } = await openDashboard({
+      status: sync({ step: "starting_containers", cancelling: true, waiting_for_container: true }),
+    });
+    await user.click(screen.getByRole("button", { name: "Englisch" }));
+    expect(within(tile).getByTestId("sync-running")).toHaveTextContent(
+      "Cancelling … (waiting for the container)",
+    );
+  });
+});
+
+describe("finished sync", () => {
+  const entry = (overrides: Partial<SyncHistoryEntry> = {}): SyncHistoryEntry => ({
+    id: "a1",
+    kind: "sync",
+    trigger: "dashboard",
+    started_at: "2026-10-13T11:59:00Z",
+    finished_at: "2026-10-13T12:01:05Z",
+    result: "success",
+    reason: null,
+    woke_target: false,
+    containers_stopped: 1,
+    adopted: false,
+    shares: [
+      {
+        name: "twinraidtest",
+        mode: "incremental",
+        deleted: 12,
+        modified: 34,
+        added: 56,
+        renamed: 2,
+        size: 350 * 1024 ** 2,
+        sent: 350 * 1024 ** 2,
+        result: "ok",
+      },
+    ],
+    ...overrides,
+  });
+  const last = { ...result("success"), kind: "sync" as const };
+
+  it("shows the result with duration, data and the sent column", async () => {
+    const report = {
+      ...REPORT,
+      kind: "sync" as const,
+      shares: [{ ...SHARE_REPORT, sent: 350 * 1024 ** 2, result: "ok" as const }],
+    };
+    const { sync: tile } = await openDashboard({
+      status: withSync({ last, report, history: [entry()] }),
+    });
+    const lastLine = within(tile).getByTestId("sync-last");
+    expect(lastLine).toHaveTextContent("Letzter Sync");
+    expect(lastLine).toHaveTextContent("erfolgreich");
+    expect(lastLine.querySelector("p")).not.toHaveClass("text-destructive");
+    expect(within(tile).getByTestId("sync-last-details")).toHaveTextContent(
+      "Dauer 2 min 5 s · 350 MiB gesendet · 1 Container angehalten",
+    );
+    expect(within(tile).getByTestId("sync-report")).toHaveTextContent("Ergebnis des Syncs vom");
+    expect(within(tile).getByTestId("sync-share-sent")).toHaveTextContent("350 MiBangekommen");
+    // Der Bericht eines Syncs sagt nicht „Senden wäre möglich“.
+    expect(within(tile).queryByTestId("sync-send-ready")).toBeNull();
+  });
+
+  it("lists the history, newest first, with reasons", async () => {
+    const history = [
+      entry({ id: "a3", result: "send_failed", reason: "unreachable", woke_target: true }),
+      entry({ id: "a2", kind: "dry_run", result: "dry_run_success", containers_stopped: 0 }),
+      entry({ id: "a1", adopted: true }),
+    ];
+    const { sync: tile } = await openDashboard({ status: withSync({ history }) });
+    const box = within(tile).getByTestId("sync-history");
+    expect(box).toHaveTextContent("Letzte 3 Läufe");
+    const items = within(box).getAllByTestId("sync-history-entry");
+    expect(items[0]).toHaveTextContent(
+      "Sync · Dauer 2 min 5 s · 350 MiB gesendet · 1 Container angehalten · hat Unraid Groß geweckt",
+    );
+    expect(items[0]).toHaveTextContent(
+      "Das Senden ist gescheitert; auf dem Zielserver bleibt der bisherige Stand. Grund: SSH auf Unraid Groß nicht erreichbar",
+    );
+    expect(items[0]?.querySelectorAll("p")[1]).toHaveClass("text-destructive");
+    expect(items[1]).toHaveTextContent("Probelauf · Dauer 2 min 5 s");
+    expect(items[1]).not.toHaveTextContent("gesendet");
+    expect(items[2]).toHaveTextContent("nach einem Neustart übernommen");
+  });
+
+  it("has no history before the first run", async () => {
+    const { sync: tile } = await openDashboard();
+    expect(within(tile).queryByTestId("sync-history")).toBeNull();
+  });
+
+  it.each([
+    [
+      result("source_guard_refused", "no_run"),
+      "Grund: der Totmannschalter des Wächters hat den Lauf beendet, weil TwinRaid sich nicht rechtzeitig gemeldet hat; die Container laufen wieder",
+    ],
+    [
+      result("source_guard_refused", "stop_failed"),
+      "Grund: docker stop ist für einen Container fehlgeschlagen",
+    ],
+    [
+      result("target_refused", "received_properties"),
+      "Grund: der Strom brachte Eigenschaften mit, der Spiegel ist gesperrt (received-properties); Schritte in docs/WIEDERHERSTELLUNG.md",
+    ],
+    [
+      result("send_failed", "send_error"),
+      "Grund: zfs send ist auf Unraid Klein gescheitert; Einzelheiten im Syslog (twinraid-source-guard)",
+    ],
+  ])("names the reason of the sync result %o", async (outcome, text) => {
+    const { sync: tile } = await openDashboard({
+      status: withSync({ last: { ...outcome, kind: "sync" } }),
+    });
+    expect(within(tile).getByTestId("sync-reason")).toHaveTextContent(text);
+  });
+
+  it("names the pause of the source guard at the sync button", async () => {
+    const { sync: tile } = await openDashboard({
+      status: {
+        ...STATUS,
+        source_guard: {
+          ...GUARD_ACTIVE,
+          details: { ...GUARD_DETAILS, run_allowed_at: "2026-10-13T12:29:10Z" },
+        },
+        actions: actionsSnapshot({ sync_start: "source_guard_too_soon" }),
+      },
+    });
+    const time = new Intl.DateTimeFormat("de", { timeStyle: "short" }).format(
+      new Date("2026-10-13T12:30:00Z"),
+    );
+    expect(within(tile).getByTestId("action-hint")).toHaveTextContent(
+      `Jetzt synchronisieren: der Wächter auf Unraid Klein hält die Pause zwischen zwei Läufen ein; frühestens um ${time}`,
+    );
   });
 });
 

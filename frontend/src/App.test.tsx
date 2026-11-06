@@ -6,7 +6,16 @@ import { act } from "react";
 
 import type { AppInfo } from "@/api/types";
 import { chooseLanguage } from "@/i18n";
-import { CSRF, INFO, installFakeApi, latestStream, PASSWORD, STATUS, TLS } from "@/test/fakeApi";
+import {
+  CSRF,
+  INFO,
+  installFakeApi,
+  latestStream,
+  PASSWORD,
+  STATUS,
+  syncRun,
+  TLS,
+} from "@/test/fakeApi";
 
 import { App } from "./App";
 
@@ -241,12 +250,7 @@ describe("live status", () => {
   });
 
   it("shows a running dry run", async () => {
-    const running = {
-      kind: "dry_run" as const,
-      job_id: "0123456789abcdef0123456789abcdef",
-      step: "snapshot" as const,
-      started_at: "2026-10-13T12:00:00Z",
-    };
+    const running = syncRun({ step: "snapshot" });
     installFakeApi({
       authenticated: true,
       status: { ...STATUS, job_running: true, sync: { ...STATUS.sync, running } },

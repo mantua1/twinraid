@@ -7,6 +7,7 @@ import type {
   GuardDetails,
   SourceGuardStatus,
   SyncReport,
+  SyncRun,
   SyncShareReport,
   SyncStatus,
   ActionBlocker,
@@ -134,7 +135,25 @@ export const SYNC_IDLE: SyncStatus = {
     target: null,
     target_checked_at: null,
   },
+  history: [],
 };
+
+/** Laufender Lauf; ohne Angaben ein Probelauf im Schritt preparing. */
+export function syncRun(overrides: Partial<SyncRun> = {}): SyncRun {
+  return {
+    kind: "dry_run",
+    job_id: "0123456789abcdef0123456789abcdef",
+    step: "preparing",
+    started_at: "2026-10-13T12:00:00Z",
+    adopted: false,
+    containers_stopped: 0,
+    confirmation: null,
+    progress: null,
+    cancelling: false,
+    waiting_for_container: false,
+    ...overrides,
+  };
+}
 
 /** Antwort von guard.sh sync check wie in der Simulation (Konzept 6.4). */
 export const CHECK: GuardCheck = {
@@ -178,9 +197,12 @@ export const SHARE_REPORT: SyncShareReport = {
   base_referenced: 2.1 * GIB,
   size: 350 * 1024 ** 2,
   mirror: { state: "mirror", props: "ok", count: 5, newest_received: "2026-10-12T12:12:00Z" },
+  sent: null,
+  result: null,
 };
 
 export const REPORT: SyncReport = {
+  kind: "dry_run",
   prepared_at: "2026-10-13T12:01:00Z",
   snapshot: "twinraid-20261013T120055Z",
   awaiting_confirm: false,
@@ -317,6 +339,9 @@ export interface FakeServer {
   // Abbrechen eines Probelaufs: false lehnt ab (409); cancelled nennt die Kennungen.
   cancelAccepted: boolean;
   cancelled: string[];
+  // Freigabe von Löschungen (ab v0.5.2): false lehnt ab (409); confirmed nennt die Kennungen.
+  confirmAccepted: boolean;
+  confirmed: string[];
   calls: { url: string; method: string; headers: Headers }[];
 }
 
@@ -345,6 +370,8 @@ export function installFakeApi(overrides: Partial<FakeServer> = {}): FakeServer 
     actions: [],
     cancelAccepted: true,
     cancelled: [],
+    confirmAccepted: true,
+    confirmed: [],
     calls: [],
     ...overrides,
   };
@@ -426,15 +453,16 @@ export function installFakeApi(overrides: Partial<FakeServer> = {}): FakeServer 
         server.actions.push(url.slice("/api/actions/".length));
         return Promise.resolve(json({ detail: "accepted" }, 202));
       }
-      const cancel = /^\/api\/sync\/([0-9a-f]{32})\/cancel$/.exec(url);
-      if (cancel !== null && method === "POST") {
+      const command = /^\/api\/sync\/([0-9a-f]{32})\/(cancel|confirm-deletions)$/.exec(url);
+      if (command !== null && method === "POST") {
         if (headers.get("X-CSRF-Token") !== CSRF) {
           return Promise.resolve(json({ detail: "csrf_rejected" }, 403));
         }
-        if (!server.cancelAccepted) {
+        const cancel = command[2] === "cancel";
+        if (!(cancel ? server.cancelAccepted : server.confirmAccepted)) {
           return Promise.resolve(json({ detail: "rejected" }, 409));
         }
-        server.cancelled.push(cancel[1] ?? "");
+        (cancel ? server.cancelled : server.confirmed).push(command[1] ?? "");
         return Promise.resolve(json({ detail: "accepted" }, 202));
       }
       if (url === "/api/auth/logout" && method === "POST") {

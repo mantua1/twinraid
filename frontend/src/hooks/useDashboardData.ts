@@ -20,8 +20,9 @@ export interface DashboardData {
   acknowledgeCaChange: () => Promise<void>;
   // Fordert eine Aktion an; Fortschritt und Ergebnis kommen über den Live-Status.
   runAction: (name: ActionName) => Promise<ActionRequestResult>;
-  // Bricht den laufenden Probelauf ab; false, wenn das nicht geklappt hat.
+  // Bricht den laufenden Lauf ab bzw. gibt Löschungen frei; false, wenn das nicht geklappt hat.
   cancelSync: (jobId: string) => Promise<boolean>;
+  confirmDeletions: (jobId: string) => Promise<boolean>;
 }
 
 interface StaticData {
@@ -118,10 +119,10 @@ export function useDashboardData(onUnauthorized: () => void): DashboardData {
     [onUnauthorized, refreshAudit],
   );
 
-  const cancelSync = useCallback(
-    async (jobId: string): Promise<boolean> => {
+  const syncCommand = useCallback(
+    async (command: (jobId: string) => Promise<boolean>, jobId: string): Promise<boolean> => {
       try {
-        const done = await api.cancelSync(jobId);
+        const done = await command(jobId);
         refreshAudit();
         return done;
       } catch (error) {
@@ -133,6 +134,14 @@ export function useDashboardData(onUnauthorized: () => void): DashboardData {
     },
     [onUnauthorized, refreshAudit],
   );
+  const cancelSync = useCallback(
+    (jobId: string) => syncCommand(api.cancelSync, jobId),
+    [syncCommand],
+  );
+  const confirmDeletions = useCallback(
+    (jobId: string) => syncCommand(api.confirmDeletions, jobId),
+    [syncCommand],
+  );
 
-  return { ...data, stream, acknowledgeCaChange, runAction, cancelSync };
+  return { ...data, stream, acknowledgeCaChange, runAction, cancelSync, confirmDeletions };
 }

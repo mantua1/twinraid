@@ -1,21 +1,13 @@
-import { LoaderCircle } from "lucide-react";
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
-import {
-  GUARD_BLOCKERS,
-  GUARD_CHECK_RESULTS,
-  type ActionName,
-  type StatusSnapshot,
-  type SyncReport,
-  type SyncResult,
-  type SyncShareReport,
-} from "@/api/types";
+import type { ActionName, StatusSnapshot, SyncReport, SyncShareReport } from "@/api/types";
 import { ActionPanel, type BlockerValues, type PanelAction } from "@/components/ActionPanel";
-import { Button } from "@/components/ui/button";
+import { SyncHistory } from "@/components/SyncHistory";
+import { SyncRunning } from "@/components/SyncRunning";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ActionRequestResult } from "@/hooks/useDashboardData";
 import { formatBytes, formatSince } from "@/lib/format";
+import { QUIET_OUTCOMES, useReasonText, useRunDetails } from "@/lib/syncTexts";
 import { cn } from "@/lib/utils";
 
 interface SyncTileProps {
@@ -28,58 +20,23 @@ interface SyncTileProps {
   className?: string;
   onRun: (name: ActionName) => Promise<ActionRequestResult>;
   onCancel: (jobId: string) => Promise<boolean>;
-}
-
-// Ergebnisse ohne Fehler: der Probelauf lief durch oder wurde abgebrochen.
-const QUIET_OUTCOMES = new Set(["dry_run_success", "cancelled"]);
-
-// Ergebnisse eines Auftrags, die einen eigenen Text haben; alle übrigen erscheinen als Code.
-const ORDER_TEXTS = [
-  "job_open",
-  "zfs_unavailable",
-  "no_datasets",
-  "dataset_missing",
-  "snapshot_failed",
-  "run_open",
-  "no_job",
-  "wrong_state",
-  "not_supported",
-  "config_invalid",
-  "misconfigured",
-  "request_not_a_file",
-  "docker_unavailable",
-] as const;
-
-function isOneOf<T extends string>(list: readonly T[], value: string): value is T {
-  return (list as readonly string[]).includes(value);
-}
-
-/** Grund zu einem Ergebnis aus der passenden festen Liste (Konzept 4.3, „Ergebnis“). */
-function useReasonText() {
-  const { t } = useTranslation();
-  return (result: SyncResult, names: { source: string; target: string }): string | null => {
-    const { reason } = result;
-    if (reason === null) {
-      return null;
-    }
-    if (result.outcome === "target_refused" && isOneOf(GUARD_BLOCKERS, reason)) {
-      return t(`sync.blockers.${reason}`, names);
-    }
-    if (result.outcome === "target_check_failed" && isOneOf(GUARD_CHECK_RESULTS, reason)) {
-      return t(`sync.check.${reason}`, names);
-    }
-    if (isOneOf(ORDER_TEXTS, reason)) {
-      return t(`sync.orders.${reason}`, names);
-    }
-    return t("sync.orderOther", { code: reason });
-  };
+  onConfirmDeletions: (jobId: string) => Promise<boolean>;
 }
 
 function count(language: string | undefined, value: number | null): string {
   return value === null ? "–" : new Intl.NumberFormat(language).format(value);
 }
 
-function ShareRow({ share, target }: { share: SyncShareReport; target: string }) {
+function ShareRow({
+  share,
+  target,
+  sent,
+}: {
+  share: SyncShareReport;
+  target: string;
+  // Nur im Bericht eines Syncs: gesendete Bytes und Ergebnis je Share.
+  sent: boolean;
+}) {
   const { t, i18n } = useTranslation();
   const language = i18n.resolvedLanguage;
   const mode =
@@ -119,14 +76,30 @@ function ShareRow({ share, target }: { share: SyncShareReport; target: string })
                 count: mirror.count,
               })}
       </td>
+      {sent && (
+        <td className="py-1.5 pl-3 whitespace-nowrap tabular-nums" data-testid="sync-share-sent">
+          {share.sent === null ? "–" : formatBytes(language, share.sent)}
+          {share.result !== null && (
+            <span
+              className={cn(
+                "block text-xs",
+                share.result === "ok" ? "text-muted-foreground" : "text-destructive",
+              )}
+            >
+              {t(`sync.shareResults.${share.result}`)}
+            </span>
+          )}
+        </td>
+      )}
     </tr>
   );
 }
 
-/** Bericht des letzten Probelaufs je Share (Konzept 4.3, D5). */
+/** Bericht des letzten Laufs je Share (Konzept 4.3, D5). */
 function Report({ report, names }: { report: SyncReport; names: SyncTileProps["names"] }) {
   const { t, i18n } = useTranslation();
   const language = i18n.resolvedLanguage;
+  const sync = report.kind === "sync";
   const summary = report.check?.summary ?? null;
   const available = summary?.available ?? null;
   const size = summary?.size ?? null;
@@ -134,7 +107,9 @@ function Report({ report, names }: { report: SyncReport; names: SyncTileProps["n
   return (
     <section className="flex min-w-0 flex-col gap-2" data-testid="sync-report">
       <h3 className="text-sm font-medium">
-        {t("sync.report.title", { time: formatSince(language, report.prepared_at) })}
+        {t(sync ? "sync.report.titleSync" : "sync.report.title", {
+          time: formatSince(language, report.prepared_at),
+        })}
       </h3>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -147,22 +122,25 @@ function Report({ report, names }: { report: SyncReport; names: SyncTileProps["n
               <th className={cn(header, "text-right")}>{t("sync.report.renamed")}</th>
               <th className={cn(header, "text-right")}>{t("sync.report.size")}</th>
               <th className="pb-1 font-medium">{t("sync.report.mirror", names)}</th>
+              {sync && <th className="pb-1 pl-3 font-medium">{t("sync.report.sent")}</th>}
             </tr>
           </thead>
           <tbody>
             {report.shares.map((share) => (
-              <ShareRow key={share.name} share={share} target={names.target} />
+              <ShareRow key={share.name} share={share} target={names.target} sent={sync} />
             ))}
           </tbody>
         </table>
       </div>
       {report.send_ready ? (
-        <p className="text-sm" data-testid="sync-send-ready">
-          {t("sync.report.sendReady")}
-        </p>
+        !sync && (
+          <p className="text-sm" data-testid="sync-send-ready">
+            {t("sync.report.sendReady")}
+          </p>
+        )
       ) : (
         <div className="text-sm text-destructive" data-testid="sync-blockers">
-          <p>{t("sync.report.blocked")}</p>
+          <p>{t(sync ? "sync.report.blockedSync" : "sync.report.blocked")}</p>
           <ul className="list-disc pl-5">
             {report.blockers.map((blocker) => (
               <li key={blocker}>{t(`sync.blockers.${blocker}`, names)}</li>
@@ -172,7 +150,7 @@ function Report({ report, names }: { report: SyncReport; names: SyncTileProps["n
       )}
       {report.confirm_reasons.length > 0 && (
         <div className="text-sm" data-testid="sync-confirm">
-          <p>{t("sync.report.confirm")}</p>
+          <p>{t(sync ? "sync.report.confirmSync" : "sync.report.confirm")}</p>
           <ul className="list-disc pl-5">
             {report.confirm_reasons.map((reason) => (
               <li key={reason}>{t(`sync.confirmReasons.${reason}`)}</li>
@@ -194,7 +172,7 @@ function Report({ report, names }: { report: SyncReport; names: SyncTileProps["n
   );
 }
 
-/** Kachel Sync in v0.5.1: „Nur Probelauf“, Abbrechen und das Ergebnis je Share (D5). */
+/** Kachel Sync: Probelauf und Sync, Freigabe, Fortschritt, Ergebnis und Historie (Konzept 4.1). */
 export function SyncTile({
   status,
   names,
@@ -203,16 +181,22 @@ export function SyncTile({
   className,
   onRun,
   onCancel,
+  onConfirmDeletions,
 }: SyncTileProps) {
   const { t, i18n } = useTranslation();
   const reasonText = useReasonText();
-  const [cancelling, setCancelling] = useState(false);
-  // Meldung, falls Abbrechen nicht klappte; nur für diesen Lauf.
-  const [cancelFailed, setCancelFailed] = useState<string | null>(null);
+  const runDetails = useRunDetails();
   const sync = status?.sync ?? null;
   const running = sync?.running ?? null;
   const last = sync?.last ?? null;
-  const reason = last === null ? null : reasonText(last, names);
+  const reason = last === null ? null : reasonText(last.outcome, last.reason, names);
+  // Dauer und Datenmenge des letzten Laufs stehen in seiner Zeile der Historie.
+  const lastEntry =
+    last !== null &&
+    sync?.history[0]?.kind === last.kind &&
+    sync.history[0].finished_at === last.finished_at
+      ? sync.history[0]
+      : null;
 
   const actions: PanelAction[] = [
     {
@@ -221,22 +205,18 @@ export function SyncTile({
       variant: "default",
       blockerHints: { target_offline: t("sync.targetOfflineNoWake", names) },
     },
-    { name: "sync_start", label: t("actions.buttons.sync_start") },
+    {
+      name: "sync_start",
+      label: t("actions.buttons.sync_start"),
+      blockerHints: {
+        target_offline: t("sync.targetOfflineNoWake", names),
+        // Die Pause des Wächters mit der Uhrzeit (Konzept 3.6, „Kachel Sync“).
+        ...(nextSync !== null && {
+          source_guard_too_soon: t("sync.tooSoon", { source: names.source, time: nextSync }),
+        }),
+      },
+    },
   ];
-
-  const cancel = (jobId: string) => {
-    setCancelling(true);
-    setCancelFailed(null);
-    void onCancel(jobId)
-      .then((done) => {
-        if (!done) {
-          setCancelFailed(jobId);
-        }
-      })
-      .finally(() => {
-        setCancelling(false);
-      });
-  };
 
   return (
     <Card className={className} data-testid="tile-sync">
@@ -248,27 +228,18 @@ export function SyncTile({
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         {running !== null ? (
-          <div className="flex flex-wrap items-center gap-3">
-            <p className="flex items-center gap-2 text-sm" data-testid="sync-running">
-              <LoaderCircle className="size-4 shrink-0 animate-spin" aria-hidden="true" />
-              {t("sync.running", { step: t(`sync.steps.${running.step}`, names) })}
-            </p>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={cancelling}
-              data-action="sync_cancel"
-              onClick={() => {
-                cancel(running.job_id);
-              }}
-            >
-              {t("sync.cancel")}
-            </Button>
-          </div>
+          <SyncRunning
+            key={running.job_id}
+            run={running}
+            report={sync?.report ?? null}
+            names={names}
+            onCancel={onCancel}
+            onConfirmDeletions={onConfirmDeletions}
+          />
         ) : last !== null ? (
           <div className="flex flex-col gap-1" data-testid="sync-last" data-outcome={last.outcome}>
             <p className={cn("text-sm", !QUIET_OUTCOMES.has(last.outcome) && "text-destructive")}>
-              {t("sync.last", {
+              {t(last.kind === "sync" ? "sync.lastSync" : "sync.last", {
                 time: formatSince(i18n.resolvedLanguage, last.finished_at),
                 outcome: t(`actions.outcomes.${last.outcome}`),
               })}
@@ -278,14 +249,14 @@ export function SyncTile({
                 {t("sync.reason", { reason })}
               </p>
             )}
+            {lastEntry !== null && (
+              <p className="text-xs text-muted-foreground" data-testid="sync-last-details">
+                {runDetails(lastEntry, names.target)}
+              </p>
+            )}
           </div>
         ) : (
           <p className="text-sm text-muted-foreground italic">{t("sync.noRun")}</p>
-        )}
-        {cancelFailed !== null && cancelFailed === running?.job_id && (
-          <p role="alert" className="text-sm text-destructive">
-            {t("sync.cancelFailed")}
-          </p>
         )}
         {nextSync !== null && (
           <p className="text-sm" data-testid="next-sync">
@@ -302,6 +273,7 @@ export function SyncTile({
           blockerValues={blockerValues}
         />
         {sync?.report != null && <Report report={sync.report} names={names} />}
+        {sync !== null && <SyncHistory entries={sync.history} names={names} />}
       </CardContent>
     </Card>
   );
