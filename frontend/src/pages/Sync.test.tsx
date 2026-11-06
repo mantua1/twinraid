@@ -49,14 +49,12 @@ function emit(status: StatusSnapshot) {
 }
 
 describe("buttons", () => {
-  it("starts a dry run; the real sync comes with v0.5.2", async () => {
+  it("starts a dry run; the sync is available from v0.5.2", async () => {
     const { server, user, sync } = await openDashboard();
     const dryRun = within(sync).getByRole("button", { name: "Nur Probelauf" });
     const start = within(sync).getByRole("button", { name: "Jetzt synchronisieren" });
-    expect(start).toBeDisabled();
-    expect(within(sync).getByTestId("action-hint")).toHaveTextContent(
-      "Jetzt synchronisieren: kommt mit v0.5.2",
-    );
+    expect(start).toBeEnabled();
+    expect(within(sync).queryByTestId("action-hint")).not.toBeInTheDocument();
     expect(within(sync).getByTestId("sync-schedule")).toHaveTextContent(
       "Zeitplan aus (ab Phase 6).",
     );
@@ -160,7 +158,7 @@ describe("result", () => {
     expect(row).toHaveTextContent("twinraidtestinkrementell1234562350 MiBvorhanden · 5 Snapshots");
     expect(within(sync).getByTestId("sync-send-ready")).toHaveTextContent("Senden wäre möglich.");
     expect(within(sync).getByTestId("sync-target-space")).toHaveTextContent(
-      "Unraid Groß: 600 GiB von 860 GiB frei, Reserve 15 %.",
+      "Unraid Groß: 1.000 GiB von 2 TiB frei, Reserve 15 %.",
     );
     expect(within(sync).queryByTestId("sync-reason")).toBeNull();
   });
@@ -275,10 +273,10 @@ describe("ZFS cache on the target", () => {
   });
 
   it.each([
-    [{ arc_max: 3.2 * GIB, c_max: 3.2 * GIB }, "zfs_arc_max 3,2 GiB · wirksam (c_max) 3,2 GiB"],
+    [{ arc_max: 4 * GIB, c_max: 4 * GIB }, "zfs_arc_max 4 GiB · wirksam (c_max) 4 GiB"],
     [
-      { arc_max: 0, c_max: 15 * GIB },
-      "zfs_arc_max nicht eingetragen (Settings → Disk Settings) · wirksam (c_max) 15 GiB",
+      { arc_max: 0, c_max: 16 * GIB },
+      "zfs_arc_max nicht eingetragen (Settings → Disk Settings) · wirksam (c_max) 16 GiB",
     ],
     [{ arc_max: null, c_max: null }, "zfs_arc_max ? · wirksam (c_max) ?"],
     [null, "unbekannt (Server aus oder noch keine Statuszeile)"],
@@ -319,7 +317,7 @@ describe("settings", () => {
     ]);
     expect(within(card).getByTestId("sync-check")).toHaveTextContent("beantwortet");
     expect(within(card).getByTestId("sync-check-summary")).toHaveTextContent(
-      "600 GiB von 860 GiB frei · Reserve 15 % · Aufbewahrung 30 Tage · Delegation ok · Empfang idle · Klone 0",
+      "1.000 GiB von 2 TiB frei · Reserve 15 % · Aufbewahrung 30 Tage · Delegation ok · Empfang idle · Klone 0",
     );
     expect(within(card).getByTestId("sync-mirrors")).toHaveTextContent("twinraidtestvorhanden5");
   });

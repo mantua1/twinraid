@@ -7,7 +7,7 @@ ein strenges Schema: doppelte Schlüssel, unbekannte Felder und Werte außerhalb
 festen Listen sind ein Fehler. Ob der Wächter aktiv ist, entscheidet erst evaluate()
 beim Aufruf von get_status; so stimmt das Alter des Herzschlags auf die Sekunde.
 
-In v0.5.0 schreibt TwinRaid noch keine Aufträge; die Auftragsdatei wird nur geprüft.
+Aufträge schreibt der Worker ab v0.5.1 über integrations/guard_orders.py.
 """
 
 import asyncio
@@ -653,6 +653,9 @@ class GuardReport:
     status: SourceGuardStatus
     # Hinweise für die Kachel Klein; nur aus einem frischen Status.
     notices: tuple[StatusNotice, ...] = ()
+    # Einträge in allowed mit der eigenen Container-ID (10.1); für sie schickt der Worker nie
+    # stop. Nur im Worker, nie im Status.
+    own_allowed: frozenset[str] = frozenset()
 
 
 def evaluate(observation: GuardObservation, now: datetime) -> GuardReport:
@@ -713,6 +716,11 @@ def evaluate(observation: GuardObservation, now: datetime) -> GuardReport:
             details=_details(file),
         ),
         _notices(file, observation.own_id),
+        frozenset(
+            item.name
+            for item in file.allowed
+            if observation.own_id is not None and item.id == observation.own_id
+        ),
     )
 
 

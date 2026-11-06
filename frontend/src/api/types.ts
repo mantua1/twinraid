@@ -379,7 +379,9 @@ export const ACTION_BLOCKERS = [
   "source_guard_inactive",
   "levels_mismatch",
   "self_dataset_missing",
-  "next_version",
+  // Ab v0.5.2, nur für den Sync.
+  "source_guard_too_soon",
+  "target_clone_active",
 ] as const;
 export type ActionBlocker = (typeof ACTION_BLOCKERS)[number];
 
@@ -434,6 +436,12 @@ export const ACTION_OUTCOMES = [
   "target_refused",
   "base_missing",
   "self_dataset_missing",
+  // Ab v0.5.2: Sync (Konzept 4.3, „Sync in TwinRaid“).
+  "deletions_declined",
+  "confirmation_timeout",
+  "container_restart_failed",
+  "send_failed",
+  "target_modified",
   "interrupted",
   "internal_error",
 ] as const;
@@ -473,12 +481,17 @@ export interface TargetZfs {
   c_max: number | null;
 }
 
-// Probelauf (Konzept 4.3, ab v0.5.1); Spiegel von backend/src/twinraid/shared/sync.py.
+// Probelauf (ab v0.5.1) und Sync (ab v0.5.2, Konzept 4.3); Spiegel von
+// backend/src/twinraid/shared/sync.py.
 export const SYNC_STEPS = [
   "waking",
   "waiting_for_vm_service",
+  "stopping_containers",
   "snapshot",
+  "starting_containers",
   "preparing",
+  "awaiting_confirm",
+  "sending",
   "closing",
 ] as const;
 export type SyncStep = (typeof SYNC_STEPS)[number];

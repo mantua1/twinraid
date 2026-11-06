@@ -118,7 +118,7 @@ async def test_available_with_target_online(tmp_path: Path) -> None:
     worker = _worker(tmp_path, ScriptedGuard())
     await _online(worker)
     assert _blocker(worker) is None
-    assert _blocker(worker, ActionName.SYNC_START) is ActionBlocker.NEXT_VERSION
+    assert _blocker(worker, ActionName.SYNC_START) is None
 
 
 async def test_real_mode_needs_a_switch(tmp_path: Path) -> None:
@@ -132,10 +132,9 @@ async def test_real_mode_needs_a_switch(tmp_path: Path) -> None:
         enabled = _worker(tmp_path / switch, ScriptedGuard(), RunMode.REAL, config)
         await _online(enabled)
         assert _blocker(enabled) is None
-    # actions.sync schaltet auch den Sync frei; der kommt aber erst mit v0.5.2.
-    (tmp_path / "start").mkdir()
-    sync_on = _worker(tmp_path / "start", ScriptedGuard(), RunMode.REAL, _config(sync=True))
-    assert _blocker(sync_on, ActionName.SYNC_START) is ActionBlocker.NEXT_VERSION
+        # Nur actions.sync schaltet auch den Sync frei.
+        expected = None if switch == "sync" else ActionBlocker.NOT_ENABLED
+        assert _blocker(enabled, ActionName.SYNC_START) is expected
 
 
 @pytest.mark.parametrize(

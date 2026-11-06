@@ -106,8 +106,6 @@ async def test_get_status_before_the_first_check(server: WorkerServer) -> None:
     availability = actions["availability"]
     assert isinstance(availability, dict)
     assert availability.pop("shutdown_target_force_vm") == "not_offered"
-    # Den echten Sync gibt es erst mit v0.5.2 (Konzept 4.3).
-    assert availability.pop("sync_start") == "next_version"
     assert set(availability.values()) == {"target_unknown"}
     assert actions["target"] == {"running": None, "last": None}
 
@@ -149,18 +147,15 @@ ACTION_PAYLOADS = [
     b'{"command":"vm_force_stop"}\n',
     b'{"command":"sync_dry_run"}\n',
     b'{"command":"sync_start"}\n',
-    CONFIRM_PAYLOAD,
 ]
 
 
-async def test_sync_commands_in_v0_5_1(server: WorkerServer) -> None:
-    """Probelauf ja; Sync und Freigabe erst mit v0.5.2; Abbrechen nur für einen Probelauf."""
+async def test_sync_commands_without_a_run(server: WorkerServer) -> None:
+    """Freigabe und Abbrechen gelten nur für einen laufenden Lauf mit dieser Kennung."""
     start = await _raw(server.path, b'{"command":"sync_start"}\n')
     assert isinstance(start, ErrorResponse)
-    assert (start.error, start.blocked_by) == (ErrorCode.ACTION_BLOCKED, "next_version")
-    confirm = await _raw(server.path, CONFIRM_PAYLOAD)
-    assert isinstance(confirm, ErrorResponse)
-    assert (confirm.error, confirm.blocked_by) == (ErrorCode.NOT_AVAILABLE, "next_version")
+    assert (start.error, start.blocked_by) == (ErrorCode.ACTION_BLOCKED, "target_unknown")
+    assert await _error_code(server.path, CONFIRM_PAYLOAD) is ErrorCode.ACTION_BLOCKED
     assert await _error_code(server.path, CANCEL_PAYLOAD) is ErrorCode.ACTION_BLOCKED
 
 

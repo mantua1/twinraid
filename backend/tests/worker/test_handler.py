@@ -71,33 +71,39 @@ async def test_real_mode_with_wake_enabled(tmp_path: Path) -> None:
     await actions.close()
 
 
-@pytest.mark.parametrize("mode", [RunMode.MOCK, RunMode.REAL])
-async def test_sync_start_comes_with_the_next_version(tmp_path: Path, mode: RunMode) -> None:
-    """In v0.5.1 gibt es nur den Probelauf (Konzept 4.3, next_version)."""
-    handler, _ = await _handler(tmp_path, mode)
+async def test_sync_start_is_accepted(tmp_path: Path) -> None:
+    """Ab v0.5.2 gibt es den Sync (Konzept 4.3); in der Simulation darf er Groß wecken."""
+    worker = make_worker(tmp_path, password=None)
+    await worker.monitor.check_once()
+    response = await worker.handler.handle(SyncStart(command="sync_start"))
+    assert response == OkResponse(result={"accepted": True})
+    await worker.close()
+
+
+async def test_sync_start_in_real_mode(tmp_path: Path) -> None:
+    handler, _ = await _handler(tmp_path, RunMode.REAL)
     response = await handler.handle(SyncStart(command="sync_start"))
     assert isinstance(response, ErrorResponse)
-    if mode is RunMode.REAL:
-        # Im Modus real zuerst die Freischaltung (actions.sync ist aus).
-        assert response.error is ErrorCode.NOT_AVAILABLE
-        assert response.blocked_by is ActionBlocker.NOT_ENABLED
-    else:
-        assert response.error is ErrorCode.ACTION_BLOCKED
-        assert response.blocked_by is ActionBlocker.NEXT_VERSION
+    # Zuerst die Freischaltung (actions.sync ist aus).
+    assert response.error is ErrorCode.NOT_AVAILABLE
+    assert response.blocked_by is ActionBlocker.NOT_ENABLED
+    config = CONFIG.model_copy(update={"actions": CONFIG.actions.model_copy(update={"sync": True})})
+    (tmp_path / "enabled").mkdir()
+    handler, _ = await _handler(tmp_path / "enabled", RunMode.REAL, config)
+    response = await handler.handle(SyncStart(command="sync_start"))
+    assert isinstance(response, ErrorResponse)
+    # Groß ist aus, und Wecken ist nicht freigeschaltet.
+    assert response.blocked_by is ActionBlocker.TARGET_OFFLINE
+
+
+async def test_confirm_without_a_waiting_sync(tmp_path: Path) -> None:
+    handler, _ = await _handler(tmp_path)
     confirm = await handler.handle(
         SyncConfirmDeletions(command="sync_confirm_deletions", job_id="a" * 32)
     )
     assert isinstance(confirm, ErrorResponse)
-    assert confirm.error is ErrorCode.NOT_AVAILABLE
-    assert confirm.blocked_by is ActionBlocker.NEXT_VERSION
-
-
-async def test_sync_start_with_sync_enabled_is_still_next_version(tmp_path: Path) -> None:
-    config = CONFIG.model_copy(update={"actions": CONFIG.actions.model_copy(update={"sync": True})})
-    handler, _ = await _handler(tmp_path, RunMode.REAL, config)
-    response = await handler.handle(SyncStart(command="sync_start"))
-    assert isinstance(response, ErrorResponse)
-    assert response.blocked_by is ActionBlocker.NEXT_VERSION
+    assert confirm.error is ErrorCode.ACTION_BLOCKED
+    assert confirm.blocked_by is None
 
 
 async def test_cancel_without_a_running_dry_run(tmp_path: Path) -> None:

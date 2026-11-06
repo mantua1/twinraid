@@ -164,7 +164,7 @@ def test_newer_guard_with_the_same_line_is_accepted() -> None:
     ("arc", "arc_max", "c_max"),
     [
         ("arc_max=0 c_max=16777216000", 0, 16777216000),
-        ("arc_max=3435973836 c_max=3435973836", 3435973836, 3435973836),
+        ("arc_max=4294967296 c_max=4294967296", 4294967296, 4294967296),
         ("arc_max=- c_max=-", None, None),
         ("arc_max=? c_max=?", None, None),
         ("arc_max=0 c_max=?", 0, None),

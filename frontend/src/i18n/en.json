@@ -317,7 +317,8 @@
       "source_guard_inactive": "the guard on {{source}} is not active or ZFS is not available there",
       "levels_mismatch": "sync.shares in twinraid.yaml does not match the dataset lines in source-guard.conf on {{source}}",
       "self_dataset_missing": "appdata is mirrored, but the own dataset mainpool/appdata/twinraid is missing (test Z4 in docs/EINRICHTUNG.md)",
-      "next_version": "comes with v0.5.2"
+      "source_guard_too_soon": "the source guard on {{source}} keeps the pause between two runs",
+      "target_clone_active": "according to the last check, a clone of a mirror exists on {{target}}"
     },
     "outcomes": {
       "success": "successful",
@@ -360,7 +361,12 @@
       "target_check_failed": "The target server did not answer the check.",
       "target_refused": "The target server would refuse to receive.",
       "base_missing": "The base for an incremental stream is missing on the source server.",
-      "self_dataset_missing": "appdata would not be sent because TwinRaid's own dataset is missing."
+      "self_dataset_missing": "appdata would not be sent because TwinRaid's own dataset is missing.",
+      "deletions_declined": "The deletions were declined; nothing was sent.",
+      "confirmation_timeout": "The deletions were not confirmed in time; nothing was sent.",
+      "container_restart_failed": "Sent, but a stopped container is not running again.",
+      "send_failed": "Sending failed; the target server keeps its previous state.",
+      "target_modified": "The mirror on the target server was changed since the last snapshot; the receive was refused."
     },
     "last": "Last: {{action}} – {{outcome}} ({{time}})",
     "hint": "{{actions}}: {{reason}}",
@@ -554,8 +560,12 @@
     "steps": {
       "waking": "Waking {{target}} …",
       "waiting_for_vm_service": "Waiting until {{target}} is ready …",
+      "stopping_containers": "Stopping containers on {{source}} …",
       "snapshot": "Creating a snapshot on {{source}} …",
+      "starting_containers": "Starting the containers on {{source}} again …",
       "preparing": "Counting changes and checking {{target}} …",
+      "awaiting_confirm": "Waiting for the deletions to be confirmed …",
+      "sending": "Sending to {{target}} …",
       "closing": "Closing the job …"
     },
     "report": {

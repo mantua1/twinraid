@@ -317,7 +317,8 @@
       "source_guard_inactive": "der Wächter auf {{source}} ist nicht aktiv oder ZFS ist dort nicht verfügbar",
       "levels_mismatch": "sync.shares in twinraid.yaml passt nicht zu den Zeilen dataset in source-guard.conf auf {{source}}",
       "self_dataset_missing": "appdata wird gespiegelt, aber das eigene Dataset mainpool/appdata/twinraid fehlt (Test Z4 in docs/EINRICHTUNG.md)",
-      "next_version": "kommt mit v0.5.2"
+      "source_guard_too_soon": "der Wächter auf {{source}} hält die Pause zwischen zwei Läufen ein",
+      "target_clone_active": "auf {{target}} besteht laut letzter Prüfung ein Klon eines Spiegels"
     },
     "outcomes": {
       "success": "erfolgreich",
@@ -360,7 +361,12 @@
       "target_check_failed": "Der Zielserver hat die Prüfung (check) nicht beantwortet.",
       "target_refused": "Der Zielserver würde den Empfang ablehnen.",
       "base_missing": "Für einen inkrementellen Strom fehlt die Basis auf dem Quellserver.",
-      "self_dataset_missing": "appdata würde nicht gesendet, weil das eigene Dataset von TwinRaid fehlt."
+      "self_dataset_missing": "appdata würde nicht gesendet, weil das eigene Dataset von TwinRaid fehlt.",
+      "deletions_declined": "Die Löschungen wurden abgelehnt; nichts wurde gesendet.",
+      "confirmation_timeout": "Die Löschungen wurden nicht rechtzeitig freigegeben; nichts wurde gesendet.",
+      "container_restart_failed": "Gesendet, aber ein angehaltener Container läuft danach nicht wieder.",
+      "send_failed": "Das Senden ist gescheitert; auf dem Zielserver bleibt der bisherige Stand.",
+      "target_modified": "Der Spiegel auf dem Zielserver wurde seit dem letzten Snapshot verändert; der Empfang wurde abgelehnt."
     },
     "last": "Zuletzt: {{action}} – {{outcome}} ({{time}})",
     "hint": "{{actions}}: {{reason}}",
@@ -554,8 +560,12 @@
     "steps": {
       "waking": "{{target}} wird geweckt …",
       "waiting_for_vm_service": "Wartet, bis {{target}} bereit ist …",
+      "stopping_containers": "Container auf {{source}} werden angehalten …",
       "snapshot": "Snapshot auf {{source}} wird angelegt …",
+      "starting_containers": "Container auf {{source}} werden wieder gestartet …",
       "preparing": "Änderungen werden gezählt und {{target}} geprüft …",
+      "awaiting_confirm": "Wartet auf die Freigabe der Löschungen …",
+      "sending": "Sendet nach {{target}} …",
       "closing": "Job wird geschlossen …"
     },
     "report": {

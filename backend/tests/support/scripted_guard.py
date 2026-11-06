@@ -1,8 +1,10 @@
-"""Wächter mit Drehbuch für Tests des Probelaufs (Konzept 3.6 und 4.3).
+"""Wächter mit Drehbuch für Tests von Probelauf und Sync (Konzept 3.6 und 4.3).
 
-Er ist Quelle des Status (report) und Kanal für Aufträge (observe, order) zugleich.
-Ohne Vorgabe antwortet er wie source-guard.sh: snapshot legt einen Job an, prepare
-startet die Prüfung, close schließt den Job. Was prepare liefert, bestimmt prepared.
+Er ist Quelle des Status (report) und Kanal für Aufträge (observe, order, post) zugleich.
+Ohne Vorgabe antwortet er wie source-guard.sh: begin öffnet einen Lauf, stop hält einen
+freigegebenen Container an, finish startet ihn wieder, snapshot legt einen Job an, prepare
+startet die Prüfung, confirm gibt frei, send sendet, close schließt den Job. Was prepare
+liefert, bestimmt prepared, was send liefert, bestimmt sent.
 """
 
 import asyncio
@@ -20,17 +22,26 @@ from twinraid.shared.source_guard import (
     GuardCheckResult,
     GuardCheckSummary,
     GuardConfirmReason,
+    GuardContainer,
+    GuardContainerState,
     GuardDataset,
+    GuardDatasetResult,
     GuardDetails,
     GuardError,
     GuardJob,
     GuardJobDataset,
+    GuardJobReason,
     GuardJobResult,
     GuardJobState,
     GuardLastOrder,
+    GuardLastRun,
     GuardLimits,
     GuardOrder,
     GuardOrderResult,
+    GuardRestart,
+    GuardRestartResult,
+    GuardRun,
+    GuardRunEnd,
     GuardSelfDataset,
     GuardState,
     GuardZfs,
@@ -58,8 +69,8 @@ def ok_check(shares: tuple[str, ...] = SHARES, **summary: object) -> GuardCheck:
         "deleg": "ok",
         "receive": "idle",
         "clones": 0,
-        "available": 600 * GIB,
-        "size": 860 * GIB,
+        "available": 1000 * GIB,
+        "size": 2000 * GIB,
         "reserve_percent": 15,
         "keep_days": 30,
         "min_interval_minutes": 10,
@@ -125,6 +136,18 @@ class Prepared:
 
 
 @dataclass
+class Sent:
+    """Was send liefert: Ergebnis des Jobs, Grund und je Share das Ergebnis."""
+
+    result: GuardJobResult = GuardJobResult.OK
+    reason: GuardJobReason | None = None
+    # So oft liefert observe noch sending (mit wachsendem Fortschritt), bevor das Ende kommt.
+    delay: int = 1
+    # Ergebnis je Share; ohne Angabe ok bzw. bei einem Fehler send_failed.
+    results: dict[str, GuardDatasetResult] = field(default_factory=dict)
+
+
+@dataclass
 class ScriptedGuard:
     shares: tuple[str, ...] = SHARES
     state: GuardState = GuardState.ACTIVE
@@ -136,6 +159,19 @@ class ScriptedGuard:
     job: GuardJob | None = None
     check: GuardCheck | None = None
     prepared: Prepared | None = field(default_factory=Prepared)
+    sent: Sent | None = field(default_factory=Sent)
+    # Freigegebene Container (laufend) und Lauf des Wächters.
+    allowed: tuple[GuardContainer, ...] = ()
+    run: GuardRun | None = None
+    last_run: GuardLastRun | None = None
+    run_allowed_at: datetime | None = None
+    # Ergebnis je Container beim Ende eines Laufs; ohne Angabe started.
+    restarts: dict[str, GuardRestart] = field(default_factory=dict)
+    # Aufträge mit Container und Wartezeit, wie sie der Worker schickt.
+    calls: list[tuple[GuardOrder, str | None, float | None]] = field(default_factory=list)
+    posted: list[GuardOrder] = field(default_factory=list)
+    # Einträge in allowed mit der eigenen Container-ID (GuardReport.own_allowed).
+    own: frozenset[str] = frozenset()
     # Vorgegebene Antworten je Auftrag (der Reihe nach), sonst wie source-guard.sh.
     answers: dict[GuardOrder, list[GuardOrderResult]] = field(default_factory=dict)
     # Auftrag, der mit GuardOrderError scheitert.
@@ -148,16 +184,17 @@ class ScriptedGuard:
     orders: list[GuardOrder] = field(default_factory=list)
     _last: GuardLastOrder | None = None
     _waits: int = 0
+    _send_waits: int = 0
 
     def details(self) -> GuardDetails:
         now = datetime.now(UTC).replace(microsecond=0)
         return GuardDetails(
             version=2,
             started_at=now - timedelta(hours=1),
-            allowed=(),
-            run=None,
-            last_run=None,
-            run_allowed_at=None,
+            allowed=self.allowed,
+            run=self.run,
+            last_run=self.last_run,
+            run_allowed_at=self.run_allowed_at,
             zfs=GuardZfs(
                 state=self.zfs_state,
                 pool_used=100 * GIB,
@@ -185,7 +222,8 @@ class ScriptedGuard:
         if self.state is GuardState.INACTIVE:
             return GuardReport(SourceGuardStatus(state=GuardState.INACTIVE))
         return GuardReport(
-            SourceGuardStatus(state=self.state, error=self.error, details=self.details())
+            SourceGuardStatus(state=self.state, error=self.error, details=self.details()),
+            own_allowed=self.own,
         )
 
     async def observe(self) -> GuardReport:
@@ -195,7 +233,11 @@ class ScriptedGuard:
         return self.report()
 
     def _advance(self) -> None:
-        job, prepared = self.job, self.prepared
+        job = self.job
+        if job is not None and job.state is GuardJobState.SENDING:
+            self._advance_send(job)
+            return
+        prepared = self.prepared
         if job is None or job.state is not GuardJobState.PREPARING or prepared is None:
             return
         if self._waits < prepared.delay:
@@ -213,25 +255,142 @@ class ScriptedGuard:
             }
         )
 
-    async def order(self, order: GuardOrder) -> GuardOrderResult:
+    def _advance_send(self, job: GuardJob) -> None:
+        sent = self.sent
+        if sent is None:
+            return
+        self._send_waits += 1
+        if self._send_waits <= sent.delay:
+            # Fortschritt: je Abfrage ein Teil der ersten Share.
+            first, *rest = job.datasets
+            part = min((first.size or 0), (first.sent or 0) + (first.size or 0) // 4)
+            self.job = job.model_copy(
+                update={"datasets": (first.model_copy(update={"sent": part}), *rest)}
+            )
+            return
+        ok = sent.result is GuardJobResult.OK
+        default = GuardDatasetResult.OK if ok else GuardDatasetResult.SEND_FAILED
+        datasets = tuple(
+            item.model_copy(
+                update={
+                    "sent": item.size
+                    if sent.results.get(item.name, default) is GuardDatasetResult.OK
+                    else 0,
+                    "result": sent.results.get(item.name, default),
+                }
+            )
+            for item in job.datasets
+        )
+        self.job = job.model_copy(
+            update={
+                "state": GuardJobState.DONE if ok else GuardJobState.FAILED,
+                "result": sent.result,
+                "reason": sent.reason,
+                "datasets": datasets,
+            }
+        )
+
+    async def order(
+        self,
+        order: GuardOrder,
+        container: str | None = None,
+        reply_seconds: float | None = None,
+    ) -> GuardOrderResult:
         self.orders.append(order)
+        self.calls.append((order, container, reply_seconds))
         if order in self.failing:
             raise GuardOrderError(self.failing[order])
         if self.state is not GuardState.ACTIVE:
             raise GuardOrderError(ActionOutcome.SOURCE_GUARD_INACTIVE)
         self.last_seq += 1
         queue = self.answers.get(order)
-        result = queue.pop(0) if queue else self._default(order)
+        result = queue.pop(0) if queue else self._default(order, container)
         now = datetime.now(UTC).replace(microsecond=0)
         self._last = GuardLastOrder(seq=self.last_seq, order=order, result=result, at=now)
         if order is self.hold:
             await self.release.wait()
         return result
 
-    def _default(self, order: GuardOrder) -> GuardOrderResult:
+    async def post(self, order: GuardOrder) -> None:
+        self.posted.append(order)
+        if self.state is not GuardState.ACTIVE:
+            raise GuardOrderError(ActionOutcome.SOURCE_GUARD_INACTIVE)
+        self.last_seq += 1
+        self._default(order, None)
+
+    def _container(self, name: str) -> GuardContainer | None:
+        return next((item for item in self.allowed if item.name == name), None)
+
+    def _set_container(self, name: str, state: GuardContainerState) -> None:
+        self.allowed = tuple(
+            item.model_copy(update={"state": state}) if item.name == name else item
+            for item in self.allowed
+        )
+
+    def _default(self, order: GuardOrder, container: str | None = None) -> GuardOrderResult:
         now = datetime.now(UTC).replace(microsecond=0)
         job = self.job
         match order:
+            case GuardOrder.BEGIN:
+                if self.run is not None:
+                    return GuardOrderResult.RUN_OPEN
+                self.run = GuardRun(
+                    opened_at=now,
+                    heartbeat_deadline=now + timedelta(minutes=2),
+                    max_deadline=now + timedelta(minutes=20),
+                    stopped=(),
+                )
+                return GuardOrderResult.OPENED
+            case GuardOrder.STOP:
+                if self.run is None:
+                    return GuardOrderResult.NO_RUN
+                item = self._container(container or "")
+                if item is None:
+                    return GuardOrderResult.NOT_ALLOWED
+                if item.state is not GuardContainerState.RUNNING:
+                    return GuardOrderResult.NOT_RUNNING
+                self._set_container(item.name, GuardContainerState.STOPPED)
+                self.run = self.run.model_copy(update={"stopped": (*self.run.stopped, item.name)})
+                return GuardOrderResult.STOPPED
+            case GuardOrder.PING:
+                return GuardOrderResult.EXTENDED if self.run else GuardOrderResult.NO_RUN
+            case GuardOrder.FINISH:
+                run = self.run
+                if run is None:
+                    return GuardOrderResult.NO_RUN
+                results = []
+                for name in reversed(run.stopped):
+                    result = self.restarts.get(name, GuardRestart.STARTED)
+                    if result is GuardRestart.STARTED:
+                        self._set_container(name, GuardContainerState.RUNNING)
+                    results.append(GuardRestartResult(name=name, result=result))
+                self.last_run = GuardLastRun(
+                    opened_at=run.opened_at,
+                    closed_at=now,
+                    reason=GuardRunEnd.FINISH,
+                    containers=tuple(results),
+                )
+                self.run = None
+                return GuardOrderResult.FINISHED
+            case GuardOrder.CONFIRM:
+                if job is None or not job.open:
+                    return GuardOrderResult.NO_JOB
+                if job.state is not GuardJobState.AWAITING_CONFIRM:
+                    return GuardOrderResult.NOT_NEEDED
+                self.job = job.model_copy(
+                    update={"state": GuardJobState.PREPARED, "confirmed": True}
+                )
+                return GuardOrderResult.CONFIRMED
+            case GuardOrder.SEND:
+                if job is None or not job.open:
+                    return GuardOrderResult.NO_JOB
+                if job.state is not GuardJobState.PREPARED:
+                    return GuardOrderResult.WRONG_STATE
+                if job.send_ready is not True:
+                    return GuardOrderResult.NOT_READY
+                self._send_waits = 0
+                self.job = job.model_copy(update={"state": GuardJobState.SENDING})
+                return GuardOrderResult.SENDING
             case GuardOrder.SNAPSHOT:
                 if job is not None and job.open:
                     return GuardOrderResult.JOB_OPEN
@@ -253,6 +412,8 @@ class ScriptedGuard:
             case GuardOrder.PREPARE:
                 if job is None:
                     return GuardOrderResult.NO_JOB
+                if self.run is not None:
+                    return GuardOrderResult.RUN_OPEN
                 self._waits = 0
                 self.job = job.model_copy(update={"state": GuardJobState.PREPARING})
                 return GuardOrderResult.PREPARING

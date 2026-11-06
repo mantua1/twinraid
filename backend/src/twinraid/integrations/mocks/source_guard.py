@@ -11,8 +11,8 @@ mit Kompression on. Fehler mit twinraid-admin mock-fault:
 Mit mock-tour zeigt GUARD_SCENARIO jeden Zustand, jeden Fehler und jeden Hinweis des
 Wächters mindestens einmal, im selben Takt wie der Rundlauf von Groß und VM.
 
-Ab v0.5.1 nimmt der simulierte Wächter Aufträge an wie source-guard.sh 2 (snapshot,
-prepare, close; integrations/mocks/guard_jobs.py), mit Ziel, Key und Hostkey von Groß.
+Ab v0.5.1 nimmt der simulierte Wächter Aufträge an wie source-guard.sh (ab v0.5.2 alle,
+integrations/mocks/guard_jobs.py), mit Ziel, Key und Hostkey von Groß.
 """
 
 import asyncio
@@ -361,6 +361,7 @@ class MockSourceGuard:
         self._instance = secrets.token_hex(8)
         self._jobs = MockJobs(
             datasets,
+            (MOCK_CONTAINER,),
             lambda name: fault_flag(flag_dir, name).exists(),
             clock,
             monotonic,
@@ -388,9 +389,17 @@ class MockSourceGuard:
         inactive = self._fault_since("source-guard-inactive")
         if inactive is not None:
             return GuardReport(SourceGuardStatus(state=GuardState.INACTIVE, heartbeat_at=inactive))
-        changes: dict[str, object] = {}
+        jobs = self._jobs
+        jobs.advance()
+        changes: dict[str, object] = {
+            "allowed": jobs.allowed(),
+            "run": jobs.run,
+            "last_run": jobs.last_run,
+            "run_allowed_at": jobs.run_allowed_at,
+        }
         failed = self._fault_since("source-guard-start-failed")
-        if failed is not None:
+        if failed is not None and jobs.run is None and jobs.last_run is None:
+            # Ohne eigenen Lauf zeigt der Fehler einen gescheiterten Lauf mit Pause danach.
             allowed_at = failed + RUN_INTERVAL
             changes = {
                 "allowed": (
@@ -399,12 +408,17 @@ class MockSourceGuard:
                 "last_run": _start_failed_run(failed),
                 "run_allowed_at": allowed_at if allowed_at > now else None,
             }
-        self._jobs.advance()
         changes.update(
             zfs=_ZFS.model_copy(
                 update={
                     "datasets": tuple(
-                        GuardDataset(name=name, present=True, referenced=2 * GIB, compression="on")
+                        GuardDataset(
+                            name=name,
+                            present=True,
+                            referenced=2 * GIB,
+                            compression="on",
+                            base_created_at=jobs.bases.get(name),
+                        )
                         for name in self._datasets
                     )
                 }
@@ -430,8 +444,20 @@ class MockSourceGuard:
     async def observe(self) -> GuardReport:
         return self.report()
 
-    async def order(self, order: GuardOrder) -> GuardOrderResult:
+    async def order(
+        self,
+        order: GuardOrder,
+        container: str | None = None,
+        reply_seconds: float | None = None,
+    ) -> GuardOrderResult:
         active_details(self.report())
+        timings = self._jobs.timings
         if order is GuardOrder.SNAPSHOT:
-            await self._sleep(self._jobs.timings.snapshot_seconds)
-        return self._jobs.apply(order)
+            await self._sleep(timings.snapshot_seconds)
+        elif order is GuardOrder.STOP and container and self._jobs.will_stop(container):
+            await self._sleep(timings.stop_seconds)
+        return self._jobs.apply(order, container)
+
+    async def post(self, order: GuardOrder) -> None:
+        active_details(self.report())
+        self._jobs.apply(order)

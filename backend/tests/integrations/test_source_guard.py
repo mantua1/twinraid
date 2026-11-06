@@ -445,6 +445,19 @@ def test_notices_only_from_a_fresh_status() -> None:
     assert evaluate(_observation(data), NOW).notices == ()
 
 
+def test_own_container_in_allowed() -> None:
+    """Für die eigene ID schickt der Worker nie stop (Konzept 3.6); sie steht nicht im Status."""
+    data = copy.deepcopy(STATUS)
+    data["allowed"][0]["id"] = OWN_ID
+    name = data["allowed"][0]["name"]
+    report = evaluate(_observation(data), NOW)
+    assert report.own_allowed == frozenset({name})
+    assert OWN_ID not in report.status.model_dump_json()
+    assert evaluate(_observation(data, own_id=None), NOW).own_allowed == frozenset()
+    data["allowed"][0]["id"] = "0" * 64
+    assert evaluate(_observation(data), NOW).own_allowed == frozenset()
+
+
 async def test_real_source_guard_logs_only_codes(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

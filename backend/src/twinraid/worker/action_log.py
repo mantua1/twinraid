@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
-from twinraid.shared.actions import ActionName, ActionOutcome, Trigger
+from twinraid.shared.actions import ActionName, ActionOutcome, SyncPart, Trigger
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +43,19 @@ def rotated(path: Path) -> Path:
 class LogEntry:
     at: datetime
     id: str
-    action: ActionName
+    action: ActionName | SyncPart
     trigger: Trigger
     result: str
     part_of: ActionName | None = None
     # Grund aus einer festen Liste, etwa bei target_refused (Konzept 5.3, ab v0.5.1).
     reason: str | None = None
+    # Ab v0.5.2: Anzahl angehaltener Container (source_guard_stop, ohne Namen) und ein Sync,
+    # den der Worker nach einem Neustart übernommen hat.
+    containers: int | None = None
+    adopted: bool = False
 
     def to_json(self) -> str:
-        data: dict[str, str] = {
+        data: dict[str, str | int | bool] = {
             "at": self.at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
             "id": self.id,
             "action": self.action.value,
@@ -62,6 +66,10 @@ class LogEntry:
             data["part_of"] = self.part_of.value
         if self.reason is not None:
             data["reason"] = self.reason
+        if self.containers is not None:
+            data["containers"] = self.containers
+        if self.adopted:
+            data["adopted"] = True
         return json.dumps(data, separators=(",", ":"))
 
 
@@ -79,25 +87,41 @@ class ActionLog:
     def record(
         self,
         action_id: str,
-        action: ActionName,
+        action: ActionName | SyncPart,
         trigger: Trigger,
         result: ActionOutcome | str,
         part_of: ActionName | None = None,
         reason: StrEnum | None = None,
+        containers: int | None = None,
+        adopted: bool = False,
     ) -> None:
         """Schreibt einen Eintrag. Ein Schreibfehler stoppt nie die Aktion selbst."""
         code = reason.value if reason is not None else None
-        entry = LogEntry(self._clock(), action_id, action, trigger, str(result), part_of, code)
+        entry = LogEntry(
+            self._clock(),
+            action_id,
+            action,
+            trigger,
+            str(result),
+            part_of,
+            code,
+            containers,
+            adopted,
+        )
         via = f" (part of {part_of.value})" if part_of is not None else ""
         why = f" ({code})" if code is not None else ""
+        count = f" [{containers} containers]" if containers is not None else ""
+        taken = " [adopted]" if adopted else ""
         logger.info(
-            "action %s %s by %s%s: %s%s",
+            "action %s %s by %s%s: %s%s%s%s",
             action_id,
             action.value,
             trigger.value,
             via,
             entry.result,
             why,
+            count,
+            taken,
         )
         try:
             self._append(entry.to_json() + "\n")
