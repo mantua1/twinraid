@@ -38,7 +38,11 @@ async function openDashboard(overrides: Partial<FakeServer> = {}) {
   const user = userEvent.setup();
   render(<App />);
   const sync = await screen.findByTestId("tile-sync");
-  await within(sync).findByRole("button", { name: "Nur Probelauf" });
+  // Die Knöpfe stehen schon vor dem ersten Status da; erst die Zeit der Prüfung zeigt, dass
+  // er angekommen ist. Sonst prüften die Tests unter Last die leere Kachel.
+  if (server.status?.checked_at != null) {
+    await screen.findByTestId("checked-at");
+  }
   return { server, user, sync };
 }
 
