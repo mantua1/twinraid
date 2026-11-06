@@ -9,6 +9,7 @@ Aufruf im Container als root, z. B. über die Container-Konsole in Unraid:
     twinraid-admin init-ssh-keys [--key status|power] [--new]
     twinraid-admin trust-host-key target
     twinraid-admin show-action-log [--lines N]
+    twinraid-admin show-sync-log [--lines N]
     twinraid-admin sync-check           (nur im Modus real, ändert nichts)
     twinraid-admin mock-tour on|off     (nur im Simulationsmodus)
     twinraid-admin mock-fault <Name> on|off   (nur im Simulationsmodus)
@@ -60,6 +61,7 @@ from twinraid.web.ratelimit import LoginLimiter
 from twinraid.web.sessions import SessionStore
 from twinraid.web.worker_client import WorkerClient, WorkerCommandError, WorkerUnavailableError
 from twinraid.worker.action_log import read_entries
+from twinraid.worker.sync_history import read_history
 
 S6_SVC = Path("/command/s6-svc")
 SERVICE_DIR = Path("/run/service")
@@ -534,10 +536,51 @@ def cmd_show_action_log(context: Context, args: argparse.Namespace) -> int:
     for entry in entries:
         via = f" (part of {entry['part_of']})" if "part_of" in entry else ""
         why = f" ({entry['reason']})" if "reason" in entry else ""
+        count = f", {entry['containers']} containers" if "containers" in entry else ""
+        taken = ", adopted" if "adopted" in entry else ""
         say(
             f"{entry.get('at', '?')}  {entry.get('id', '?')}  {entry.get('action', '?')}"
-            f"  {entry.get('trigger', '?')}{via}: {entry.get('result', '?')}{why}"
+            f"  {entry.get('trigger', '?')}{via}: {entry.get('result', '?')}{why}{count}{taken}"
         )
+    return 0
+
+
+def _mib(value: int | None) -> str:
+    return "?" if value is None else f"{value / 1024**2:.1f} MiB"
+
+
+def _count(value: int | None) -> str:
+    return "?" if value is None else str(value)
+
+
+def cmd_show_sync_log(context: Context, args: argparse.Namespace) -> int:
+    """Die letzten Läufe der Sync-Historie (Konzept 5.3, ab v0.5.2)."""
+    context.require_owner()
+    entries = read_history(context.paths.sync_history, args.lines)
+    if not entries:
+        say("No sync runs recorded yet.")
+        return 0
+    for entry in entries:
+        why = f" ({entry.reason.value})" if entry.reason is not None else ""
+        extras = [f"started {entry.started_at.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}"]
+        if entry.woke_target:
+            extras.append("woke the target")
+        if entry.containers_stopped:
+            extras.append(f"{entry.containers_stopped} containers stopped")
+        if entry.adopted:
+            extras.append("adopted after a restart")
+        say(
+            f"{entry.finished_at.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}  {entry.id}  "
+            f"{entry.kind.value}: {entry.result.value}{why}  [{', '.join(extras)}]"
+        )
+        for share in entry.shares:
+            result = share.result.value if share.result is not None else "-"
+            say(
+                f"    {share.name}  {share.mode or '-'}  deleted {_count(share.deleted)}"
+                f"  modified {_count(share.modified)}  added {_count(share.added)}"
+                f"  renamed {_count(share.renamed)}  size {_mib(share.size)}"
+                f"  sent {_mib(share.sent)}  {result}"
+            )
     return 0
 
 
@@ -602,6 +645,9 @@ def build_parser() -> argparse.ArgumentParser:
     action_log = commands.add_parser("show-action-log", help="show the action log of the worker")
     action_log.add_argument("--lines", type=int, default=50, help="number of entries (default 50)")
     action_log.set_defaults(handler=cmd_show_action_log)
+    sync_log = commands.add_parser("show-sync-log", help="show the sync history of the worker")
+    sync_log.add_argument("--lines", type=int, default=20, help="number of runs (default 20)")
+    sync_log.set_defaults(handler=cmd_show_sync_log)
     commands.add_parser(
         "sync-check", help="show shares, source guard and mirrors (real mode, read only)"
     ).set_defaults(handler=cmd_sync_check)

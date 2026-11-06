@@ -8,6 +8,7 @@ import io
 import os
 import sqlite3
 import subprocess
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -27,14 +28,16 @@ from twinraid.integrations.ssh import (
     key_fingerprint,
     parse_host_key,
 )
-from twinraid.shared.actions import ActionName, ActionOutcome, Trigger
+from twinraid.shared.actions import ActionName, ActionOutcome, SyncPart, Trigger
 from twinraid.shared.passwords import PasswordStore, VerifyOutcome
-from twinraid.shared.source_guard import GuardBlocker
+from twinraid.shared.source_guard import GuardBlocker, GuardJobReason
 from twinraid.shared.status import StatusSnapshot
+from twinraid.shared.sync import SyncHistoryEntry, SyncHistoryShare, SyncKind
 from twinraid.shared.tls import certificate_info, read_runtime
 from twinraid.sync.check_report import sync_check_lines
 from twinraid.web.worker_client import WorkerUnavailableError
 from twinraid.worker.action_log import ActionLog
+from twinraid.worker.sync_history import SyncHistory
 
 GOOD_PASSWORD = "ein-gutes-neues-passwort"
 
@@ -615,6 +618,75 @@ def test_show_action_log(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert lines[1].endswith("0a1b2c3d  vm_start  dashboard: api_forbidden")
     assert lines[2].endswith("1a1b2c3d  vm_start  dashboard: vm_not_configured")
     assert lines[3].endswith("2a1b2c3d  sync_dry_run  dashboard: target_refused (space_low)")
+
+
+def test_show_action_log_with_containers_and_adoption(
+    env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = ActionLog(env / "data" / "worker" / "actions.jsonl")
+    log.record(
+        "3a1b2c3d",
+        SyncPart.SOURCE_GUARD_STOP,
+        Trigger.AUTOMATIC,
+        ActionOutcome.SUCCESS,
+        ActionName.SYNC_START,
+        containers=2,
+    )
+    log.record(
+        "4a1b2c3d", ActionName.SYNC_START, Trigger.DASHBOARD, ActionOutcome.SUCCESS, adopted=True
+    )
+    assert admin_cli.main(["show-action-log"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].endswith(
+        "3a1b2c3d  source_guard_stop  automatic (part of sync_start): success, 2 containers"
+    )
+    assert lines[1].endswith("4a1b2c3d  sync_start  dashboard: success, adopted")
+
+
+def test_show_sync_log(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    assert admin_cli.main(["show-sync-log"]) == 0
+    assert "No sync runs recorded yet." in capsys.readouterr().out
+    history = SyncHistory(env / "data" / "worker" / "sync-history.jsonl")
+    at = datetime(2026, 11, 6, 12, tzinfo=UTC)
+    share = SyncHistoryShare(
+        name="twinraidtest",
+        mode="incremental",
+        deleted=50,
+        modified=20,
+        added=30,
+        renamed=10,
+        size=350 * 1024**2,
+        sent=None,
+        result=None,
+    )
+    for number, kind in enumerate((SyncKind.DRY_RUN, SyncKind.SYNC, SyncKind.SYNC)):
+        history.append(
+            SyncHistoryEntry(
+                id=f"{number:08x}",
+                kind=kind,
+                trigger=Trigger.DASHBOARD,
+                started_at=at,
+                finished_at=at + timedelta(minutes=2),
+                result=ActionOutcome.SEND_FAILED if number == 2 else ActionOutcome.SUCCESS,
+                reason=GuardJobReason.UNREACHABLE if number == 2 else None,
+                woke_target=number == 1,
+                containers_stopped=number,
+                adopted=number == 2,
+                shares=(share,),
+            )
+        )
+    assert admin_cli.main(["show-sync-log", "--lines", "2"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines == [
+        "2026-11-06T12:02:00Z  00000001  sync: success  [started 2026-11-06T12:00:00Z, "
+        "woke the target, 1 containers stopped]",
+        "    twinraidtest  incremental  deleted 50  modified 20  added 30  renamed 10"
+        "  size 350.0 MiB  sent ?  -",
+        "2026-11-06T12:02:00Z  00000002  sync: send_failed (unreachable)  "
+        "[started 2026-11-06T12:00:00Z, 2 containers stopped, adopted after a restart]",
+        "    twinraidtest  incremental  deleted 50  modified 20  added 30  renamed 10"
+        "  size 350.0 MiB  sent ?  -",
+    ]
 
 
 def test_mock_tour_and_faults(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
