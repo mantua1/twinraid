@@ -500,7 +500,14 @@ start_sync "sync to cancel"
 wait_field sync.running.step sending 180 && pass "sync is sending"
 expect_equal "shutting down Groß is locked while sending" "$(field actions.availability.shutdown_target)" "sync_running"
 expect_equal "dry run is busy while sending" "$(field actions.availability.sync_dry_run)" "busy"
-total="$(field sync.running.progress.total)"
+# Den Schritt sending meldet der Worker schon beim Schreiben von send, den Fortschritt erst
+# nach der Antwort des Wächters.
+for _ in $(seq 1 30); do
+  refresh
+  total="$(field sync.running.progress.total)"
+  [[ "${total}" != null ]] && break
+  sleep 0.5
+done
 if [[ "${total}" =~ ^[0-9]+$ ]] && ((total > 0)); then pass "progress has a total (${total})"; else fail "progress total: ${total}"; fi
 expect_equal "cancel" "$(post "/api/sync/${JOB_ID}/cancel")" "202"
 wait_done 60
