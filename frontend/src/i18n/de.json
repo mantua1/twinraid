@@ -366,7 +366,7 @@
       "deletions_declined": "Die Löschungen wurden abgelehnt; nichts wurde gesendet.",
       "confirmation_timeout": "Die Löschungen wurden nicht rechtzeitig freigegeben; nichts wurde gesendet.",
       "container_restart_failed": "Gesendet, aber ein angehaltener Container läuft danach nicht wieder.",
-      "send_failed": "Das Senden ist gescheitert; auf dem Zielserver bleibt der bisherige Stand.",
+      "send_failed": "Das Senden ist gescheitert. Shares, die nicht angekommen sind (gescheitert oder übersprungen), behalten auf dem Zielserver den bisherigen Stand; erfolgreich gesendete Shares sind dort aktuell.",
       "target_modified": "Der Spiegel auf dem Zielserver wurde seit dem letzten Snapshot verändert; der Empfang wurde abgelehnt."
     },
     "last": "Zuletzt: {{action}} – {{outcome}} ({{time}})",
@@ -689,7 +689,7 @@
     "dialog": {
       "cancel": {
         "title": "Sync abbrechen?",
-        "description": "Angehaltene Container startet TwinRaid wieder. Ein laufendes Senden bricht ab; auf {{target}} bleibt der bisherige Stand, und der nächste Sync sendet alle Änderungen erneut.",
+        "description": "Angehaltene Container startet TwinRaid wieder. Ein laufendes Senden bricht ab: Die Share, die gerade gesendet wird, und alle noch nicht gesendeten behalten auf {{target}} den bisherigen Stand, und der nächste Sync sendet ihre Änderungen erneut. Schon gesendete Shares sind auf {{target}} aktuell.",
         "confirm": "Sync abbrechen"
       },
       "confirm": {

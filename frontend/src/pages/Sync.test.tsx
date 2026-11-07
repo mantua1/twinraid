@@ -303,7 +303,10 @@ describe("running sync", () => {
     await user.click(within(tile).getByRole("button", { name: "Abbrechen" }));
     const dialog = screen.getByRole("dialog");
     expect(dialog).toHaveTextContent("Sync abbrechen?");
-    expect(dialog).toHaveTextContent("auf Unraid Groß bleibt der bisherige Stand");
+    expect(dialog).toHaveTextContent(
+      "Die Share, die gerade gesendet wird, und alle noch nicht gesendeten behalten auf Unraid Groß den bisherigen Stand",
+    );
+    expect(dialog).toHaveTextContent("Schon gesendete Shares sind auf Unraid Groß aktuell.");
     await user.click(within(dialog).getByRole("button", { name: "Abbrechen" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(server.cancelled).toEqual([]);
@@ -537,7 +540,7 @@ describe("finished sync", () => {
       "Sync · Dauer 2 min 5 s · 350 MiB gesendet · 1 Container angehalten · hat Unraid Groß geweckt",
     );
     expect(items[0]).toHaveTextContent(
-      "Das Senden ist gescheitert; auf dem Zielserver bleibt der bisherige Stand. Grund: SSH auf Unraid Groß nicht erreichbar",
+      "Das Senden ist gescheitert. Shares, die nicht angekommen sind (gescheitert oder übersprungen), behalten auf dem Zielserver den bisherigen Stand; erfolgreich gesendete Shares sind dort aktuell. Grund: SSH auf Unraid Groß nicht erreichbar",
     );
     expect(items[0]?.querySelectorAll("p")[1]).toHaveClass("text-destructive");
     expect(items[1]).toHaveTextContent("Probelauf · Dauer 2 min 5 s");

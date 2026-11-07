@@ -366,7 +366,7 @@
       "deletions_declined": "The deletions were declined; nothing was sent.",
       "confirmation_timeout": "The deletions were not confirmed in time; nothing was sent.",
       "container_restart_failed": "Sent, but a stopped container is not running again.",
-      "send_failed": "Sending failed; the target server keeps its previous state.",
+      "send_failed": "Sending failed. Shares that did not arrive (failed or skipped) keep their previous state on the target server; shares sent successfully are up to date there.",
       "target_modified": "The mirror on the target server was changed since the last snapshot; the receive was refused."
     },
     "last": "Last: {{action}} – {{outcome}} ({{time}})",
@@ -689,7 +689,7 @@
     "dialog": {
       "cancel": {
         "title": "Cancel the sync?",
-        "description": "TwinRaid starts stopped containers again. A running transfer is aborted; {{target}} keeps its previous state, and the next sync sends all changes again.",
+        "description": "TwinRaid starts stopped containers again. A running transfer is aborted: the share being sent and all shares not sent yet keep their previous state on {{target}}, and the next sync sends their changes again. Shares already sent are up to date on {{target}}.",
         "confirm": "Cancel the sync"
       },
       "confirm": {
