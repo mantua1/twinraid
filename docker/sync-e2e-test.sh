@@ -381,6 +381,7 @@ sync:
     - twinraidtest
   stop_containers: true
   never_stop: []
+  copy_templates: false
   schedule:
     enabled: false
     timezone: "Europe/Berlin"
@@ -400,8 +401,10 @@ docker run -d --name "${APP}" "${HARDENING[@]}" "${cap_args[@]}" \
   -e TWINRAID_MODE=real -p "127.0.0.1:${PORT}:8443" "${IMAGE}" >/dev/null
 for _ in $(seq 1 60); do
   [[ "$(curl -sk --max-time 2 "${API}/health" || true)" == ok ]] && break
+  [[ "$(running_state "${APP}")" == true ]] || die "TwinRaid hat sich beendet (Log unten)"
   sleep 1
 done
+[[ "$(curl -sk --max-time 2 "${API}/health" || true)" == ok ]] || die "TwinRaid antwortet nicht"
 docker exec "${APP}" cat /run/twinraid-tls/ca.pem >"${WORK}/ca.pem"
 docker exec -i "${APP}" twinraid-admin set-password --stdin <<<"${PASSWORD}" >/dev/null
 csrf="$(curl -s -c "${WORK}/cookies.txt" --cacert "${WORK}/ca.pem" -H "${ORIGIN}" \
