@@ -1,13 +1,16 @@
 """Die Anleitungen nennen dieselben Werte wie die Host-Skripte (Konzept 3.7, ab v0.5.1)."""
 
+import hashlib
 import re
+import textwrap
 
 import pytest
 
 from tests.conftest import REPO_ROOT
 
-GUARD = (REPO_ROOT / "host-scripts" / "guard.sh").read_text(encoding="utf-8")
-TESTDATA = (REPO_ROOT / "host-scripts" / "testdata.sh").read_text(encoding="utf-8")
+SCRIPTS = REPO_ROOT / "host-scripts"
+GUARD = (SCRIPTS / "guard.sh").read_text(encoding="utf-8")
+TESTDATA = (SCRIPTS / "testdata.sh").read_text(encoding="utf-8")
 SETUP = (REPO_ROOT / "docs" / "EINRICHTUNG.md").read_text(encoding="utf-8")
 RECOVERY = (REPO_ROOT / "docs" / "WIEDERHERSTELLUNG.md").read_text(encoding="utf-8")
 # Stand von v0.5.0 für den Rückweg in 15.2; diese Dateien ändern sich nicht mehr.
@@ -15,8 +18,8 @@ ROLLBACK = {
     "guard.sh": "af4afe98fc11b20565194d7c22b293c165ee279efd79932878c31b5c80b42940",
     "source-guard.sh": "ca2f12f98dcae89c524b2f361dc6de5e5c3adfdd240fcbc336dc89a6b7939d3a",
 }
-# Stand von v0.5.1, den Abschnitt 15 lädt (git show v0.5.1:host-scripts/<Datei> | sha256sum).
-# Die Skripte ändern sich mit v0.5.2; deren Werte prüft der Test für Abschnitt 16.
+# Stand von v0.5.1, den die Abschnitte 3 bis 15 laden (git show v0.5.1:host-scripts/<Datei> |
+# sha256sum). Abschnitt 16 lädt den aktuellen Stand; dessen Werte kommen aus den Dateien selbst.
 RELEASE_0_5_1 = {
     "guard.sh": "c5f69807b76eb74af373361c47ecad3e39e718c278df10edba0e2bad40cae47f",
     "source-guard.sh": "d4f05ada883386b365520296312f916fc57d0a283725c0b3c8d5d3ce0f85d647",
@@ -108,23 +111,127 @@ def _rollback_section() -> str:
     return SETUP[start : SETUP.index("### 15.3 Test K1")]
 
 
-def _without_rollback() -> str:
-    return SETUP.replace(_rollback_section(), "")
+def _section(number: int) -> str:
+    start = SETUP.index(f"\n## {number}. ")
+    return SETUP[start : SETUP.index(f"\n## {number + 1}. ", start)]
 
 
-def test_scripts_are_taken_from_the_current_release() -> None:
+def _before_sync() -> str:
+    """Abschnitte 1 bis 15 und 17 bis 20 ohne den Rückweg auf 0.5.0: Stand v0.5.1."""
+    return SETUP.replace(_rollback_section(), "").replace(_section(16), "")
+
+
+def _sha256(name: str) -> str:
+    return hashlib.sha256((SCRIPTS / name).read_bytes()).hexdigest()
+
+
+def test_scripts_are_taken_from_the_release_of_each_section() -> None:
     version = re.search(r'^__version__ = "(.+)"$', _init(), flags=re.M)
     assert version is not None
-    assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _without_rollback())) == {
-        f"v{version[1]}"
-    }
+    assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _section(16))) == {f"v{version[1]}"}
+    assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _before_sync())) == {"v0.5.1"}
     assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _rollback_section())) == {"v0.5.0"}
 
 
 @pytest.mark.parametrize("name", sorted(RELEASE_0_5_1))
 def test_documented_hashes_are_those_of_the_release(name: str) -> None:
-    documented = set(re.findall(rf"([0-9a-f]{{64}})  /tmp/{re.escape(name)}", _without_rollback()))
+    documented = set(re.findall(rf"([0-9a-f]{{64}})  /tmp/{re.escape(name)}", _before_sync()))
     assert documented == {RELEASE_0_5_1[name]}
+
+
+@pytest.mark.parametrize("name", ["guard.sh", "source-guard.sh", "testdata.sh"])
+def test_section_16_loads_the_current_scripts(name: str) -> None:
+    documented = re.findall(rf"([0-9a-f]{{64}})  /tmp/{re.escape(name)}", _section(16))
+    assert documented == [_sha256(name)]
+
+
+@pytest.mark.parametrize("name", ["guard.sh", "source-guard.sh"])
+def test_section_16_names_the_header_of_the_current_scripts(name: str) -> None:
+    header = (SCRIPTS / name).read_text(encoding="utf-8").splitlines()[1]
+    assert f"Die zweite Zeile lautet `{header}`" in _section(16)
+
+
+def test_section_16_shows_the_memory_margin_of_guard() -> None:
+    match = re.search(r"^readonly MEMORY_MARGIN=(\d+)$", GUARD, flags=re.M)
+    assert match is not None
+    line = GUARD[: match.start()].count("\n") + 1
+    assert f"`{line}:readonly MEMORY_MARGIN={match[1]}`" in _section(16)
+
+
+def test_memory_check_formula_uses_the_margin_of_guard() -> None:
+    match = re.search(r"^readonly MEMORY_MARGIN=(\d+)$", GUARD, flags=re.M)
+    assert match is not None
+    gib = int(match[1]) // 1024**3
+    assert int(match[1]) == gib * 1024**3
+    assert f"nötig = Max memory in GiB + {gib} GiB" in SETUP
+    assert f"`nötig = Max memory in GiB + {gib} GiB`" in _section(16)
+
+
+@pytest.mark.parametrize(("name", "version"), [("15.1", "0.5.1"), ("16.1", "0.5.2")])
+def test_backup_of_the_configuration_is_never_overwritten(name: str, version: str) -> None:
+    """Ein zweiter Aufruf darf die Sicherung nicht mit der geänderten Datei überschreiben (F11)."""
+    start = SETUP.index(f"### {name} ")
+    section = SETUP[start : SETUP.index("\n### ", start + 1)]
+    backup = f"twinraid.yaml.vor-{version}"
+    block = (
+        f"cd /mnt/user/appdata/twinraid/config\n"
+        f"[ -e {backup} ] || cp -p twinraid.yaml {backup}\n"
+        f"ls -l twinraid.yaml*\n"
+    )
+    assert f"```bash\n{block}```" in section
+    assert re.search(
+        rf"> \*\*Diesen Kasten allein einfügen\.\*\*[^\n]*\n\n```bash\n{re.escape(block)}", section
+    )
+    # Sonst nirgends eine Sicherung, die eine vorhandene überschreiben könnte.
+    assert not re.search(r"(?<!\|\| )cp -p twinraid\.yaml twinraid\.yaml\.vor-", SETUP)
+
+
+def test_every_change_of_the_test_data_stands_alone_with_a_warning() -> None:
+    """change zweimal verdoppelt die Zählungen; der Befehl steht deshalb allein in seinem Kasten."""
+    # Kästen in Aufzählungen sind eingerückt; die Einrückung zählt nicht zum Befehl.
+    blocks = [
+        textwrap.dedent(block)
+        for _, block in re.findall(r"^( *)```bash\n(.*?)^\1```", SETUP, flags=re.S | re.M)
+    ]
+    with_change = [block for block in blocks if "testdata.sh change" in block]
+    assert len(with_change) == 3
+    assert all(block == "bash /boot/config/twinraid/testdata.sh change\n" for block in with_change)
+    warnings = re.findall(
+        r"> \*\*Diesen Kasten allein und nur einmal einfügen\.\*\*[^\n]*\n\n *```bash\n"
+        r" *bash /boot/config/twinraid/testdata\.sh change\n",
+        SETUP,
+    )
+    assert len(warnings) == 3
+
+
+def test_poweroff_during_a_receive_stands_alone_after_the_check() -> None:
+    section = _section(16)
+    block = (
+        'SSH_ORIGINAL_COMMAND=poweroff bash /boot/config/twinraid/guard.sh power; echo "Exit: $?"\n'
+    )
+    assert section.count(block) == 1
+    before = section[: section.index(block)]
+    assert before.rstrip().endswith("```bash")
+    assert "**Nur bei `receive=busy` weitermachen:**" in before[-600:]
+
+
+def test_mirror_on_the_target_is_only_verified_in_a_snapshot() -> None:
+    """Im eingehängten Spiegel kann eine alte ACL stehen (Konzept 3.7)."""
+    for line in re.findall(r"testdata\.sh verify (\S+)", SETUP):
+        if "twinraid-mirror" in line:
+            assert "/.zfs/snapshot/" in line, line
+    assert "auch im Spiegel auf Groß" not in SETUP
+
+
+def test_zfs_destroy_and_rollback_in_the_guide_are_never_recursive() -> None:
+    assert not re.search(r"zfs (destroy|rollback) (-\w*[rRf]|.* -[rRf])", SETUP)
+
+
+def test_section_16_only_names_test_data_and_relative_sizes() -> None:
+    """Im Repo nur Testnamen (CLAUDE.md, „Namen der echten Server“)."""
+    section = _section(16)
+    datasets = set(re.findall(r"mainpool/([A-Za-z0-9._-]+)", section))
+    assert datasets <= {"twinraidtest", "twinraid-mirror"}
 
 
 @pytest.mark.parametrize("name", sorted(ROLLBACK))
