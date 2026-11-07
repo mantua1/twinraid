@@ -42,10 +42,10 @@ def _unknown(reason: StatusReason) -> tuple[ResourceInfo, ResourceInfo, Resource
 
 
 GIB = 1024**3
-# Grenze des ZFS-Caches auf Groß (Konzept 6.4): 3,2 GiB; bei arc-unlimited ist keine
+# Grenze des ZFS-Caches auf Groß (Konzept 6.4): 4 GiB; bei arc-unlimited ist keine
 # eingetragen (arc_max 0), und OpenZFS wählt c_max selbst.
-MOCK_ARC_MAX = 32 * GIB // 10
-MOCK_C_MAX_UNLIMITED = 15 * GIB
+MOCK_ARC_MAX = 4 * GIB
+MOCK_C_MAX_UNLIMITED = 16 * GIB
 
 # (Klein, Groß, VM, Hinweise) je Schritt.
 SCENARIO: tuple[tuple[ResourceInfo, ResourceInfo, ResourceInfo, tuple[StatusNotice, ...]], ...] = (

@@ -39,6 +39,8 @@ export const STATUS_NOTICES = [
   "source_guard_allows_self",
   // Kachel Groß, ab v0.5.1: keine Grenze für den ZFS-Cache eingetragen (Konzept 3.5).
   "target_arc_unlimited",
+  // Kachel Klein, ab v0.5.2: gehaltene Basis fehlt oder ist veraltet (Konzept 3.6).
+  "source_base_hold_missing",
 ] as const;
 export type StatusNotice = (typeof STATUS_NOTICES)[number];
 
@@ -171,6 +173,8 @@ export interface GuardDataset {
   oldest_snapshot_at: string | null;
   base_created_at: string | null;
   bookmark: boolean | null;
+  // Ab v0.5.2: Die gehaltene Basis fehlt oder ist veraltet (Hinweis source_base_hold_missing).
+  base_hold_missing: boolean;
 }
 
 export interface GuardZfs {
@@ -272,6 +276,48 @@ export type GuardDatasetProblem = (typeof GUARD_DATASET_PROBLEMS)[number];
 
 export type MirrorState = "absent" | "mirror" | "foreign";
 
+// Grund eines gescheiterten Jobs (job.reason, Konzept 3.6): von guard.sh, von ssh oder auf Klein.
+export const GUARD_JOB_REASONS = [
+  "name_denied",
+  "receive_busy",
+  "mirror_root_missing",
+  "receiver_id_in_use",
+  "target_exists",
+  "delegation_mismatch",
+  "props_mismatch",
+  "props_not_applied",
+  "clone_active",
+  "space_low",
+  "too_soon",
+  "received_properties",
+  "mount_mismatch",
+  "refused_other",
+  "key_missing",
+  "host_untrusted",
+  "host_key_mismatch",
+  "auth_failed",
+  "unreachable",
+  "denied",
+  "ssh_failed",
+  "base_missing",
+  "not_ready",
+  "self_dataset_missing",
+  "send_error",
+] as const;
+export type GuardJobReason = (typeof GUARD_JOB_REASONS)[number];
+
+// Ergebnis je Share nach dem Senden (datasets[].result).
+export const GUARD_DATASET_RESULTS = [
+  "ok",
+  "skipped",
+  "base_missing",
+  "not_ready",
+  "send_failed",
+  "target_refused",
+  "target_modified",
+] as const;
+export type GuardDatasetResult = (typeof GUARD_DATASET_RESULTS)[number];
+
 // Ergebnis von guard.sh sync check (Konzept 3.7); Zahlen in Byte, Zeiten als ISO-Text.
 export interface GuardCheckSummary {
   root: "ok" | "missing";
@@ -355,7 +401,7 @@ export const ACTION_NAMES = [
   "vm_start",
   "vm_stop",
   "vm_force_stop",
-  // Ab v0.5.1 (Konzept 4.3); sync_start kommt mit v0.5.2.
+  // Probelauf ab v0.5.1, Sync ab v0.5.2 (Konzept 4.3).
   "sync_dry_run",
   "sync_start",
 ] as const;
@@ -379,7 +425,9 @@ export const ACTION_BLOCKERS = [
   "source_guard_inactive",
   "levels_mismatch",
   "self_dataset_missing",
-  "next_version",
+  // Ab v0.5.2, nur für den Sync.
+  "source_guard_too_soon",
+  "target_clone_active",
 ] as const;
 export type ActionBlocker = (typeof ACTION_BLOCKERS)[number];
 
@@ -434,6 +482,12 @@ export const ACTION_OUTCOMES = [
   "target_refused",
   "base_missing",
   "self_dataset_missing",
+  // Ab v0.5.2: Sync (Konzept 4.3, „Sync in TwinRaid“).
+  "deletions_declined",
+  "confirmation_timeout",
+  "container_restart_failed",
+  "send_failed",
+  "target_modified",
   "interrupted",
   "internal_error",
 ] as const;
@@ -473,28 +527,67 @@ export interface TargetZfs {
   c_max: number | null;
 }
 
-// Probelauf (Konzept 4.3, ab v0.5.1); Spiegel von backend/src/twinraid/shared/sync.py.
+// Probelauf (ab v0.5.1) und Sync (ab v0.5.2, Konzept 4.3); Spiegel von
+// backend/src/twinraid/shared/sync.py.
 export const SYNC_STEPS = [
   "waking",
   "waiting_for_vm_service",
+  "stopping_containers",
   "snapshot",
+  "starting_containers",
   "preparing",
+  "awaiting_confirm",
+  "sending",
   "closing",
 ] as const;
 export type SyncStep = (typeof SYNC_STEPS)[number];
 
-// Grund zu einem Ergebnis: Eintrag aus blockers, Ergebnis von check oder eines Auftrags.
-export type SyncReason = GuardBlocker | GuardCheckResult | GuardOrderResult;
+// Grund zu einem Ergebnis: Eintrag aus blockers, Ergebnis von check, eines Auftrags oder
+// der Grund aus dem Job (ab v0.5.2).
+export type SyncReason = GuardBlocker | GuardCheckResult | GuardOrderResult | GuardJobReason;
+
+export type SyncKind = "dry_run" | "sync";
+
+// Freigabe von Löschungen, auf die der Sync wartet (Konzept 4.3, Schritt 5).
+export interface SyncConfirmation {
+  reasons: GuardConfirmReason[];
+  deletions: number;
+  max_deletions: number;
+  // Danach schließt der Wächter den Job; null: unbekannt.
+  deadline: string | null;
+}
+
+// Fortschritt beim Senden (Konzept 4.4); Bytes, Rate in Byte je Sekunde.
+export interface SyncProgress {
+  share: string | null;
+  sent: number;
+  total: number;
+  // Höchstens 99, bis der Job fertig ist.
+  percent: number;
+  // Erst wenn Werte über 15 s vorliegen.
+  rate: number | null;
+  remaining_seconds: number | null;
+  finish_at: string | null;
+}
 
 export interface SyncRun {
-  kind: "dry_run";
+  kind: SyncKind;
   job_id: string;
   step: SyncStep;
   started_at: string;
+  // Ab v0.5.2: nach einem Neustart übernommene Übertragung, angehaltene Container,
+  // Freigabe, Fortschritt und ein angeforderter Abbruch.
+  adopted: boolean;
+  containers_stopped: number;
+  confirmation: SyncConfirmation | null;
+  progress: SyncProgress | null;
+  cancelling: boolean;
+  // Der Abbruch wartet noch auf die Antwort zu begin, stop oder finish.
+  waiting_for_container: boolean;
 }
 
 export interface SyncResult {
-  kind: "dry_run";
+  kind: SyncKind;
   outcome: ActionOutcome;
   reason: SyncReason | null;
   finished_at: string;
@@ -520,9 +613,13 @@ export interface SyncShareReport {
   base_referenced: number | null;
   size: number | null;
   mirror: SyncMirror | null;
+  // Nach dem Senden (ab v0.5.2).
+  sent: number | null;
+  result: GuardDatasetResult | null;
 }
 
 export interface SyncReport {
+  kind: SyncKind;
   prepared_at: string;
   snapshot: string;
   awaiting_confirm: boolean;
@@ -542,11 +639,40 @@ export interface SyncLevels {
   target_checked_at: string | null;
 }
 
+// Eine Zeile der Sync-Historie (Konzept 5.3, ab v0.5.2).
+export interface SyncHistoryShare {
+  name: string;
+  mode: "full" | "incremental" | null;
+  deleted: number | null;
+  modified: number | null;
+  added: number | null;
+  renamed: number | null;
+  size: number | null;
+  sent: number | null;
+  result: GuardDatasetResult | null;
+}
+
+export interface SyncHistoryEntry {
+  id: string;
+  kind: SyncKind;
+  trigger: "dashboard" | "automatic";
+  started_at: string;
+  finished_at: string;
+  result: ActionOutcome;
+  reason: SyncReason | null;
+  woke_target: boolean;
+  containers_stopped: number;
+  adopted: boolean;
+  shares: SyncHistoryShare[];
+}
+
 export interface SyncStatus {
   running: SyncRun | null;
   last: SyncResult | null;
   report: SyncReport | null;
   levels: SyncLevels;
+  // Die letzten 20 Läufe, neueste zuerst (ab v0.5.2).
+  history: SyncHistoryEntry[];
 }
 
 export interface StatusSnapshot {

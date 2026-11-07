@@ -23,9 +23,11 @@ from twinraid.shared.source_guard import (
     GuardConfirmReason,
     GuardContainerState,
     GuardDatasetProblem,
+    GuardDatasetResult,
     GuardDetails,
     GuardError,
     GuardJob,
+    GuardJobReason,
     GuardJobResult,
     GuardJobState,
     GuardOrder,
@@ -182,6 +184,7 @@ def test_tour_shows_every_state(tmp_path: Path) -> None:
     assert notices == {
         StatusNotice.SOURCE_CONNECT_PLUGIN,
         StatusNotice.SOURCE_FLASH_BACKUP,
+        StatusNotice.SOURCE_BASE_HOLD_MISSING,
         StatusNotice.SOURCE_GUARD_ALLOWS_SELF,
     }
     assert {"on", "lz4", "off", None} <= compressions
@@ -297,8 +300,8 @@ async def test_dry_run_orders(tmp_path: Path) -> None:
     assert check.result is GuardCheckResult.OK
     assert check.summary is not None
     assert (check.summary.available, check.summary.size, check.summary.reserve_percent) == (
-        600 * GIB,
-        860 * GIB,
+        1000 * GIB,
+        2000 * GIB,
         15,
     )
     assert [(m.name, m.state, m.count) for m in check.mirrors] == [
@@ -309,9 +312,9 @@ async def test_dry_run_orders(tmp_path: Path) -> None:
     assert job is not None
     assert (job.state, job.result) == (GuardJobState.CLOSED, GuardJobResult.CLOSED)
     assert await guard.order(GuardOrder.CLOSE) is GuardOrderResult.NO_JOB
-    # Lauf, Freigabe und Senden kommen erst mit v0.5.2.
-    for order in (GuardOrder.BEGIN, GuardOrder.CONFIRM, GuardOrder.SEND):
-        assert await guard.order(order) is GuardOrderResult.NOT_SUPPORTED
+    # Ohne offenen Job: nichts freizugeben, nichts zu senden.
+    for order in (GuardOrder.CONFIRM, GuardOrder.SEND):
+        assert await guard.order(order) is GuardOrderResult.NO_JOB
 
 
 @pytest.mark.anyio
@@ -367,7 +370,7 @@ async def test_dry_run_faults(
     elif fault == "sync-empty-source":
         assert [item.referenced for item in job.datasets] == [300 * MIB, 300 * MIB]
     elif fault == "sync-target-refused":
-        assert check.summary.available == 20 * GIB
+        assert check.summary.available == 100 * GIB
     elif fault == "target-exists":
         assert [item.problem for item in job.datasets] == [GuardDatasetProblem.TARGET_EXISTS] * 2
         assert [mirror.state for mirror in check.mirrors] == ["foreign", "foreign"]
@@ -387,3 +390,161 @@ async def test_inactive_guard_takes_no_orders(tmp_path: Path) -> None:
     with pytest.raises(GuardOrderError) as caught:
         await guard.order(GuardOrder.SNAPSHOT)
     assert caught.value.outcome is ActionOutcome.SOURCE_GUARD_LOST
+
+
+# --- Lauf, Freigabe und Senden (ab v0.5.2) ----------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_run_orders(tmp_path: Path) -> None:
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    assert await guard.order(GuardOrder.PING) is GuardOrderResult.NO_RUN
+    assert await guard.order(GuardOrder.STOP, MOCK_CONTAINER) is GuardOrderResult.NO_RUN
+    assert await guard.order(GuardOrder.BEGIN) is GuardOrderResult.OPENED
+    assert await guard.order(GuardOrder.BEGIN) is GuardOrderResult.RUN_OPEN
+    assert await guard.order(GuardOrder.STOP, "fremd") is GuardOrderResult.NOT_ALLOWED
+    assert await guard.order(GuardOrder.STOP, MOCK_CONTAINER) is GuardOrderResult.STOPPED
+    assert await guard.order(GuardOrder.STOP, MOCK_CONTAINER) is GuardOrderResult.NOT_RUNNING
+    details = _details(guard)
+    assert details.run is not None
+    assert details.run.stopped == (MOCK_CONTAINER,)
+    assert details.allowed[0].state is GuardContainerState.STOPPED
+    # prepare erst nach finish (Konzept 3.6).
+    assert await guard.order(GuardOrder.SNAPSHOT) is GuardOrderResult.CREATED
+    assert await guard.order(GuardOrder.PREPARE) is GuardOrderResult.RUN_OPEN
+    now[0] += timedelta(seconds=100)
+    assert await guard.order(GuardOrder.PING) is GuardOrderResult.EXTENDED
+    assert await guard.order(GuardOrder.FINISH) is GuardOrderResult.FINISHED
+    details = _details(guard)
+    assert details.run is None
+    assert details.allowed[0].state is GuardContainerState.RUNNING
+    assert details.last_run is not None
+    assert details.last_run.reason is GuardRunEnd.FINISH
+    assert [c.result for c in details.last_run.containers] == [GuardRestart.STARTED]
+    # Pause zwischen zwei Läufen, in der Simulation 2 min.
+    assert details.run_allowed_at == (now[0] + timedelta(minutes=2)).replace(microsecond=0)
+    assert await guard.order(GuardOrder.CLOSE) is GuardOrderResult.CLOSED
+    assert await guard.order(GuardOrder.BEGIN) is GuardOrderResult.TOO_SOON
+    now[0] += timedelta(minutes=2)
+    assert _details(guard).run_allowed_at is None
+    assert await guard.order(GuardOrder.BEGIN) is GuardOrderResult.OPENED
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("advance", "reason"),
+    [
+        (timedelta(seconds=121), GuardRunEnd.DEADMAN_HEARTBEAT),
+        (timedelta(minutes=21), GuardRunEnd.DEADMAN_MAX),
+    ],
+)
+async def test_deadman(tmp_path: Path, advance: timedelta, reason: GuardRunEnd) -> None:
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    assert await guard.order(GuardOrder.BEGIN) is GuardOrderResult.OPENED
+    assert await guard.order(GuardOrder.STOP, MOCK_CONTAINER) is GuardOrderResult.STOPPED
+    if reason is GuardRunEnd.DEADMAN_MAX:
+        # Lebenszeichen verlängern nur die Herzschlag-Frist, nie die Höchstzeit.
+        for _ in range(10):
+            now[0] += timedelta(seconds=110)
+            assert await guard.order(GuardOrder.PING) is GuardOrderResult.EXTENDED
+        now[0] = NOW + advance
+    else:
+        now[0] += advance
+    details = _details(guard)
+    assert details.run is None
+    assert details.last_run is not None
+    assert details.last_run.reason is reason
+    assert details.allowed[0].state is GuardContainerState.RUNNING
+    assert await guard.order(GuardOrder.PING) is GuardOrderResult.NO_RUN
+
+
+@pytest.mark.anyio
+async def test_start_failed_after_a_run(tmp_path: Path) -> None:
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    assert await guard.order(GuardOrder.BEGIN) is GuardOrderResult.OPENED
+    assert await guard.order(GuardOrder.STOP, MOCK_CONTAINER) is GuardOrderResult.STOPPED
+    _switch(tmp_path, "source-guard-start-failed", NOW)
+    assert await guard.order(GuardOrder.FINISH) is GuardOrderResult.FINISHED
+    details = _details(guard)
+    assert details.last_run is not None
+    assert [c.result for c in details.last_run.containers] == [GuardRestart.START_FAILED]
+    assert details.allowed[0].state is GuardContainerState.STOPPED
+
+
+@pytest.mark.anyio
+async def test_confirm_and_send(tmp_path: Path) -> None:
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    set_flag(fault_flag(tmp_path, "sync-deletions"), True)
+    job = await _prepared(guard, ticks)
+    assert job.state is GuardJobState.AWAITING_CONFIRM
+    assert await guard.order(GuardOrder.SEND) is GuardOrderResult.WRONG_STATE
+    assert await guard.order(GuardOrder.CONFIRM) is GuardOrderResult.CONFIRMED
+    assert await guard.order(GuardOrder.CONFIRM) is GuardOrderResult.NOT_NEEDED
+    assert await guard.order(GuardOrder.SEND) is GuardOrderResult.SENDING
+    # 25 MiB/s: nach 20 s ist die erste Share (350 MiB) fertig, die zweite zum Teil.
+    ticks[0] += 20
+    sending = _details(guard).job
+    assert sending is not None
+    assert sending.state is GuardJobState.SENDING
+    first, second = sending.datasets
+    assert (first.sent, first.result) == (350 * MIB, GuardDatasetResult.OK)
+    assert (second.sent, second.result) == (150 * MIB, None)
+    ticks[0] += 10
+    done = _details(guard).job
+    assert done is not None
+    assert (done.state, done.result) == (GuardJobState.DONE, GuardJobResult.OK)
+    bases = {dataset.base_created_at for dataset in _details(guard).zfs.datasets}
+    assert bases == {done.created_at}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fault", ["sync-send-error", "sync-slow"])
+async def test_send_faults(tmp_path: Path, fault: str) -> None:
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    set_flag(fault_flag(tmp_path, fault), True)
+    await _prepared(guard, ticks)
+    assert await guard.order(GuardOrder.SEND) is GuardOrderResult.SENDING
+    ticks[0] += 30
+    job = _details(guard).job
+    assert job is not None
+    if fault == "sync-slow":
+        # 1 MiB/s: knapp 6 min je Share.
+        assert job.state is GuardJobState.SENDING
+        assert job.datasets[0].sent == 30 * MIB
+        assert await guard.order(GuardOrder.CLOSE) is GuardOrderResult.CLOSED
+        return
+    assert (job.state, job.result, job.reason) == (
+        GuardJobState.FAILED,
+        GuardJobResult.SEND_FAILED,
+        GuardJobReason.UNREACHABLE,
+    )
+    assert [item.result for item in job.datasets] == [
+        GuardDatasetResult.OK,
+        GuardDatasetResult.SEND_FAILED,
+    ]
+    # Nur die gesendete Share bekommt eine neue Basis.
+    bases = [dataset.base_created_at for dataset in _details(guard).zfs.datasets]
+    assert bases == [job.created_at, None]
+
+
+@pytest.mark.anyio
+async def test_send_needs_a_ready_job(tmp_path: Path) -> None:
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    set_flag(fault_flag(tmp_path, "sync-target-refused"), True)
+    await _prepared(guard, ticks)
+    assert await guard.order(GuardOrder.SEND) is GuardOrderResult.NOT_READY
+
+
+@pytest.mark.anyio
+async def test_post_writes_without_waiting(tmp_path: Path) -> None:
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    await guard.order(GuardOrder.BEGIN)
+    await guard.post(GuardOrder.FINISH)
+    assert _details(guard).run is None

@@ -46,6 +46,11 @@ class DataPaths:
         return self.worker / "actions.jsonl"
 
     @property
+    def sync_history(self) -> Path:
+        """Sync-Historie ab v0.5.2 (Konzept 5.3), Rechte wie beim Aktionslog."""
+        return self.worker / "sync-history.jsonl"
+
+    @property
     def password_file(self) -> Path:
         return self.secrets / "password.argon2"
 

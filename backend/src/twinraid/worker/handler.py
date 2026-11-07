@@ -36,11 +36,13 @@ class StatusSource(Protocol):
 
 
 class SyncSource(Protocol):
-    """Probelauf (sync/coordinator.py, ab v0.5.1)."""
+    """Probelauf und Sync (sync/coordinator.py, ab v0.5.1 bzw. v0.5.2)."""
 
     def snapshot(self) -> SyncStatus: ...
 
     def cancel(self, job_id: str) -> bool: ...
+
+    def confirm(self, job_id: str) -> bool: ...
 
 
 class CommandHandler:
@@ -84,14 +86,14 @@ class CommandHandler:
                 if self._sync.cancel(job_id):
                     return OkResponse(result={"accepted": True})
                 return ErrorResponse(
-                    error=ErrorCode.ACTION_BLOCKED, message="no dry run with this job id is running"
+                    error=ErrorCode.ACTION_BLOCKED, message="no run with this job id is running"
                 )
-            case SyncConfirmDeletions():
-                # Ein Probelauf fragt nie nach; der echte Sync kommt mit v0.5.2 (Konzept 4.3).
+            case SyncConfirmDeletions(job_id=job_id):
+                if self._sync.confirm(job_id):
+                    return OkResponse(result={"accepted": True})
                 return ErrorResponse(
-                    error=ErrorCode.NOT_AVAILABLE,
-                    message="confirming deletions comes with the sync in v0.5.2",
-                    blocked_by=ActionBlocker.NEXT_VERSION,
+                    error=ErrorCode.ACTION_BLOCKED,
+                    message="no sync with this job id is waiting for a confirmation",
                 )
         return ErrorResponse(  # pragma: no cover - alle Befehle sind oben abgedeckt
             error=ErrorCode.NOT_IMPLEMENTED, message="unknown command"

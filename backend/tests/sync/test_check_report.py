@@ -59,13 +59,13 @@ async def test_after_a_dry_run(tmp_path: Path) -> None:
     target = next(line for line in lines if line.startswith("Target: last check "))
     assert target.endswith(": ok")
     assert (
-        "  free 600.0 GiB of 860.0 GiB, reserve 15 %, root ok, mirror.conf ok, "
+        "  free 1000.0 GiB of 2000.0 GiB, reserve 15 %, root ok, mirror.conf ok, "
         "delegation ok, receive idle, clones 0"
     ) in lines
     mirror = next(line for line in lines if line.startswith("  medien: "))
     assert mirror.startswith("  medien: mirror, snapshots 5, newest received ")
     assert mirror.endswith(", props ok")
-    assert "ZFS cache on the target: zfs_arc_max 3.2 GiB, c_max 3.2 GiB" in lines
+    assert "ZFS cache on the target: zfs_arc_max 4.0 GiB, c_max 4.0 GiB" in lines
     assert lines[-1].startswith("Last dry run: dry_run_success at ")
 
 
@@ -80,7 +80,7 @@ async def test_arc_without_a_limit(tmp_path: Path) -> None:
     lines = sync_check_lines(worker.handler.snapshot())
     assert lines[-1] == (
         "ZFS cache on the target: zfs_arc_max not set in Unraid "
-        "(Settings → Disk Settings → zfs_arc_max), c_max 15.0 GiB"
+        "(Settings → Disk Settings → zfs_arc_max), c_max 16.0 GiB"
     )
 
 

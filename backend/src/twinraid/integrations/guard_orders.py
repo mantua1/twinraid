@@ -10,6 +10,7 @@ Die Auftragsnummer führt allein der Wächter.
 import asyncio
 import hashlib
 import os
+import re
 import stat
 import time
 from collections.abc import Awaitable, Callable
@@ -37,6 +38,8 @@ from twinraid.shared.source_guard import (
 # Eine Zeile: mit Leerzeichen auf 255 Zeichen aufgefüllt, dann "\n" (Konzept 3.6, „Aufträge“).
 ORDER_LINE_LENGTH = 255
 MAX_SEQ = 999_999_999
+# Container-Namen wie im Wächter (Zeichenregel von Docker).
+CONTAINER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 
 
 class GuardOrderError(Exception):
@@ -47,13 +50,17 @@ class GuardOrderError(Exception):
         self.outcome = outcome
 
 
-def order_line(seq: int, order: GuardOrder) -> bytes:
-    """TRSG1 <Nr> <Auftrag> <Prüfsumme>; stop mit Container schickt TwinRaid erst ab v0.5.2."""
-    if order is GuardOrder.STOP:
-        raise ValueError("stop needs a container name")
+def order_line(seq: int, order: GuardOrder, container: str | None = None) -> bytes:
+    """TRSG1 <Nr> <Auftrag> [<Container>] <Prüfsumme>; nur stop trägt einen Container."""
+    if (order is GuardOrder.STOP) != (container is not None):
+        raise ValueError("only stop takes a container name, and stop needs one")
+    if container is not None and CONTAINER_NAME.fullmatch(container) is None:
+        raise ValueError("invalid container name")
     if not 1 <= seq <= MAX_SEQ:
         raise ValueError("sequence number out of range")
     payload = f"TRSG1 {seq} {order.value}"
+    if container is not None:
+        payload += f" {container}"
     checksum = hashlib.sha256(payload.encode("ascii")).hexdigest()[:16]
     return f"{payload} {checksum}".ljust(ORDER_LINE_LENGTH).encode("ascii") + b"\n"
 
@@ -77,8 +84,20 @@ class GuardChannel(Protocol):
         """Status des Wächters, frisch gelesen (nicht aus dem Takt von 5 s)."""
         ...
 
-    async def order(self, order: GuardOrder) -> GuardOrderResult:
-        """Schickt einen Auftrag und wartet auf das Ergebnis. Wirft GuardOrderError."""
+    async def order(
+        self,
+        order: GuardOrder,
+        container: str | None = None,
+        reply_seconds: float | None = None,
+    ) -> GuardOrderResult:
+        """Schickt einen Auftrag und wartet auf das Ergebnis. Wirft GuardOrderError.
+
+        reply_seconds ersetzt die übliche Wartezeit von 10 s (bei stop: stop_timeout + 15 s).
+        """
+        ...
+
+    async def post(self, order: GuardOrder) -> None:
+        """Schreibt einen Auftrag, ohne auf das Ergebnis zu warten (Worker endet, 4.3)."""
         ...
 
 
@@ -128,6 +147,10 @@ class RealGuardChannel:
         self._lock = asyncio.Lock()
         self._last_heartbeat: int | None = None
         self._last_order_at: float | None = None
+        # Zuletzt geschriebene Nummer je Instanz, nur im Speicher: Wird ein Auftrag geschrieben,
+        # während der Wächter den vorigen noch ausführt (ein abgebrochenes Warten auf stop),
+        # steht dessen Nummer noch nicht im Status. Die Nummer führt weiter der Wächter.
+        self._written: tuple[str, int] | None = None
 
     async def observe(self) -> GuardReport:
         observation: GuardObservation = await asyncio.to_thread(
@@ -136,26 +159,48 @@ class RealGuardChannel:
         self._last_heartbeat = observation.last_heartbeat
         return evaluate(observation, self._clock())
 
-    async def order(self, order: GuardOrder) -> GuardOrderResult:
+    async def order(
+        self,
+        order: GuardOrder,
+        container: str | None = None,
+        reply_seconds: float | None = None,
+    ) -> GuardOrderResult:
         async with self._lock:
-            if self._last_order_at is not None:
-                wait = self._last_order_at + self._timings.gap_seconds - self._monotonic()
-                if wait > 0:
-                    await self._sleep(wait)
-            details = active_details(await self.observe())
-            instance = details.instance
-            seq = details.last_seq + 1
-            if instance is None or seq > MAX_SEQ:
-                raise GuardOrderError(ActionOutcome.SOURCE_GUARD_LOST)
-            try:
-                await asyncio.to_thread(write_order, self._paths.request, order_line(seq, order))
-            except OSError:
-                raise GuardOrderError(ActionOutcome.SOURCE_GUARD_INACTIVE) from None
-            self._last_order_at = self._monotonic()
-            return await self._reply(order, seq, instance)
+            seq, instance = await self._write(order, container)
+            return await self._reply(order, seq, instance, reply_seconds)
 
-    async def _reply(self, order: GuardOrder, seq: int, instance: str) -> GuardOrderResult:
-        deadline = self._monotonic() + self._timings.reply_seconds
+    async def post(self, order: GuardOrder) -> None:
+        async with self._lock:
+            await self._write(order, None)
+
+    async def _write(self, order: GuardOrder, container: str | None) -> tuple[int, str]:
+        if self._last_order_at is not None:
+            wait = self._last_order_at + self._timings.gap_seconds - self._monotonic()
+            if wait > 0:
+                await self._sleep(wait)
+        details = active_details(await self.observe())
+        instance = details.instance
+        if instance is None:
+            raise GuardOrderError(ActionOutcome.SOURCE_GUARD_LOST)
+        seq = details.last_seq + 1
+        if self._written is not None and self._written[0] == instance:
+            seq = max(seq, self._written[1] + 1)
+        if seq > MAX_SEQ:
+            raise GuardOrderError(ActionOutcome.SOURCE_GUARD_LOST)
+        line = order_line(seq, order, container)
+        try:
+            await asyncio.to_thread(write_order, self._paths.request, line)
+        except OSError:
+            raise GuardOrderError(ActionOutcome.SOURCE_GUARD_INACTIVE) from None
+        self._last_order_at = self._monotonic()
+        self._written = (instance, seq)
+        return seq, instance
+
+    async def _reply(
+        self, order: GuardOrder, seq: int, instance: str, reply_seconds: float | None
+    ) -> GuardOrderResult:
+        wait = self._timings.reply_seconds if reply_seconds is None else reply_seconds
+        deadline = self._monotonic() + wait
         while True:
             await self._sleep(self._timings.poll_seconds)
             details = active_details(await self.observe())

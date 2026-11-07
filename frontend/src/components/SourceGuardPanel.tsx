@@ -187,7 +187,13 @@ export function SourceGuardPanel({ guard, notices, source }: SourceGuardPanelPro
   return (
     <div className="flex flex-col gap-3" data-testid="source-guard">
       <StateLines guard={guard} source={source} />
-      <NoticeList notices={notices} target={source} />
+      <NoticeList
+        notices={notices}
+        target={source}
+        datasets={(guard.details?.zfs.datasets ?? [])
+          .filter((dataset) => dataset.base_hold_missing)
+          .map((dataset) => dataset.name)}
+      />
       {guard.details !== null && <DetailLines details={guard.details} />}
     </div>
   );

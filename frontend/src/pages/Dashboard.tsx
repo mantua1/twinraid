@@ -210,6 +210,7 @@ export function Dashboard({ data }: { data: DashboardData }) {
           blockerValues={blockerValues}
           onRun={data.runAction}
           onCancel={data.cancelSync}
+          onConfirmDeletions={data.confirmDeletions}
         />
         <HistoryTile className="sm:col-span-2 lg:col-span-1" entries={data.audit} />
       </div>

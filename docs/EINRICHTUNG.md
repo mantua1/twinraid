@@ -1,6 +1,6 @@
 # TwinRaid auf Unraid einrichten
 
-> **Stand: Version 0.5.1.** Diese Version zeigt den Status beider Server und der Gaming-VM an und kann Unraid Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Status und VM laufen über SSH und `guard.sh` auf Groß; einen API-Key von Unraid braucht TwinRaid seit 0.4.3 nicht mehr. Die Aktionen werden einzeln freigeschaltet (Abschnitt 11). Seit 0.5.0 gibt es den Wächter auf Klein (Abschnitt 12), die Vorbereitung von Groß für den Spiegel (Abschnitt 13) und das eigene Dataset für TwinRaid (Abschnitt 14). **Neu in 0.5.1** ist „Nur Probelauf“ mit `guard.sh` Version 3 und `source-guard.sh` Version 2 (Abschnitt 15); nach Groß wird noch nichts geschrieben, der echte Sync folgt mit 0.5.2. **Von 0.5.0 auf 0.5.1 genügt das Update nicht:** Vorher die Schlüssel `exclude` und `protect_on_target` aus `twinraid.yaml` entfernen, sonst startet der Container nicht, und die Reihenfolge aus Abschnitt 15 einhalten. Wer von 0.4.2 kommt, beginnt mit Abschnitt 16. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
+> **Stand: Version 0.5.2.** Diese Version zeigt den Status beider Server und der Gaming-VM an und kann Unraid Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Status und VM laufen über SSH und `guard.sh` auf Groß; einen API-Key von Unraid braucht TwinRaid seit 0.4.3 nicht mehr. Die Aktionen werden einzeln freigeschaltet (Abschnitt 11). Seit 0.5.0 gibt es den Wächter auf Klein (Abschnitt 12), die Vorbereitung von Groß für den Spiegel (Abschnitt 13) und das eigene Dataset für TwinRaid (Abschnitt 14). Seit 0.5.1 gibt es „Nur Probelauf“ mit `guard.sh` Version 3 und `source-guard.sh` Version 2 (Abschnitt 15). **Neu in 0.5.2** ist der echte Sync der Test-Share mit `source-guard.sh` Version 3 (Abschnitt 16): Container kurz anhalten, Löschungen freigeben, Fortschritt mit Restzeit, Abbrechen und eine Sync-Historie. **Von 0.5.0 auf 0.5.1 genügt das Update nicht:** Vorher die Schlüssel `exclude` und `protect_on_target` aus `twinraid.yaml` entfernen, sonst startet der Container nicht, und die Reihenfolge aus Abschnitt 15 einhalten. Von 0.5.1 auf 0.5.2 genügt das Update für den bisherigen Betrieb; für den Sync folgen die Skripte in der Reihenfolge aus Abschnitt 16. Wer von 0.4.2 kommt, beginnt mit Abschnitt 17. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
 
 Diese Anleitung führt Schritt für Schritt durch die Installation auf **Unraid Klein** (dem stromsparenden Server, der immer läuft). Am Ende:
 
@@ -10,7 +10,8 @@ Diese Anleitung führt Schritt für Schritt durch die Installation auf **Unraid 
 - zeigt das Dashboard den echten Status von Unraid Klein, Unraid Groß und der Gaming-VM,
 - kannst du Groß und die Gaming-VM aus dem Dashboard heraus starten und herunterfahren (Abschnitt 11),
 - läuft auf Klein der Wächter für den späteren Sync, und Groß ist für die Spiegel vorbereitet (Abschnitte 12 bis 14),
-- zeigt „Nur Probelauf“, was ein Sync der Test-Share senden würde (Abschnitt 15).
+- zeigt „Nur Probelauf“, was ein Sync der Test-Share senden würde (Abschnitt 15),
+- spiegelt „Jetzt synchronisieren“ die Test-Share nach Groß (Abschnitt 16).
 
 Die Begriffe und Sicherheitsregeln stehen in [KONZEPT.md](KONZEPT.md).
 
@@ -31,10 +32,11 @@ Die Begriffe und Sicherheitsregeln stehen in [KONZEPT.md](KONZEPT.md).
 13. [Unraid Groß für den Spiegel vorbereiten (ab 0.5.0)](#13-unraid-groß-für-den-spiegel-vorbereiten-ab-050)
 14. [Eigenes Dataset für TwinRaid (Test Z4)](#14-eigenes-dataset-für-twinraid-test-z4)
 15. [Probelauf einrichten (ab 0.5.1)](#15-probelauf-einrichten-ab-051)
-16. [Von 0.4.2 auf 0.4.3 umstellen](#16-von-042-auf-043-umstellen)
-17. [Fehlerbilder und Abhilfe](#17-fehlerbilder-und-abhilfe)
-18. [Updates einspielen und Herkunft prüfen](#18-updates-einspielen-und-herkunft-prüfen)
-19. [Befehle der Admin-CLI](#19-befehle-der-admin-cli)
+16. [Echter Sync der Test-Share (ab 0.5.2)](#16-echter-sync-der-test-share-ab-052)
+17. [Von 0.4.2 auf 0.4.3 umstellen](#17-von-042-auf-043-umstellen)
+18. [Fehlerbilder und Abhilfe](#18-fehlerbilder-und-abhilfe)
+19. [Updates einspielen und Herkunft prüfen](#19-updates-einspielen-und-herkunft-prüfen)
+20. [Befehle der Admin-CLI](#20-befehle-der-admin-cli)
 
 ### So sind die Schritte zu lesen
 
@@ -42,6 +44,8 @@ Die Begriffe und Sicherheitsregeln stehen in [KONZEPT.md](KONZEPT.md).
 - **Container-Konsole:** Reiter **Docker**, auf das Symbol des Containers *TwinRaid* klicken, dann **Console**. Dort laufen die Befehle `twinraid-admin …` innerhalb des Containers.
 - Befehle in grauen Kästen kopierst du vollständig und fügst sie ein (im Terminal mit Rechtsklick oder `Strg+Umschalt+V`), dann `Enter`.
 - Die Bezeichnungen in der Unraid-Oberfläche stehen hier auf Englisch, wie in der Standardsprache. In der deutschen Oberfläche heißen sie sinngemäß gleich.
+- **Ein Befehl pro Kasten, wo es darauf ankommt:** Befehle, die bei doppelter Ausführung schaden (etwa eine Sicherung überschreiben oder Testdaten zweimal ändern), stehen allein in einem Kasten mit einem Hinweis davor. Diese Kästen nur einmal einfügen.
+- **Welche Fassung der Skripte:** Die Abschnitte 3 bis 15 laden die Dateien von `v0.5.1`, Abschnitt 16 die von `v0.5.2`. So passt jede erwartete Ausgabe zu der Fassung, für die der Test geschrieben ist. TwinRaid 0.5.2 arbeitet mit beiden Fassungen; wer neu einrichtet, geht die Abschnitte der Reihe nach durch und bringt die Skripte in Abschnitt 16 auf den Stand von 0.5.2.
 
 ---
 
@@ -127,11 +131,11 @@ drwxr-xr-x 1 root root 0 Oct 13 20:00 /mnt/user/appdata/twinraid/data
 
 Steht dort `nobody users` oder beginnt die Zeile mit `drwxrwxrwx`, die beiden Befehle `chown` und `chmod` von oben wiederholen.
 
-> **Vorsicht mit „New Permissions“ und „Docker Safe New Perms“.** Das Unraid-Werkzeug *Tools → New Permissions* und *Docker Safe New Perms* aus dem Plugin *Fix Common Problems* setzen Besitzer und Rechte auf `nobody:users` und Schreibrechte für alle zurück. *New Permissions* tut das für alle gewählten Shares und Datenträger, auch für `appdata`. *Docker Safe New Perms* lässt `appdata` normalerweise aus, aber nur, solange es in seinen Einstellungen ausgenommen ist. Erwischt eines der Werkzeuge den Datenordner von TwinRaid, startet der Container danach nicht mehr. Wie du das reparierst, steht in Abschnitt 17 unter „Rechte des Datenordners zurückgesetzt“.
+> **Vorsicht mit „New Permissions“ und „Docker Safe New Perms“.** Das Unraid-Werkzeug *Tools → New Permissions* und *Docker Safe New Perms* aus dem Plugin *Fix Common Problems* setzen Besitzer und Rechte auf `nobody:users` und Schreibrechte für alle zurück. *New Permissions* tut das für alle gewählten Shares und Datenträger, auch für `appdata`. *Docker Safe New Perms* lässt `appdata` normalerweise aus, aber nur, solange es in seinen Einstellungen ausgenommen ist. Erwischt eines der Werkzeuge den Datenordner von TwinRaid, startet der Container danach nicht mehr. Wie du das reparierst, steht in Abschnitt 18 unter „Rechte des Datenordners zurückgesetzt“.
 
 > **Hinweis zu `appdata`:** TwinRaid speichert eine kleine SQLite-Datenbank. Am zuverlässigsten liegt `appdata` auf einem Pool (z. B. Cache) mit der Share-Einstellung *Exclusive access*. Bei den Unraid-Standardeinstellungen ist das meist schon so.
 
-**3.2 Beispielkonfiguration herunterladen.** Die Version im Pfad (`v0.5.1`) passt zur installierten Version.
+**3.2 Beispielkonfiguration herunterladen.** Die Datei ist in `v0.5.1` und `v0.5.2` gleich (zu den Fassungen siehe „So sind die Schritte zu lesen“).
 
 ```bash
 wget -O /mnt/user/appdata/twinraid/config/twinraid.yaml \
@@ -208,7 +212,7 @@ Die zusätzlichen Docker-Parameter (*Extra Parameters*, nur in der *Advanced Vie
 **5.1 Log ansehen:** Reiter **Docker** → Symbol *TwinRaid* → **Logs**. Du solltest unter anderem sehen:
 
 - einen deutlichen Hinweis **SIMULATION MODE ACTIVE**,
-- `TLS address: 192.168.10.20 (detected on eth0)` mit deiner festen IP. Steht hier eine andere Adresse oder eine Warnung **PROBABLY THE WRONG NETWORK TYPE**, ist im Template nicht `Custom: br0` gewählt (siehe Abschnitt 17).
+- `TLS address: 192.168.10.20 (detected on eth0)` mit deiner festen IP. Steht hier eine andere Adresse oder eine Warnung **PROBABLY THE WRONG NETWORK TYPE**, ist im Template nicht `Custom: br0` gewählt (siehe Abschnitt 18).
 - `Generated the TwinRaid CA. Install its certificate once on your devices.`
 - `TLS CA SHA-256 fingerprint: …` und `TLS CA SHA-1 fingerprint (shown by Windows): …`
 - `No password is set. Run inside the container: twinraid-admin set-password`
@@ -244,7 +248,7 @@ Lass dieses Fenster offen oder notiere die Werte unter *CA certificate*. Du brau
 3. Den Befehl aus 1. wiederholen. Die MAC muss **gleich** geblieben sein.
 4. Zusätzlich einmal **Restart** (Symbol *TwinRaid* → **Restart**) und erneut vergleichen.
 
-Hat sich die MAC geändert, ist das Feld **Fixed MAC address** leer oder die Unraid-Version älter als 7.3. Ohne feste MAC vergibt Docker bei jedem Start eine neue. Wiederhole den Vergleich nach dem ersten echten Update (Abschnitt 18).
+Hat sich die MAC geändert, ist das Feld **Fixed MAC address** leer oder die Unraid-Version älter als 7.3. Ohne feste MAC vergibt Docker bei jedem Start eine neue. Wiederhole den Vergleich nach dem ersten echten Update (Abschnitt 19).
 
 ---
 
@@ -349,7 +353,7 @@ TwinRaid liest den Zustand der Gaming-VM per SSH: Solange Groß läuft, hält es
 
 **9.1 SSH einschalten.** Unraid-Oberfläche von **Groß**: *Settings → Management Access* → **Use SSH:** `Yes`, Port `22` lassen → **Apply**. (Bei einem anderen Port diesen in `twinraid.yaml` als `servers.target.ssh_port` eintragen.)
 
-**9.2 `guard.sh` holen.** Im **Unraid-Terminal von Groß** (die Version im Pfad passt zur installierten TwinRaid-Version):
+**9.2 `guard.sh` holen.** Im **Unraid-Terminal von Groß** (Fassung von `v0.5.1`; Abschnitt 16 bringt sie auf den Stand von 0.5.2):
 
 ```bash
 mkdir -p /boot/config/twinraid
@@ -625,7 +629,7 @@ Alle Aktionen außer Wecken laufen über den Key „power“. Deshalb kommt er v
 | Ausgabe | `This host key was already confirmed.`, `OK: guard.sh answers (twinraid-guard 3 status ok).`, `OK: guard.sh answers (twinraid-guard 3 power ok).` und ab 0.4.4 `TwinRaid connects with the key 'status' right away.` |
 | Unraid Groß | nichts passiert; der Test verändert nichts |
 
-Meldet der Befehl einen Fehler, steht die Abhilfe dabei, zum Beispiel bei abgelehntem Key (`Users → root`), ausgeschaltetem SSH oder fehlendem `guard.sh`. Siehe auch Abschnitt 17.
+Meldet der Befehl einen Fehler, steht die Abhilfe dabei, zum Beispiel bei abgelehntem Key (`Users → root`), ausgeschaltetem SSH oder fehlendem `guard.sh`. Siehe auch Abschnitt 18.
 
 ### 11.7 Test 4: VM starten, herunterfahren und erzwingen
 
@@ -939,7 +943,7 @@ Dieser Test zeigt, dass Unraid einen leeren Pfad im Template auslässt und Docke
    ```
 
    Erwartet: `No such file or directory`.
-2. TwinRaid aktualisieren: Reiter **Docker** → bei *TwinRaid* **update ready** → **Update** (Abschnitt 18).
+2. TwinRaid aktualisieren: Reiter **Docker** → bei *TwinRaid* **update ready** → **Update** (Abschnitt 19).
 3. **Die zwei Einträge leer anlegen.** Wer TwinRaid neu installiert (Abschnitt 4), hat sie schon im Template; dann bei Punkt 4 weiter. Wer von 0.4.x kommt, ergänzt sie einmal von Hand, weil Unraid ein vorhandenes Template beim Update nicht erweitert: Reiter **Docker** → Symbol *TwinRaid* → **Edit** → unten **Add another Path, Port, Variable, Label or Device**:
 
    | Feld | Auftragsdatei | Status |
@@ -972,7 +976,7 @@ Dieser Test zeigt, dass Unraid einen leeren Pfad im Template auslässt und Docke
 
 ### 12.3 Test W2: Wächter installieren und starten
 
-1. **Skript und Konfiguration holen** (Unraid-Terminal von Klein; die Version im Pfad passt zur installierten TwinRaid-Version):
+1. **Skript und Konfiguration holen** (Unraid-Terminal von Klein; Fassung von `v0.5.1`, Abschnitt 16 bringt das Skript auf Version 3):
 
    ```bash
    mkdir -p /boot/config/twinraid
@@ -1442,15 +1446,24 @@ Der Key „status“ und der Key „power“ bleiben, wie sie sind. In den Proto
 
 **`twinraid.yaml` anpassen, bevor du aktualisierst.** Seit 0.5.1 gibt es die Schlüssel `exclude` und `protect_on_target` unter `sync` nicht mehr: Ausschlüsse sind jetzt eigene Datasets, ältere Stände liegen in den Snapshots. **Stehen dort noch Einträge, startet der Container nicht.** Das Log nennt dann `exclude is no longer supported since v0.5.1` bzw. `protect_on_target is no longer supported since v0.5.1`. Eine leere Liste wäre nur eine Warnung im Log, ebenso `appdata_share` und `max_deletions`; die Löschgrenze steht jetzt in `source-guard.conf`.
 
-Im **Unraid-Terminal von Klein**:
+Im **Unraid-Terminal von Klein** zuerst die Sicherung für den Rückweg in 15.2 anlegen; 0.5.0 verlangt die Schlüssel, die du gleich löschst.
+
+> **Diesen Kasten allein einfügen.** Er legt die Sicherung nur an, wenn es sie noch nicht gibt. So überschreibt ein zweiter Aufruf, etwa nach dem Bearbeiten, die Sicherung nicht mit der schon geänderten Datei.
 
 ```bash
 cd /mnt/user/appdata/twinraid/config
-cp -p twinraid.yaml twinraid.yaml.vor-0.5.1
+[ -e twinraid.yaml.vor-0.5.1 ] || cp -p twinraid.yaml twinraid.yaml.vor-0.5.1
+ls -l twinraid.yaml*
+```
+
+`ls -l` zeigt `twinraid.yaml` und `twinraid.yaml.vor-0.5.1` mit gleicher Größe und gleicher Uhrzeit (`cp -p` übernimmt sie). Stammt die Sicherung von einem früheren Versuch und ist älter als deine letzte gewollte Änderung, sie mit `rm twinraid.yaml.vor-0.5.1` löschen und den Kasten noch einmal einfügen. Dann:
+
+```bash
+cd /mnt/user/appdata/twinraid/config
 grep -n -E '^ *(exclude|protect_on_target|appdata_share|max_deletions):' twinraid.yaml
 ```
 
-Die Kopie brauchst du nur für den Rückweg in 15.2: 0.5.0 verlangt diese Schlüssel. Zeigt `grep` Zeilen, die Datei mit `nano twinraid.yaml` öffnen und diese Schlüssel löschen, **samt der Listeneinträge darunter** (Zeilen, die mit `-` beginnen). Speichern mit `Strg+O`, `Enter`, beenden mit `Strg+X`. Danach zeigt derselbe `grep`-Befehl nichts mehr.
+Zeigt `grep` Zeilen, die Datei mit `nano twinraid.yaml` öffnen und diese Schlüssel löschen, **samt der Listeneinträge darunter** (Zeilen, die mit `-` beginnen). Speichern mit `Strg+O`, `Enter`, beenden mit `Strg+X`. Danach zeigt derselbe `grep`-Befehl nichts mehr.
 
 **Pflichtschlüssel unter `sync` prüfen.** Unter `sync` müssen `stop_containers`, `never_stop` und `copy_templates` stehen, in der Datei und in der Kopie für den Rückweg. Fehlt einer, startet der Container nicht. Das Log von `twinraid.preflight` nennt dann den Schlüssel, zum Beispiel `sync.stop_containers: required key is missing`.
 
@@ -1487,7 +1500,7 @@ stat -c '%U:%G %a %n' \
 | `…/in/request` | `root:root 600` | Auftragsdatei des Wächters |
 | `…/state` | `root:root 755` | Status des Wächters |
 
-Weicht etwas ab, erst beheben (bei `data` und `secrets`: Abschnitt 17, „Rechte des Datenordners zurückgesetzt“).
+Weicht etwas ab, erst beheben (bei `data` und `secrets`: Abschnitt 18, „Rechte des Datenordners zurückgesetzt“).
 
 - **Gruppe von `data/secrets`:** Sie bleibt vom Anlegen im Container und erscheint auf dem Host oft als `UNKNOWN` (10001). Das ist unbedenklich; es zählen nur der Besitzer root und die Rechte `700`.
 - **`config` mit `777`:** Das funktioniert, richtig ist aber `755`. Unraid setzt `appdata` oft auf `777`, zum Beispiel über *New Permissions*. Korrigieren mit `chmod 755 /mnt/user/appdata/twinraid/config`.
@@ -1735,7 +1748,7 @@ bash /boot/config/twinraid/testdata.sh verify
 | `create` | `Testdaten angelegt: /mnt/mainpool/twinraidtest/testdata`, die Zahl der Einträge, `Sonderfälle: xattr yes, acl yes, Besitzer yes` und `Prüfliste: PRUEFLISTE.txt, SHA-256 …` |
 | `verify` | `Keine Abweichung (Lauf 0).` und dieselbe SHA-256 |
 
-Die SHA-256 der Prüfliste notieren; ab 0.5.2 vergleichst du damit den Spiegel auf Groß, und zwar im Snapshot (`bash /boot/config/twinraid/testdata.sh verify /mnt/mainpool/twinraid-mirror/twinraidtest/.zfs/snapshot/<Name>/testdata`): Im eingehängten Spiegel kann der Kernel nach einem inkrementellen Empfang noch eine alte ACL zeigen, obwohl sie richtig angekommen ist. Steht dort `acl no` oder `xattr no`, kann das Dataset das nicht, oder das Werkzeug fehlt; `verify` lässt es dann aus. Das bitte im PR festhalten. `create` legt nur neu an; für einen neuen Anfang den Ordner `/mnt/mainpool/twinraidtest/testdata` von Hand löschen.
+Die SHA-256 der Prüfliste notieren; ab 0.5.2 vergleichst du damit den Spiegel auf Groß mit `testdata.sh verify-latest`, das immer im neuesten Snapshot des Spiegels prüft (16.3). Im eingehängten Spiegel selbst kann der Kernel nach einem inkrementellen Empfang noch eine alte ACL zeigen, obwohl sie richtig angekommen ist; `verify` aus 0.5.2 lehnt ihn deshalb ab. Steht dort `acl no` oder `xattr no`, kann das Dataset das nicht, oder das Werkzeug fehlt; `verify` lässt es dann aus. Das bitte im PR festhalten. `create` legt nur neu an; für einen neuen Anfang den Ordner `/mnt/mainpool/twinraidtest/testdata` von Hand löschen.
 
 Später erzeugt `bash /boot/config/twinraid/testdata.sh change` je Lauf eine bekannte Änderung: 50 Dateien gelöscht, 20 geändert, 30 neu, 10 umbenannt, dazu ein Block in einer großen Datei und einzelne Eigenschaften. Das braucht der Test mit `zfs diff` in 0.5.2; `zfs diff` zählt die betroffenen Ordner zusätzlich als geändert.
 
@@ -1771,7 +1784,7 @@ Erwartet: `Source guard: active, version 2`, die Zeile `twinraidtest` mit `yes` 
 | Kachel **Sync** danach | „Letzter Probelauf (…): Probelauf abgeschlossen; Senden wäre möglich.“ und die Tabelle unten |
 | Zeile `twinraidtest` | Modus „vollständig (erster Lauf)“; gelöscht, geändert, neu, umbenannt leer, weil es noch keine Basis zum Vergleichen gibt; Größe etwa die 200 MiB aus 15.5; Spiegel „noch keiner“ |
 | unter der Tabelle | „Senden wäre möglich.“ und freier Platz auf Groß mit Reserve 15 % |
-| Button **Jetzt synchronisieren** | grau, „kommt mit v0.5.2“ |
+| Button **Jetzt synchronisieren** | grau, „kommt mit v0.5.2“; mit TwinRaid 0.5.2 „in twinraid.yaml unter actions nicht freigeschaltet“, bis Abschnitt 16 den Sync freischaltet |
 | Klein, Snapshot | `zfs list -t snapshot mainpool/twinraidtest` zeigt `mainpool/twinraidtest@twinraid-…`. Er bleibt 7 Tage und läuft dann selbst ab |
 | Groß, kein Spiegel | `zfs list -r -o name mainpool/twinraid-mirror` zeigt nur `mainpool/twinraid-mirror` |
 | Groß, Syslog | keine Zeile `receive into mirror` |
@@ -1895,7 +1908,7 @@ Wie in 11.21, nur mit der neuen Meldung. Seit `guard.sh` 3 erkennt TwinRaid den 
 
 ### 15.12 Test M1: Speicherprüfung vor dem Start der VM
 
-Vor `vm-start` prüft `guard.sh`, ob genug Arbeitsspeicher frei ist. Der Test zeigt, ob das auf Groß so greift wie gedacht, wenn neben der Gaming-VM schon eine zweite VM läuft. Danach entscheiden wir, ob der Abstand von 1 GiB bleibt oder 2 GiB wird.
+Vor `vm-start` prüft `guard.sh`, ob genug Arbeitsspeicher frei ist. Der Test zeigt, ob das auf Groß so greift wie gedacht, wenn neben der Gaming-VM schon eine zweite VM läuft. **Seit 0.5.2 beträgt der Sicherheitsabstand 2 GiB** (Ergebnis dieses Tests). `guard.sh` aus 0.5.1, das dieser Abschnitt lädt, rechnet noch mit 1 GiB; wer den Test mit dieser Fassung macht, setzt in der Formel unten 1 GiB statt 2 GiB ein. Ab 16.2 gilt 2 GiB.
 
 > **Nur starten, wenn in beiden VMs nichts verloren gehen kann.** Reicht der Speicher trotz der Prüfung nicht, beendet der Kernel eine VM wie bei einem Stromausfall. In beiden VMs vorher alles speichern und schließen.
 
@@ -1912,10 +1925,10 @@ Vor `vm-start` prüft `guard.sh`, ob genug Arbeitsspeicher frei ist. Der Test ze
 
    ```text
    frei  = MemAvailable in GiB + (size − c_min) in GiB, der zweite Teil mindestens 0
-   nötig = Max memory in GiB + 1 GiB
+   nötig = Max memory in GiB + 2 GiB
    ```
 
-   TwinRaid startet die VM nur, wenn `frei` mindestens `nötig` ist. KiB teilst du zweimal durch 1024, Byte dreimal. Ein Beispiel mit erfundenen Zahlen: `MemAvailable` 7 340 032 kB sind 7 GiB, `size` 6 442 450 944 und `c_min` 1 073 741 824 ergeben 5 GiB, also `frei` = 12 GiB. `Max memory` 10 485 760 KiB sind 10 GiB, also `nötig` = 11 GiB: Die VM startet.
+   TwinRaid startet die VM nur, wenn `frei` mindestens `nötig` ist. KiB teilst du zweimal durch 1024, Byte dreimal. Ein Beispiel mit erfundenen Zahlen: `MemAvailable` 7 340 032 kB sind 7 GiB, `size` 6 442 450 944 und `c_min` 1 073 741 824 ergeben 5 GiB, also `frei` = 12 GiB. `Max memory` 10 485 760 KiB sind 10 GiB, also `nötig` = 12 GiB: Die VM startet gerade noch. Mit 11 534 336 KiB (11 GiB) wäre `nötig` = 13 GiB, und sie startet nicht.
 4. In TwinRaid in der VM-Kachel **Starten** klicken.
 
 | Ergebnis | Erwartet |
@@ -1927,11 +1940,739 @@ Vor `vm-start` prüft `guard.sh`, ob genug Arbeitsspeicher frei ist. Der Test ze
 
 ### 15.13 Abschluss
 
-Die Ergebnisse von G10, K1, W9, 1, 2, 2b bis 2e, G8 und M1 bitte im Pull Request festhalten. `actions.sync_dry_run` kann eingeschaltet bleiben; der Probelauf schreibt nie nach Groß. Die Simulation ohne echte Server zeigt dasselbe: **Nur Probelauf** in der Kachel **Sync** und `twinraid-admin mock-fault` mit den Namen aus Abschnitt 19.
+Die Ergebnisse von G10, K1, W9, 1, 2, 2b bis 2e, G8 und M1 bitte im Pull Request festhalten. `actions.sync_dry_run` kann eingeschaltet bleiben; der Probelauf schreibt nie nach Groß. Die Simulation ohne echte Server zeigt dasselbe: **Nur Probelauf** in der Kachel **Sync** und `twinraid-admin mock-fault` mit den Namen aus Abschnitt 20.
 
 ---
 
-## 16. Von 0.4.2 auf 0.4.3 umstellen
+## 16. Echter Sync der Test-Share (ab 0.5.2)
+
+Mit 0.5.2 kommt **„Jetzt synchronisieren“**. Der Wächter auf Klein hält die freigegebenen Container kurz an, legt einen Snapshot der Test-Share `twinraidtest` an, zählt die Änderungen und sendet sie mit `zfs send` an `guard.sh` auf Groß. Groß übernimmt sie in den schreibgeschützten Spiegel `mainpool/twinraid-mirror/twinraidtest`; jeder Lauf ist dort ein eigener Snapshot. Der erste Lauf sendet alles, jeder weitere nur die Änderungen seit dem letzten. Bis alle Tests dieses Abschnitts bestanden sind, bleibt `twinraidtest` die einzige Share (Konzept 10.2).
+
+Neu auf den Servern sind `source-guard.sh` Version 3 (Klein), `guard.sh` mit 2 GiB Sicherheitsabstand beim Start der VM (Groß, weiter Version 3) und `testdata.sh` mit `verify-latest` und `verify-container` (Klein **und** Groß). TwinRaid 0.5.2 arbeitet auch mit den Skripten aus 0.5.1; die Reihenfolge in 16.2 hält nur den Rückweg kurz.
+
+| Abschnitt | Was | Wo |
+|---|---|---|
+| 16.1 | Vorbereitung | Klein, Groß |
+| 16.2 | Test G11 und W10: Update in dieser Reihenfolge, Rückweg auf 0.5.1 | Klein, Groß |
+| 16.3 | Test 3: der erste Sync | Dashboard, Groß, Klein |
+| 16.4 | Test 3b: Neustart von Groß | Groß |
+| 16.5 | Test 4: nur die Änderungen senden | Klein, Dashboard, Groß |
+| 16.6 | Test A1 und A2: Aufbewahrung auf Klein | Klein, Groß |
+| 16.7 | Test 5a: Löschgrenze | Klein, Dashboard |
+| 16.8 | Test 5c: Die drei Ebenen passen nicht | Klein, Dashboard |
+| 16.9 | Test 5e: Spiegel auf Groß verändert | Groß, Dashboard |
+| 16.10 | Test 6a bis 6d: Container | Klein, Dashboard |
+| 16.11 | Test 7, 5d und 8a: Menge, gesperrtes Herunterfahren, Abbrechen | Klein, Dashboard, Groß |
+| 16.12 | Test 8b: Neustart von TwinRaid während des Sendens | Dashboard |
+| 16.13 | Test 8c (optional): Neustart von Klein während des Sendens | Klein, Groß |
+| 16.14 | Aufräumen | Klein, Dashboard |
+| 16.15 | Test 9: zurück auf 0.5.1 und wieder auf 0.5.2 | Klein, Dashboard |
+| 16.16 | Test M1 (optional) mit 2 GiB | Groß, Dashboard |
+| 16.17 | Test 5b (optional): Test-Share neu angelegt | Klein, Groß, Dashboard |
+| 16.18 | Test A3: Aufbewahrung auf Groß nach einem Monat | Groß |
+| 16.19 | Abschluss | |
+
+> **Zeitbedarf:** Der Wächter legt höchstens alle 30 Minuten einen Snapshot an, und jeder Probelauf und jeder Sync braucht einen. `reset-run-interval` hebt nur die Pause nach einem Lauf mit angehaltenen Containern auf, nicht diesen Abstand. Früher meldet die Kachel „Zu kurz nach dem letzten Snapshot …“. Die Tests brauchen etwa 15 Läufe, also mindestens acht Stunden; verteile sie auf zwei bis drei Tage. A2 läuft über zwei Tage, A3 über einen Monat.
+
+In den Protokollen im PR nur „Klein“ und „Groß“ schreiben, nur die Testnamen `twinraidtest` und `twinraid-testcontainer`, keine IP-Adressen, Fingerabdrücke, Namen eigener VMs, Container oder Shares und keine Größen. Durchsatz und Genauigkeit der Restzeit bitte nur in Prozent angeben (16.12).
+
+### 16.1 Vorbereitung
+
+**Sicherung der Konfiguration,** im **Unraid-Terminal von Klein**. Du brauchst sie nur, wenn 0.5.1 auf dem Rückweg mit der geänderten Datei nicht startet (16.2).
+
+> **Diesen Kasten allein einfügen.** Er legt die Sicherung nur an, wenn es sie noch nicht gibt. So überschreibt ein zweiter Aufruf, etwa nach den Änderungen in 16.2, die Sicherung nicht mit der schon geänderten Datei.
+
+```bash
+cd /mnt/user/appdata/twinraid/config
+[ -e twinraid.yaml.vor-0.5.2 ] || cp -p twinraid.yaml twinraid.yaml.vor-0.5.2
+ls -l twinraid.yaml*
+```
+
+`ls -l` zeigt `twinraid.yaml.vor-0.5.2` mit derselben Größe und Uhrzeit wie `twinraid.yaml` (`cp -p` übernimmt sie); `twinraid.yaml.vor-0.5.1` aus 15.1 darf daneben liegen bleiben. Stammt die Sicherung von einem früheren Versuch und ist älter als deine letzte gewollte Änderung, sie mit `rm twinraid.yaml.vor-0.5.2` löschen und den Kasten noch einmal einfügen.
+
+**Kein Lauf und kein Job offen**, im **Unraid-Terminal von Klein**:
+
+```bash
+bash /boot/config/twinraid/source-guard.sh status | grep -o -E '"run":(null|\{)|"job":(null|\{"id":[0-9]+,"state":"[a-z_]+")'
+```
+
+Erwartet: `"run":null` und entweder `"job":null` oder ein Job mit `"state":"closed"`, `"done"` oder `"failed"`. Zeigt die Ausgabe `"run":{` oder einen anderen Zustand des Jobs, läuft noch ein Probelauf; warten und den Befehl wiederholen. Ein Neustart des Wächters in 16.2 bräche ihn sonst ab.
+
+**Groß ist an, und der Spiegel gibt es noch nicht.** Im **Unraid-Terminal von Groß**:
+
+```bash
+SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync
+```
+
+Erwartet: `mirror twinraidtest state=absent props=- count=0 …` und in der Zeile `summary` `root=ok conf=ok deleg=ok receive=idle clones=0`. Steht dort `state=foreign`, liegt noch das Dataset aus Test 2c (15.8); es wie dort beschrieben entfernen. Groß bleibt für die Tests an; ist es aus, weckt TwinRaid es beim Sync nur, wenn `actions.wake` freigeschaltet ist, und lässt es danach an.
+
+### 16.2 Test G11 und W10: Update in dieser Reihenfolge
+
+Wie in 15.2 gilt: **Skripte nie direkt nach `/boot/config/twinraid/` laden,** sondern nach `/tmp`, dann die SHA-256 vergleichen, dann kopieren und mit `mv` ersetzen.
+
+1. **TwinRaid aktualisieren:** Reiter **Docker** → bei *TwinRaid* **update ready** → **Update**. Danach zeigen alle Kacheln ihren gewohnten Zustand ohne Fehler; die Kachel **Unraid Klein** „Wächter: aktiv · 1 Container freigegeben“. Der Button **Jetzt synchronisieren** ist grau mit „in twinraid.yaml unter actions nicht freigeschaltet“.
+2. **`source-guard.sh` Version 3 auf Klein** (Unraid-Terminal von **Klein**):
+
+   ```bash
+   wget -O /tmp/source-guard.sh \
+     https://raw.githubusercontent.com/mantua1/twinraid/v0.5.2/host-scripts/source-guard.sh
+   sha256sum /tmp/source-guard.sh
+   ```
+
+   Erwartet genau `2cbccdfba70f8372799512f1b75e568abd71140c03f4d582af90b99294db0bd7  /tmp/source-guard.sh`. Weicht der Wert ab, hier abbrechen und nichts kopieren. Stimmt er:
+
+   ```bash
+   cp /tmp/source-guard.sh /boot/config/twinraid/source-guard.sh.neu
+   mv /boot/config/twinraid/source-guard.sh.neu /boot/config/twinraid/source-guard.sh
+   head -2 /boot/config/twinraid/source-guard.sh
+   ```
+
+   Die zweite Zeile lautet `# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 3 (Konzept 3.6).` Dann den Wächter neu starten. `restart` bricht eine laufende Übertragung ab; deshalb vorher die Prüfung aus 16.1.
+
+   ```bash
+   bash /boot/config/twinraid/source-guard.sh restart
+   bash /boot/config/twinraid/source-guard.sh status | grep -o -E '"protocol":[0-9]+|"version":[0-9]+'
+   ```
+
+   Erwartet: `Der Wächter wurde gestartet.`, dann `"protocol":2` und `"version":3`.
+3. **`guard.sh` auf Groß** (Unraid-Terminal von **Groß**). Es bleibt Version 3; neu ist nur der Abstand von 2 GiB beim Start der VM.
+
+   ```bash
+   wget -O /tmp/guard.sh \
+     https://raw.githubusercontent.com/mantua1/twinraid/v0.5.2/host-scripts/guard.sh
+   sha256sum /tmp/guard.sh
+   ```
+
+   Erwartet genau `30713f387695c48611bcd3762bfca59e1928c5436db0ea8cf7eb1b68143b2e0c  /tmp/guard.sh`. Weicht der Wert ab, hier abbrechen und nichts kopieren. Stimmt er:
+
+   ```bash
+   cp /tmp/guard.sh /boot/config/twinraid/guard.sh.neu
+   mv /boot/config/twinraid/guard.sh.neu /boot/config/twinraid/guard.sh
+   head -2 /boot/config/twinraid/guard.sh
+   grep -n '^readonly MEMORY_MARGIN=' /boot/config/twinraid/guard.sh
+   ```
+
+   Die zweite Zeile lautet `# TwinRaid: SSH-Wächter auf Unraid Groß, Version 3 (Konzept 3.5, 3.7 und 5.6).`, und `grep` zeigt `52:readonly MEMORY_MARGIN=2147483648`. Die laufende Statusverbindung (`vm-watch`) behält bis zum nächsten Start die alte Datei; `vm-start` und jeder Empfang lesen bei jedem Aufruf die neue. `twinraid-admin trust-host-key` ist nicht nötig.
+4. **`testdata.sh` auf Klein und auf Groß.** Denselben Kasten erst im Unraid-Terminal von **Klein**, dann im Unraid-Terminal von **Groß** ausführen:
+
+   ```bash
+   wget -O /tmp/testdata.sh \
+     https://raw.githubusercontent.com/mantua1/twinraid/v0.5.2/host-scripts/testdata.sh
+   sha256sum /tmp/testdata.sh
+   ```
+
+   Erwartet genau `c151d3421085cf2857640377d98ed0b7520c340adc950b6bac6ba725449d39de  /tmp/testdata.sh`. Weicht der Wert ab, hier abbrechen und nichts kopieren. Stimmt er:
+
+   ```bash
+   cp /tmp/testdata.sh /boot/config/twinraid/testdata.sh.neu
+   mv /boot/config/twinraid/testdata.sh.neu /boot/config/twinraid/testdata.sh
+   ```
+
+   Zur Kontrolle auf **Klein** `bash /boot/config/twinraid/testdata.sh verify` und auf **Groß** `bash /boot/config/twinraid/testdata.sh verify-latest`. Klein meldet `Keine Abweichung (Lauf 0).` (oder einen höheren Lauf, falls du `change` schon ausgeführt hast), Groß `mainpool/twinraid-mirror/twinraidtest hat keinen Snapshot.`, weil es den Spiegel noch nicht gibt.
+5. **Sync freischalten:** `nano /mnt/user/appdata/twinraid/config/twinraid.yaml` auf Klein. Unter `actions` die Zeile `sync: true` ergänzen (`sync_dry_run: true` kann bleiben). Unter `sync` für die Tests 3 bis 5 `stop_containers: false` setzen; 16.10 stellt es auf `true` zurück. Speichern mit `Strg+O`, `Enter`, beenden mit `Strg+X`. Dann Reiter **Docker** → *TwinRaid* → **Restart**.
+
+   ```yaml
+   actions:
+     # … deine bisherigen Schalter bleiben …
+     sync_dry_run: true
+     sync: true
+
+   sync:
+     shares:
+       - twinraidtest
+     stop_containers: false
+     # … never_stop, copy_templates und schedule bleiben, wie sie sind …
+   ```
+
+6. **Test W10: Die Pause ist sofort aufgehoben.** Im **Unraid-Terminal von Klein** zuerst einen Lauf mit dem Testcontainer, damit es eine Pause gibt:
+
+   ```bash
+   bash /boot/config/twinraid/source-guard.sh reset-run-interval
+   bash /boot/config/twinraid/source-guard.sh selftest twinraid-testcontainer
+   grep -o '"run_allowed_at":[^,]*' /run/twinraid-source-guard/state/status.json
+   ```
+
+   Erwartet: `OK: angehalten und wieder gestartet.` und `"run_allowed_at":` mit einer Zahl. Dann beide Befehle in **einer** Zeile, damit `grep` direkt nach dem Befehl liest:
+
+   ```bash
+   bash /boot/config/twinraid/source-guard.sh reset-run-interval; grep -o '"run_allowed_at":[^,]*' /run/twinraid-source-guard/state/status.json
+   ```
+
+| Prüfen | Erwartet |
+|---|---|
+| Kacheln nach Punkt 1 | ohne Fehler; **Jetzt synchronisieren** grau, „nicht freigeschaltet“ |
+| **Einstellungen → Wächter auf Unraid Klein** nach Punkt 2 | Version 3 |
+| VM-Kachel nach Punkt 3 | unverändert, ohne Fehler |
+| nach Punkt 5 | **Jetzt synchronisieren** und **Nur Probelauf** sind aktiv; die Kachel **Sync** zeigt „Zeitplan aus (ab Phase 6).“ |
+| W10 | `Die Pause zwischen zwei Läufen ist aufgehoben.` und sofort `"run_allowed_at":null`; mit Version 2 stand dort kurz noch die Zahl |
+| Container-Log von TwinRaid | keine Meldung `Permission denied` |
+
+> **Warum diese Reihenfolge?** Anders als bei 0.5.1 zwingt kein Protokoll eine Reihenfolge: TwinRaid 0.5.2 versteht `source-guard.sh` 2 und 3 und `guard.sh` 3 in beiden Fassungen. Erst TwinRaid, dann die Skripte, und erst ganz am Ende `actions.sync`: So lässt sich jeder Schritt einzeln zurücknehmen, und der Sync ist erst freigeschaltet, wenn alle Teile da sind.
+
+**Scheitert G11, zurück auf 0.5.1.** Derselbe Weg gilt für Test 9 (16.15).
+
+1. **Kein Lauf und keine Übertragung offen:** Prüfung aus 16.1. Ein Neustart von TwinRaid lässt eine Übertragung zwar weiterlaufen, TwinRaid 0.5.1 kann sie aber nicht anzeigen.
+2. **Klein:** Reiter **Docker** → Symbol *TwinRaid* → **Edit** → **Repository** `ghcr.io/mantua1/twinraid:0.5.1` → **Apply**. `twinraid.yaml` bleibt; 0.5.1 kennt alle Schlüssel, auch `actions.sync`, und zeigt bei **Jetzt synchronisieren** „kommt mit v0.5.2“.
+3. **Nur wenn 0.5.1 mit der Datei nicht startet** (das Container-Log nennt den Schlüssel), die Sicherung aus 16.1 zurückholen.
+
+   > **Diesen Kasten allein einfügen.** Er ersetzt `twinraid.yaml` durch den Stand vor 16.2; alle späteren Änderungen an der Datei sind danach weg.
+
+   ```bash
+   cp -p /mnt/user/appdata/twinraid/config/twinraid.yaml.vor-0.5.2 /mnt/user/appdata/twinraid/config/twinraid.yaml
+   ```
+
+   Dann Reiter **Docker** → *TwinRaid* → **Restart**.
+4. **Die Skripte bleiben**, denn sie passen auch zu 0.5.1. Nur wenn ein Skript selbst der Grund für den Rückweg ist, die Fassung aus 0.5.1 holen: `guard.sh` wie in 15.2, Punkt 2, `source-guard.sh` wie in 15.2, Punkt 4 (mit `restart`), `testdata.sh` wie in 15.5 ohne `create`. Dort stehen die SHA-256 der Fassung 0.5.1.
+5. Ausgabe und Log im PR melden (ohne private Angaben). Zurück auf 0.5.2 geht es mit **Repository** `ghcr.io/mantua1/twinraid:latest` → **Apply**.
+
+### 16.3 Test 3: Der erste Sync
+
+Voraussetzungen: 16.2 ist durch, Groß ist an, `stop_containers: false`, der Testcontainer läuft (er schreibt in `twinraidtest/testcontainer`). In der Kachel **Sync** auf **Jetzt synchronisieren** klicken.
+
+| Prüfen | Erwartet |
+|---|---|
+| Kachel **Sync** während des Laufs | „Sync läuft: Snapshot auf … wird angelegt …“, dann „Änderungen werden gezählt und … geprüft …“, dann „Sendet nach … …“ mit Fortschrittsbalken, „… % · … von … · Share twinraidtest“ und darunter Rate, Restzeit und „fertig gegen hh:mm“ (in den ersten 15 Sekunden „Restzeit wird berechnet …“) |
+| Kachel **Unraid Groß** während des Laufs | **Herunterfahren** grau, „gesperrt, solange ein Sync läuft“ |
+| Kachel **Sync** danach | „Letzter Sync (hh:mm): erfolgreich“, „Ergebnis des Syncs vom …“ mit `twinraidtest` „vollständig (erster Lauf)“, Gesendet etwa die Größe, „angekommen“; darunter „Letzter Lauf“ mit „Sync · Dauer … · … gesendet“ |
+
+Danach im **Unraid-Terminal von Groß**:
+
+```bash
+bash /boot/config/twinraid/testdata.sh verify-latest
+bash /boot/config/twinraid/testdata.sh verify-container
+zfs list -t snapshot -o name,creation -d 1 mainpool/twinraid-mirror/twinraidtest
+zfs get -o property,value,source readonly,exec,setuid,devices,canmount,mountpoint,primarycache,compression,atime,xattr,acltype,twinraid:mirror mainpool/twinraid-mirror/twinraidtest
+findmnt -n -o TARGET,SOURCE,FSTYPE /mnt/mainpool/twinraid-mirror/twinraidtest
+zfs get -H -d 1 -t snapshot -o name,value,source twinraid:received mainpool/twinraid-mirror/twinraidtest
+SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync
+grep twinraid-guard /var/log/syslog | tail -n 5
+```
+
+Im **Unraid-Terminal von Klein**:
+
+```bash
+zfs list -t snapshot -o name,userrefs -d 1 mainpool/twinraidtest
+zfs list -t bookmark -o name -d 1 mainpool/twinraidtest
+grep twinraid-source-guard /var/log/syslog | tail -n 8
+```
+
+In der **Container-Konsole**:
+
+```bash
+twinraid-admin show-sync-log --lines 1
+twinraid-admin show-action-log --lines 3
+```
+
+| Prüfen | Erwartet |
+|---|---|
+| `verify-latest` | `Snapshot: twinraid-…`, dann `Keine Abweichung (Lauf 0).` mit **derselben SHA-256 der Prüfliste** wie in 15.5. Damit sind auch xattrs, ACLs, Hardlinks, Symlinks, Besitzer, Rechte und Zeitstempel angekommen |
+| `verify-container` | `Testcontainer lief beim Snapshot (zaehler …).`: Mit `stop_containers: false` wird er nicht angehalten. Selten steht dort, das Log sei leer gewesen; der Container leert es alle 10 Minuten |
+| Snapshots auf Groß | genau einer, mit demselben Namen wie der neueste Snapshot auf Klein (`twinraid-<Datum>T<Zeit>Z`) |
+| `zfs get` | jede Zeile mit Quelle `local`: `readonly on`, `exec off`, `setuid off`, `devices off`, `canmount on`, `mountpoint /mnt/mainpool/twinraid-mirror/twinraidtest`, `primarycache metadata`, `compression lz4`, `atime off`, `xattr sa`, `acltype posix`, `twinraid:mirror 1` |
+| `findmnt` | `/mnt/mainpool/twinraid-mirror/twinraidtest mainpool/twinraid-mirror/twinraidtest zfs` |
+| `twinraid:received` | eine Zahl (Sekunden seit 1970) mit Quelle `local` |
+| `check` | `mirror twinraidtest state=mirror props=ok count=1 …`; `summary` mit `deleg=ok receive=idle clones=0` |
+| Syslog von Groß | `receive into mirror twinraidtest requested`, `… started` und `… finished` |
+| Snapshots auf Klein | der gesendete mit `userrefs` `1` (Hold `twinraid-base`), alle anderen mit `0` |
+| Lesezeichen auf Klein | genau eines, `mainpool/twinraidtest#` mit dem Namen des gesendeten Snapshots |
+| Syslog von Klein | `snapshot twinraid-… created for 1 datasets (job …)` und `sending twinraidtest (full)`; gibt es noch Snapshots aus den Probeläufen, die älter als 7 Tage sind, zusätzlich `retention: … own snapshots destroyed, 0 failed` |
+| `show-sync-log` | eine Zeile `sync: success`, darunter `twinraidtest  full` mit Größe und gesendeter Menge und `ok` |
+| `show-action-log` | `sync_start  dashboard: success` |
+
+### 16.4 Test 3b: Neustart von Groß
+
+Wie Test 2e (15.10), jetzt mit einem echten Spiegel. **Vor dem Neustart** im **Unraid-Terminal von Groß** festhalten, welche Datasets und Share-Konfigurationen es gibt. Die Ausgabe enthält deine eigenen Namen; kopiere sie nur in eine Textdatei auf deinem PC, nicht in den PR.
+
+```bash
+zfs list -H -o name
+ls /boot/config/shares/
+```
+
+Dann Groß neu starten (alle VMs aus; das Array startet automatisch) und danach:
+
+```bash
+SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync
+zfs get -o property,value,source readonly,exec,setuid,devices,canmount,mountpoint,primarycache,compression,atime,xattr,acltype,twinraid:mirror mainpool/twinraid-mirror/twinraidtest
+findmnt -n -o TARGET,SOURCE,FSTYPE /mnt/mainpool/twinraid-mirror/twinraidtest
+zfs allow mainpool/twinraid-mirror
+zfs list -H -o name
+ls /boot/config/shares/
+```
+
+| Prüfen | Erwartet |
+|---|---|
+| `check` | `mirror twinraidtest state=mirror props=ok …`, `summary` mit `root=ok conf=ok deleg=ok` |
+| `zfs get` | wie in 16.3, alle Werte mit Quelle `local` |
+| `findmnt` | Unraid hat den Spiegel beim Start am richtigen Ort eingehängt, wie in 16.3 |
+| `zfs allow` | genau die drei Zeilen aus 15.3 |
+| `zfs list`, `ls` | dieselben Einträge wie vor dem Neustart: Unraid hat keine Datasets und keine Share-Konfigurationen angelegt |
+| Dashboard | Groß und die VM-Kachel melden sich ohne Eingriff zurück |
+
+Danach, mindestens 30 Minuten nach dem Snapshot aus 16.3, noch einmal **Jetzt synchronisieren**. Erwartet: „erfolgreich“, Modus „inkrementell“, eine kleine Größe. Gezählt werden nur wenige geänderte Einträge: die Dateien des Testcontainers in `twinraidtest/testcontainer`, denn sonst hat sich nichts geändert.
+
+### 16.5 Test 4: Nur die Änderungen senden
+
+1. **Testdaten ändern** im **Unraid-Terminal von Klein**:
+
+   > **Diesen Kasten allein und nur einmal einfügen.** Jeder Aufruf ändert die Testdaten erneut; ein zweiter verdoppelt die Zählungen, und die Erwartungen unten stimmen nicht mehr.
+
+   ```bash
+   bash /boot/config/twinraid/testdata.sh change
+   ```
+
+   Erwartet: `Testdaten geändert: /mnt/mainpool/twinraidtest/testdata (Lauf N)` und `Dateien: 50 gelöscht, 20 geändert, 30 neu, 10 umbenannt`. Die Zahl `N` notieren; beim ersten `change` ist sie `1`.
+2. **Nur Probelauf** (mindestens 30 Minuten nach dem letzten Snapshot). Erwartet: „Probelauf abgeschlossen; Senden wäre möglich.“, `twinraidtest` „inkrementell“, Spiegel „vorhanden · 2 Snapshots“ und die Zählungen aus der Tabelle unten.
+3. **ACL im eingehängten Spiegel vorher lesen** (nur wenn `create` in 15.5 `acl yes` meldete), im **Unraid-Terminal von Groß**:
+
+   ```bash
+   getfacl -p /mnt/mainpool/twinraid-mirror/twinraidtest/testdata/acl/datei.txt
+   ```
+
+   Die Ausgabe notieren. So liest der Kernel die Datei vor dem Empfang, wie im Befund aus der CI (Konzept 3.7).
+4. **Jetzt synchronisieren**, wieder mindestens 30 Minuten nach dem Probelauf.
+5. **Prüfen** im **Unraid-Terminal von Groß**. Die ersten zwei Zeilen merken sich den neuesten und den vorigen Snapshot:
+
+   ```bash
+   NEU=$(zfs list -H -t snapshot -o name -s createtxg -d 1 mainpool/twinraid-mirror/twinraidtest | tail -n 1 | cut -d@ -f2)
+   VOR=$(zfs list -H -t snapshot -o name -s createtxg -d 1 mainpool/twinraid-mirror/twinraidtest | tail -n 2 | head -n 1 | cut -d@ -f2)
+   echo "neuester: $NEU, voriger: $VOR"
+   bash /boot/config/twinraid/testdata.sh verify-latest
+   bash /boot/config/twinraid/testdata.sh verify "/mnt/mainpool/twinraid-mirror/twinraidtest/.zfs/snapshot/$VOR/testdata"
+   getfacl -p /mnt/mainpool/twinraid-mirror/twinraidtest/testdata/acl/datei.txt
+   getfacl -p "/mnt/mainpool/twinraid-mirror/twinraidtest/.zfs/snapshot/$NEU/testdata/acl/datei.txt"
+   ```
+
+| Prüfen | Erwartet |
+|---|---|
+| Zählungen im Probelauf und im Sync | **gelöscht 52**: die 50 Dateien, dazu die neu geschriebene Prüfliste und der neu gesetzte Symlink `links/relativ`; `zfs diff` zählt ersetzte Einträge als gelöscht und neu (so in der CI gemessen). **neu 33**: 30 Dateien, der Ordner `neu`, Prüfliste und Symlink (32, wenn `neu` schon von einem früheren `change` stammt). **umbenannt 10**. **geändert mindestens 23**: die 20 Dateien, die große Datei `gross/zufall-1.bin`, `rechte/datei-0664` und `zeiten/2000-nanosekunden.txt`, dazu `xattr/datei.txt` und `acl/datei.txt`, wenn `create` `xattr yes` bzw. `acl yes` meldete, die betroffenen Ordner und die Dateien des Testcontainers |
+| Größe | klein: das geänderte MiB der großen Datei und die kleinen Dateien, nicht die 200 MiB des ersten Laufs |
+| Kachel **Sync** | „erfolgreich“, `twinraidtest` „inkrementell“ |
+| `verify-latest` | `Keine Abweichung (Lauf N)` mit dem `N` aus Punkt 1 |
+| `verify` im vorigen Snapshot | `Keine Abweichung (Lauf N-1)`; der vorige Stand bleibt unverändert erhalten |
+| `getfacl` im neuen Snapshot | enthält `user:1000:r--`, die Änderung aus `change` |
+| `getfacl` im eingehängten Spiegel | entweder dasselbe wie im Snapshot oder noch der Stand aus Punkt 3. **Bitte im PR festhalten, welcher Fall eintrat**; er kommt ins Konzept (3.7). Die Daten sind in beiden Fällen richtig angekommen, wie der Snapshot zeigt |
+
+### 16.6 Test A1 und A2: Aufbewahrung auf Klein
+
+**A1, gleich nach Test 4,** im **Unraid-Terminal von Klein**:
+
+```bash
+zfs list -t snapshot -o name,userrefs,creation -d 1 mainpool/twinraidtest
+zfs list -t bookmark -o name,creation -d 1 mainpool/twinraidtest
+```
+
+und im **Unraid-Terminal von Groß**:
+
+```bash
+zfs get -H -d 1 -t snapshot -o name,value,source twinraid:received mainpool/twinraid-mirror/twinraidtest
+```
+
+| Prüfen | Erwartet |
+|---|---|
+| Snapshots auf Klein | genau einer mit `userrefs` `1`: der zuletzt gesendete, derselbe Name wie der neueste auf Groß. Keiner ist älter als 7 Tage |
+| Lesezeichen auf Klein | je erfolgreichem Sync eines (bisher drei), keines gelöscht |
+| Groß | so viele Snapshots wie erfolgreiche Syncs, jeder mit `twinraid:received` und Quelle `local`; keiner gelöscht |
+
+**A2 (optional), über zwei Tage.** In `/boot/config/twinraid/source-guard.conf` `snapshot_keep_days 1` eintragen (statt `7`), dann im **Unraid-Terminal von Klein** (nur ohne offenen Job, Prüfung aus 16.1):
+
+```bash
+bash /boot/config/twinraid/source-guard.sh check-config
+bash /boot/config/twinraid/source-guard.sh restart
+```
+
+Am nächsten Tag, wenn die Snapshots vom Vortag älter als 24 Stunden sind, ein Sync. Danach die Befehle aus A1 und `grep 'retention:' /var/log/syslog | tail -n 3` auf Klein. Zum Schluss den Wert wieder auf `7` setzen, `check-config` und `restart`.
+
+| Prüfen | Erwartet |
+|---|---|
+| Syslog von Klein | `retention: … own snapshots destroyed, 0 failed` |
+| Snapshots auf Klein | die Basis mit `userrefs` `1` und die Snapshots der letzten 24 Stunden; ältere sind weg |
+| Lesezeichen auf Klein | alle noch da |
+| Groß | nur der neue Snapshot dazu, sonst unverändert |
+
+### 16.7 Test 5a: Löschgrenze
+
+1. In `/boot/config/twinraid/source-guard.conf` `max_deletions 5` eintragen (statt `1000`), dann im **Unraid-Terminal von Klein** `bash /boot/config/twinraid/source-guard.sh check-config` und `… restart` (ohne offenen Job).
+2. **Testdaten ändern:**
+
+   > **Diesen Kasten allein und nur einmal einfügen.** Jeder Aufruf ändert die Testdaten erneut.
+
+   ```bash
+   bash /boot/config/twinraid/testdata.sh change
+   ```
+
+   Die Zahl `N` aus `(Lauf N)` notieren.
+3. **Jetzt synchronisieren.** Die Kachel zeigt „Wartet auf die Freigabe der Löschungen …“ und den Abschnitt „Löschungen freigeben?“. Auf **Ablehnen** klicken.
+4. Nach 30 Minuten erneut **Jetzt synchronisieren**, diesmal **Freigeben und senden** und im Dialog „Löschungen freigeben und senden?“ wieder **Freigeben und senden**.
+5. Im **Unraid-Terminal von Groß** wie in Test 4 prüfen (die Zeilen mit `NEU`, `VOR`, `verify-latest` und `verify` im vorigen Snapshot).
+6. `max_deletions 1000` wieder eintragen, `check-config`, `restart`.
+
+| Prüfen | Erwartet |
+|---|---|
+| Abschnitt „Löschungen freigeben?“ | „52 Löschungen, mehr als max_deletions (5) in source-guard.conf.“, der Hinweis, dass freigegebene Löschungen in den älteren Snapshots auf Groß erhalten bleiben, und „Ohne Antwort schließt der Wächter den Job um hh:mm …“, 30 Minuten nach dem Ende der Prüfung |
+| nach **Ablehnen** | „Letzter Sync (…): Die Löschungen wurden abgelehnt; nichts wurde gesendet.“; auf Groß kein neuer Snapshot (`zfs list -t snapshot -d 1 mainpool/twinraid-mirror/twinraidtest`) |
+| nach **Freigeben und senden** | „erfolgreich“; `verify-latest` meldet `Lauf N`, `verify` im vorigen Snapshot `Lauf N-1`: Die gelöschten Dateien liegen dort noch vor |
+| `show-action-log` | `sync_start … deletions_declined` und danach `sync_start … success` |
+
+### 16.8 Test 5c: Die drei Ebenen passen nicht
+
+In `twinraid.yaml` unter `sync` → `shares` vorübergehend eine zweite Zeile `- gibtesnicht` ergänzen und TwinRaid neu starten (Reiter **Docker** → *TwinRaid* → **Restart**).
+
+| Prüfen | Erwartet |
+|---|---|
+| **Jetzt synchronisieren** und **Nur Probelauf** | grau, „sync.shares in twinraid.yaml passt nicht zu den Zeilen dataset in source-guard.conf auf …“ |
+| `twinraid-admin sync-check` | die Zeile `gibtesnicht` mit `yes` nur in der Spalte für `twinraid.yaml` |
+
+Danach die Zeile wieder löschen und TwinRaid neu starten; beide Buttons sind wieder aktiv.
+
+### 16.9 Test 5e: Spiegel auf Groß verändert
+
+Drei Fälle, jeweils mit 30 Minuten Abstand zum vorigen Snapshot. Alle Befehle im **Unraid-Terminal von Groß**.
+
+**(i) Eine Datei im Spiegel.** Der Kasten öffnet den Spiegel kurz zum Schreiben, legt eine Datei an und schließt ihn wieder:
+
+> **Diesen Kasten allein einfügen.** Er verändert den Spiegel absichtlich; das macht Punkt „Zurücksetzen“ unten rückgängig.
+
+```bash
+zfs set readonly=off mainpool/twinraid-mirror/twinraidtest
+echo fremd > /mnt/mainpool/twinraid-mirror/twinraidtest/fremd.txt
+zfs set readonly=on mainpool/twinraid-mirror/twinraidtest
+```
+
+Dann **Jetzt synchronisieren**. Erwartet: „Der Spiegel auf dem Zielserver wurde seit dem letzten Snapshot verändert; der Empfang wurde abgelehnt.“, beim Share „Ziel verändert“. Auf Groß bleiben Zahl der Snapshots und `props=ok` gleich, `fremd.txt` liegt noch da, und das Syslog von Groß enthält eine Zeile mit `has been modified`.
+
+**Zurücksetzen** auf den neuesten Snapshot:
+
+> **Diesen Kasten allein einfügen.** `zfs rollback` verwirft alles, was im Spiegel nach dem neuesten Snapshot geschrieben wurde, hier nur `fremd.txt`. Es nimmt immer den neuesten Snapshot und braucht deshalb kein `-r`.
+
+```bash
+S=$(zfs list -H -t snapshot -o name -s createtxg -d 1 mainpool/twinraid-mirror/twinraidtest | tail -n 1)
+echo "$S"
+zfs rollback "$S"
+ls /mnt/mainpool/twinraid-mirror/twinraidtest/fremd.txt
+```
+
+Erwartet: `ls` meldet `No such file or directory`. Meldet `zfs rollback` einen Fehler, die Meldung im PR festhalten und nicht weitermachen. Nach 30 Minuten ist ein Sync wieder „erfolgreich“.
+
+**(ii) Schreibschutz bleibt aus.**
+
+> **Diesen Kasten allein einfügen.** Er lässt den Spiegel beschreibbar; der Kasten danach schaltet den Schutz wieder ein.
+
+```bash
+zfs set readonly=off mainpool/twinraid-mirror/twinraidtest
+```
+
+Dann **Jetzt synchronisieren**. Erwartet: Schon die Prüfung meldet den Spiegel als abweichend: „Der Zielserver lehnt den Empfang ab.“ mit dem Grund „Ein Spiegel auf … ist gesperrt (props-mismatch) …“. Gesendet wird nichts; `canmount` bleibt `on`, der Spiegel bleibt eingehängt. Der Text spricht von „gesperrt“; hier weicht nur `readonly` ab, und das behebt der nächste Kasten:
+
+```bash
+zfs set readonly=on mainpool/twinraid-mirror/twinraidtest
+SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync | grep '^mirror'
+```
+
+Erwartet: `props=ok`.
+
+**(iii) Schreibschutz geht während der Freigabe aus.** `max_deletions 5` wie in 16.7, Punkt 1, dann auf Klein:
+
+> **Diesen Kasten allein und nur einmal einfügen.** Jeder Aufruf ändert die Testdaten erneut.
+
+```bash
+bash /boot/config/twinraid/testdata.sh change
+```
+
+**Jetzt synchronisieren.** Während der Abschnitt „Löschungen freigeben?“ offen ist, auf Groß:
+
+> **Diesen Kasten allein einfügen.** Er lässt den Spiegel beschreibbar; `guard.sh` sperrt ihn daraufhin beim Empfang.
+
+```bash
+zfs set readonly=off mainpool/twinraid-mirror/twinraidtest
+```
+
+Dann **Freigeben und senden**. Danach auf Groß:
+
+```bash
+zfs get -o property,value canmount,mounted mainpool/twinraid-mirror/twinraidtest
+grep twinraid-guard /var/log/syslog | tail -n 5
+bash /boot/config/twinraid/testdata.sh verify-latest
+```
+
+| Prüfen | Erwartet |
+|---|---|
+| Kachel **Sync** | „Der Zielserver lehnt den Empfang ab.“ mit „feste Eigenschaften kamen nicht an, der Spiegel ist gesperrt (props-not-applied) …“, beim Share „abgelehnt“ |
+| `zfs get` | `canmount noauto`, `mounted no` |
+| Syslog von Groß | `mirror twinraidtest locked` und `refused: props-not-applied` |
+| `verify-latest` | `… ist nicht eingehängt (gesperrt?); siehe docs/WIEDERHERSTELLUNG.md.` |
+
+Dann den Spiegel nach [WIEDERHERSTELLUNG.md](WIEDERHERSTELLUNG.md), Abschnitt „Spiegel gesperrt“, Weg „Nach `props-not-applied`“ zurücksetzen (Vorbereitung mit `N=twinraidtest`, dann die Schritte 1 bis 4). Erwartet: `check` meldet `deleg=ok` und `props=ok`. Nach 30 Minuten **Jetzt synchronisieren**, freigeben: „erfolgreich“, und `verify-latest` meldet `Keine Abweichung` mit dem Lauf aus dem letzten `change`; `guard.sh` hat den Spiegel selbst wieder eingehängt. Zum Schluss `max_deletions 1000`, `check-config`, `restart`.
+
+### 16.10 Test 6a bis 6d: Container
+
+**6a: Container werden für den Snapshot angehalten.** In `twinraid.yaml` `stop_containers: true` setzen und TwinRaid neu starten. Der Testcontainer muss laufen: `cat /mnt/user/twinraidtest/testcontainer/counter` zweimal, die Zahl wächst. Dann **Jetzt synchronisieren**. Danach auf Groß `bash /boot/config/twinraid/testdata.sh verify-container`, auf Klein `docker inspect -f '{{.State.Running}} {{.State.StartedAt}}' twinraid-testcontainer` und in der Container-Konsole `twinraid-admin show-action-log --lines 6`.
+
+| Prüfen | Erwartet |
+|---|---|
+| Kachel **Sync** während des Laufs | „Sync läuft: Container auf … werden angehalten …“ und „1 Container auf … angehalten.“, dann „Container auf … werden wieder gestartet …“ |
+| `verify-container` | `Testcontainer war beim Snapshot sauber angehalten.` |
+| `docker inspect` | `true` und ein Startzeitpunkt von eben: Der Container war nur kurz aus |
+| `show-action-log` | eine Zeile `source_guard_stop … (part of sync_start)` mit `1 containers`, eine Zeile `source_guard_finish … (part of sync_start)` und `sync_start  dashboard: success` |
+| Historie | „Sync · … · 1 Container angehalten“ |
+| Syslog von Klein | `begin: opened`, `stop twinraid-testcontainer: stopped`, `ping: extended`, `snapshot: created`, `finish: finished` |
+| Kachel **Sync** danach | „Nächster Sync frühestens um hh:mm.“; **Jetzt synchronisieren** grau mit „der Wächter auf … hält die Pause zwischen zwei Läufen ein; frühestens um hh:mm“ |
+
+**6b: Wächter aus.** Im **Unraid-Terminal von Klein**, damit nur dieser Grund sperrt:
+
+```bash
+bash /boot/config/twinraid/source-guard.sh reset-run-interval
+bash /boot/config/twinraid/source-guard.sh stop
+```
+
+Nach etwa 35 Sekunden zeigt die Kachel **Unraid Klein** rot „Wächter: nicht aktiv seit hh:mm.“, und **Jetzt synchronisieren** ist grau mit „der Wächter auf … ist nicht aktiv oder ZFS ist dort nicht verfügbar“. Dann `bash /boot/config/twinraid/source-guard.sh start`; nach wenigen Sekunden ist alles wieder aktiv.
+
+**6c: TwinRaid startet neu, während Container angehalten sind.** Das Anhalten des Testcontainers dauert nur einen Augenblick; deshalb löst das Terminal den Neustart aus, sobald der Lauf offen ist. Mindestens 30 Minuten nach dem Snapshot aus 6a im **Unraid-Terminal von Klein**:
+
+> **Diesen Kasten allein einfügen.** Die zweite Zeile wartet höchstens 5 Minuten, bis ein Lauf offen ist, und startet dann TwinRaid neu. Öffnet sich in dieser Zeit kein Lauf, endet sie von selbst mit `kein Lauf geöffnet, nichts neu gestartet`; dann den Kasten noch einmal einfügen und den Sync früher starten. Mit `Strg+C` lässt sie sich vorher beenden.
+
+```bash
+bash /boot/config/twinraid/source-guard.sh reset-run-interval
+timeout 300 sh -c 'until grep -q "\"run\":{" /run/twinraid-source-guard/state/status.json; do sleep 0.2; done' && docker restart TwinRaid || echo "kein Lauf geöffnet, nichts neu gestartet"
+```
+
+Gleich danach im Dashboard **Jetzt synchronisieren** klicken. Das Dashboard verliert kurz die Verbindung. Nach etwa einer Minute:
+
+```bash
+docker inspect -f '{{.State.Running}}' twinraid-testcontainer
+bash /boot/config/twinraid/source-guard.sh status | grep -o -E '"run":(null|\{)|"job":(null|\{"id":[0-9]+,"state":"[a-z_]+")'
+grep twinraid-source-guard /var/log/syslog | tail -n 8
+```
+
+| Prüfen | Erwartet |
+|---|---|
+| Testcontainer | `true`: TwinRaid hat beim Beenden `finish` geschrieben, oder spätestens nach 120 Sekunden hat der Totmannschalter ihn gestartet |
+| Wächter | `"run":null`; ein Job, falls der Snapshot schon lag, ist `closed` |
+| Syslog von Klein | `finish: finished` (oder `deadman: no heartbeat from TwinRaid`), bei einem Job `close: closed` |
+| `show-action-log` und Historie | der Sync mit `interrupted` |
+
+**6d: Andere Container bleiben unberührt.** Wähle einen deiner Container, der läuft und **nicht** in `allow` steht. Vor und nach einem Sync (30 Minuten nach dem Snapshot aus 6c, vorher `reset-run-interval`) im **Unraid-Terminal von Klein** den Startzeitpunkt ansehen; `<Name>` durch den Namen aus dem Reiter **Docker** ersetzen und den Namen nicht in den PR schreiben:
+
+```bash
+docker inspect -f '{{.State.StartedAt}}' <Name>
+```
+
+Erwartet: Vorher und nachher derselbe Zeitpunkt; im Syslog von Klein nur `stop twinraid-testcontainer`.
+
+### 16.11 Test 7, 5d und 8a: Menge, gesperrtes Herunterfahren, Abbrechen
+
+Für diesen und die nächsten Tests muss das Senden einige Minuten dauern, etwa 5, sonst ist es vorbei, bevor du abbrechen kannst. Die nötige Menge ist ungefähr **Rate des Netzes × Minuten**. Beispiel: Ein Netz mit 2,5 GbE überträgt höchstens etwa 298 MiB/s, also rund 17 GiB je Minute; für 5 Minuten wären das rund 87 GiB. Langsamer als das Netz ist es oft, dann dauert das Senden nur länger. Dateien, die sich kaum packen lassen (etwa ISO-Dateien), passen gut: Der Wächter sendet die Blöcke so, wie sie im Pool liegen, gut packbare Dateien wären also schneller durch. Reicht der Platz nicht, geht es mit weniger: Dann früher abbrechen und die Restzeit nur grob vergleichen.
+
+> **Nur unkritische Daten kopieren,** zum Beispiel ISO-Dateien: keine persönlichen Dokumente, keine Schlüssel, Passwörter oder Konfigurationen. Die Kopie bleibt nach dem Löschen (16.14) noch **7 Tage auf Klein** und **30 Tage auf Groß** in den Snapshots, und erst danach wird der Platz frei.
+
+**Platz prüfen.** Auf Klein `zfs list -o name,used,avail mainpool`, auf Groß `zfs list -o name,used,avail mainpool/twinraid-mirror`. Die Kopie muss auf beiden Seiten zweimal hineinpassen (für 16.13), und es muss die Reserve von 15 % frei bleiben; sonst lehnen der Wächter (`snapshot_low_space`) bzw. `guard.sh` (`space_low`) ab.
+
+**Dateien auswählen** im **Unraid-Terminal von Klein**: einzelne unkritische Dateien, nicht eine ganze Share. Statt `/mnt/user/isos/<Datei1> /mnt/user/isos/<Datei2>` die Pfade deiner Dateien eintragen, so viele wie nötig; Pfade mit Leerzeichen in Anführungszeichen setzen, und keine zwei Dateien mit demselben Namen wählen (sonst überschreibt die zweite die erste in der Kopie). Zuerst nur die Summe ansehen:
+
+```bash
+du -ch /mnt/user/isos/<Datei1> /mnt/user/isos/<Datei2>
+```
+
+Die letzte Zeile (`total`) ist die Summe. Liegt sie deutlich unter der Zielgröße, Dateien hinzunehmen, liegt sie über dem freien Platz, weglassen, und `du -ch` wiederholen. Die Liste der Pfade für das Kopieren und für 16.13 aufheben.
+
+**Kopieren** mit genau derselben Liste:
+
+> **Diesen Kasten allein und nur einmal einfügen.** Das Kopieren kann lange dauern. Gibt es `kopie` schon, bricht der Kasten ab, statt ein zweites Mal zu kopieren.
+
+```bash
+mkdir /mnt/mainpool/twinraidtest/kopie && cp -p /mnt/user/isos/<Datei1> /mnt/user/isos/<Datei2> /mnt/mainpool/twinraidtest/kopie/
+```
+
+Danach zeigt `du -sh /mnt/mainpool/twinraidtest/kopie` ungefähr die Summe von eben.
+
+Dann **Jetzt synchronisieren** (30 Minuten nach dem letzten Snapshot) und während des Sendens:
+
+1. Bei etwa **10 %** Restzeit und „fertig gegen“ notieren.
+2. **Test 5d:** In der Kachel **Unraid Groß** ist **Herunterfahren** grau, „gesperrt, solange ein Sync läuft“. Im **Unraid-Terminal von Groß** schickt die folgende Zeile `poweroff` nur, wenn `check` unmittelbar vorher `receive=busy` meldet:
+
+   > **Diesen Kasten allein einfügen, und nur, während gesendet wird (bei etwa 10 %).** Ohne laufenden Empfang schaltet `poweroff` Groß wirklich aus, wenn keine VM läuft, und der Sync bricht ab. Die Zeile prüft das unmittelbar vorher; endet der Empfang aber genau zwischen `check` und `poweroff`, wirkt es trotzdem. Deshalb nicht kurz vor dem Ende des Sendens verwenden.
+
+   ```bash
+   SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync | grep -q 'receive=busy' && { SSH_ORIGINAL_COMMAND=poweroff bash /boot/config/twinraid/guard.sh power; echo "Exit: $?"; } || echo "kein Empfang, nichts geschickt"
+   ```
+
+   Erwartet: `twinraid-guard: refused sync-running`, `Exit: 3`, Groß bleibt an. Steht dort `kein Empfang, nichts geschickt`, lief gerade kein Empfang; dann wurde nichts geschickt, und der Test wird beim nächsten Sync wiederholt.
+3. **Test 8a:** Bei etwa **50 %** auf **Abbrechen** klicken und im Dialog „Sync abbrechen?“ **Sync abbrechen** wählen.
+
+Danach im **Unraid-Terminal von Groß**:
+
+```bash
+zfs list -H -t snapshot -d 1 mainpool/twinraid-mirror/twinraidtest | wc -l
+SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync
+zfs list -H -t all -r -o name mainpool/twinraid-mirror | grep '%' || echo "kein Rest eines Empfangs"
+```
+
+und im **Unraid-Terminal von Klein**:
+
+```bash
+zfs list -t snapshot -o name,userrefs -d 1 mainpool/twinraidtest
+pgrep -f 'zfs send' || echo "kein zfs send"
+```
+
+| Prüfen | Erwartet |
+|---|---|
+| Kachel **Sync** nach dem Klick | kurz „Wird abgebrochen …“, dann „Letzter Sync (…): abgebrochen“ |
+| Snapshots auf Groß | dieselbe Zahl wie vor dem Sync |
+| `check` | `props=ok`, `receive=idle` |
+| Rest eines Empfangs | `kein Rest eines Empfangs` |
+| Klein | `userrefs` `1` weiter am vorigen gesendeten Snapshot (derselbe Name wie der neueste auf Groß), der neue Snapshot mit `0`; `kein zfs send` |
+| Syslog von Klein | `close: closed` |
+| `show-sync-log` | `sync: cancelled` |
+
+### 16.12 Test 8b: Neustart von TwinRaid während des Sendens
+
+Mindestens 30 Minuten nach dem abgebrochenen Lauf noch einmal **Jetzt synchronisieren**. Er sendet dieselbe Kopie, weil der Abbruch nichts nach Groß übernommen hat.
+
+1. Bei etwa **10 %** Restzeit und „fertig gegen“ notieren (`E1`).
+2. Bei etwa **30 %**: Reiter **Docker** → *TwinRaid* → **Restart**. Nach dem Neuladen der Seite wieder anmelden.
+3. Bei etwa **50 %** Restzeit und „fertig gegen“ notieren (`E2`).
+4. Das tatsächliche Ende notieren.
+
+| Prüfen | Erwartet |
+|---|---|
+| Kachel **Sync** nach dem Neustart | „Übertragung läuft weiter (vor dem Neustart begonnen).“ mit Fortschritt; für 15 Sekunden „Restzeit wird berechnet …“; **Abbrechen** ist möglich |
+| Kachel **Sync** am Ende | „erfolgreich“; die Historie zeigt den übernommenen Lauf mit „nach einem Neustart übernommen“ und davor den unterbrochenen mit „abgebrochen, weil TwinRaid neu gestartet wurde“ |
+| `show-action-log` | `sync_start … interrupted` und `sync_start … success, adopted` |
+| Groß | ein Snapshot mehr; `verify-latest` meldet `Keine Abweichung` mit dem Lauf aus dem letzten `change` |
+
+**Im PR festhalten, nur in Prozent:** den Durchsatz als Anteil an der Rate des Netzes (die Rate aus der Kachel geteilt durch die Rate des Netzes, bei 2,5 GbE zum Beispiel etwa 298 MiB/s) und die Abweichung von `E1` und `E2` vom tatsächlichen Ende, jeweils bezogen auf die Dauer des Sendens.
+
+### 16.13 Test 8c (optional): Neustart von Klein während des Sendens
+
+Klein ist der Server, der immer läuft; nur machen, wenn ein Neustart gerade passt. Es braucht neue Daten, sonst gibt es nichts zu senden.
+
+> **Diesen Kasten allein und nur einmal einfügen.** Er kopiert dieselben unkritischen Dateien wie in 16.11 ein zweites Mal; auch diese Kopie bleibt 7 bzw. 30 Tage in den Snapshots. Gibt es `kopie2` schon, bricht er ab.
+
+Statt `/mnt/user/isos/<Datei1> /mnt/user/isos/<Datei2>` dieselbe Liste wie in 16.11 eintragen:
+
+```bash
+mkdir /mnt/mainpool/twinraidtest/kopie2 && cp -p /mnt/user/isos/<Datei1> /mnt/user/isos/<Datei2> /mnt/mainpool/twinraidtest/kopie2/
+```
+
+Dann **Jetzt synchronisieren** und bei etwa **30 %** Klein neu starten (Unraid-Oberfläche von Klein → *Reboot*). Wenn Klein wieder läuft, im **Unraid-Terminal von Groß** die drei Befehle aus 16.11, und auf Klein `bash /boot/config/twinraid/source-guard.sh status | grep -o '"last_seq":[0-9]*'`.
+
+| Prüfen | Erwartet |
+|---|---|
+| Groß | Zahl der Snapshots unverändert, `props=ok`, `receive=idle`, `kein Rest eines Empfangs` |
+| Klein | `"last_seq":0` oder wenig mehr: neue Instanz des Wächters; Kachel **Unraid Klein** „aktiv“; der Testcontainer läuft (Autostart) |
+| nächster Sync | sendet das ganze Delta mit `kopie2` und endet „erfolgreich“. Der Abstand von 30 Minuten zählt nach einem Neustart neu, der Sync geht also sofort |
+
+### 16.14 Aufräumen
+
+Die Kopien aus der Test-Share löschen, im **Unraid-Terminal von Klein**:
+
+> **Diesen Kasten allein einfügen und den Pfad genau so übernehmen.** Er löscht die beiden Kopien in der Test-Share; `kopie2` gibt es nur nach 16.13, sonst meldet `rm` das nur.
+
+```bash
+rm -r /mnt/mainpool/twinraidtest/kopie /mnt/mainpool/twinraidtest/kopie2
+```
+
+Dann **Jetzt synchronisieren**. Meist fragt der Sync nach einer Freigabe, weil die Share auf weniger als die Hälfte schrumpft („Auf weniger als die Hälfte geschrumpft (neu / Basis): twinraidtest …“), bei vielen Dateien auch wegen der Löschungen. **Freigeben und senden**. Die Daten bleiben noch 7 Tage auf Klein und 30 Tage auf Groß in den Snapshots; erst dann wird der Platz frei. Löschen kann sie vorher nur root von Hand, und das ist nicht nötig.
+
+### 16.15 Test 9: Zurück auf 0.5.1 und wieder auf 0.5.2
+
+1. **Zurück auf 0.5.1** wie unter „Scheitert G11, zurück auf 0.5.1“ in 16.2, Punkte 1 und 2. Die Skripte bleiben.
+2. **Nur Probelauf** (30 Minuten nach dem letzten Snapshot).
+3. **Wieder auf 0.5.2:** **Repository** `ghcr.io/mantua1/twinraid:latest` → **Apply**.
+
+| Prüfen | Erwartet |
+|---|---|
+| 0.5.1 mit den Skripten aus 0.5.2 | Kacheln ohne Fehler; Kachel **Unraid Klein** „Wächter: aktiv“; **Jetzt synchronisieren** grau, „kommt mit v0.5.2“ |
+| Probelauf unter 0.5.1 | „Probelauf abgeschlossen; Senden wäre möglich.“, `twinraidtest` „inkrementell“, Spiegel „vorhanden · … Snapshots“ |
+| wieder 0.5.2 | wie G11 nach Punkt 5: **Jetzt synchronisieren** aktiv; die Historie von vorher ist wieder da |
+
+### 16.16 Test M1 (optional) mit 2 GiB
+
+Wie 15.12, jetzt mit `guard.sh` aus 16.2 und der Formel `nötig = Max memory in GiB + 2 GiB`. Erwartet: Das Ergebnis passt zur Rechnung.
+
+### 16.17 Test 5b (optional): Test-Share neu angelegt
+
+Ein Dataset, das auf Klein gelöscht und neu angelegt wurde, darf den Spiegel nicht ersetzen. Der Test löscht dafür auf Klein die Test-Share samt ihrer Snapshots und legt sie neu an; **alle älteren Stände der Test-Share auf Klein sind danach weg.** Nur mit `twinraidtest`, nie mit einer anderen Share.
+
+1. Reiter **Docker** → *twinraid-testcontainer* → **Stop**; er schreibt sonst in die Share.
+2. **Ansehen**, im **Unraid-Terminal von Klein**:
+
+   ```bash
+   zfs list -H -t snapshot -o name,userrefs -d 1 mainpool/twinraidtest
+   zfs list -H -t bookmark -o name -d 1 mainpool/twinraidtest
+   ```
+
+   Es dürfen nur Namen mit `@twinraid-` bzw. `#twinraid-` erscheinen. Steht dort ein anderer Snapshot, hier aufhören und im PR nachfragen.
+3. **Hold freigeben:**
+
+   > **Diesen Kasten allein einfügen.** Er gibt den Hold `twinraid-base` an jedem Snapshot der Test-Share frei; danach schützt nichts mehr die Basis.
+
+   ```bash
+   for s in $(zfs list -H -t snapshot -o name -d 1 mainpool/twinraidtest); do zfs release twinraid-base "$s" 2>/dev/null && echo "freigegeben: $s"; done
+   ```
+
+4. **Snapshots und Lesezeichen einzeln löschen,** ohne `-r`:
+
+   > **Diesen Kasten allein einfügen.** Er löscht die eigenen Snapshots und Lesezeichen der Test-Share auf Klein, einen nach dem anderen.
+
+   ```bash
+   for s in $(zfs list -H -t snapshot -o name -d 1 mainpool/twinraidtest | grep '@twinraid-'); do zfs destroy "$s"; done
+   for b in $(zfs list -H -t bookmark -o name -d 1 mainpool/twinraidtest | grep '#twinraid-'); do zfs destroy "$b"; done
+   zfs list -H -t all -r -o name mainpool/twinraidtest
+   ```
+
+   Erwartet in der letzten Zeile nur `mainpool/twinraidtest`.
+5. **Dataset löschen und neu anlegen:**
+
+   > **Diesen Kasten allein und nur einmal einfügen.** Ein zweiter Aufruf löschte das gerade neu angelegte Dataset wieder. `zfs destroy` ohne `-r` scheitert, solange noch Snapshots oder Kinder da sind.
+
+   ```bash
+   zfs destroy mainpool/twinraidtest
+   zfs create mainpool/twinraidtest
+   mkdir -p /mnt/mainpool/twinraidtest/testcontainer
+   zfs list -o name,mountpoint,compression mainpool/twinraidtest
+   ```
+
+   Erwartet: `mainpool/twinraidtest  /mnt/mainpool/twinraidtest` mit `on` oder `lz4`.
+6. Testcontainer starten (Reiter **Docker** → **Start**) und `bash /boot/config/twinraid/testdata.sh create`; die neue SHA-256 der Prüfliste notieren.
+7. **Nur Probelauf** (30 Minuten nach dem letzten Snapshot), danach nach weiteren 30 Minuten **Jetzt synchronisieren**.
+
+| Prüfen | Erwartet |
+|---|---|
+| Kachel **Unraid Klein**, spätestens 90 Sekunden nach Punkt 5 | der gelbe Hinweis „Die neue Basis von twinraidtest auf … ist nicht gehalten; der nächste erfolgreiche Sync behebt das.“ Er bleibt stehen |
+| Probelauf | „Für einen inkrementellen Strom fehlt die Basis auf dem Quellserver.“; `twinraidtest` mit „Basis fehlt“, Spiegel „vorhanden“ |
+| Sync | endet **ebenfalls** mit „Für einen inkrementellen Strom fehlt die Basis …“, vor dem Senden. Einen erfolgreichen Sync gibt es hier erst nach dem Rückweg unten; der Hinweis bleibt deshalb stehen |
+| Groß | unverändert: gleiche Zahl der Snapshots, `props=ok`, Syslog ohne neuen Empfang |
+
+**Rückweg, nur nach einer Entscheidung im PR.** Er löscht auf Groß alle Stände der Test-Share; danach sendet der nächste Sync vollständig. Im **Unraid-Terminal von Groß**:
+
+> **Diesen Kasten allein einfügen.** Er löscht die Snapshots des Spiegels `twinraidtest` einzeln und dann den Spiegel selbst, jeweils ohne `-r`. Andere Spiegel berührt er nicht.
+
+```bash
+for s in $(zfs list -H -t snapshot -o name -d 1 mainpool/twinraid-mirror/twinraidtest | grep '@twinraid-'); do zfs destroy "$s"; done
+zfs destroy mainpool/twinraid-mirror/twinraidtest
+SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync | grep '^mirror'
+```
+
+Erwartet: `mirror twinraidtest state=absent …`. Nach 30 Minuten **Jetzt synchronisieren**: „erfolgreich“, Modus „vollständig (erster Lauf)“, `verify-latest` auf Groß meldet `Keine Abweichung (Lauf 0)` mit der SHA-256 aus Punkt 6. Der gelbe Hinweis verschwindet danach.
+
+### 16.18 Test A3: Aufbewahrung auf Groß nach einem Monat
+
+`guard.sh` löscht Snapshots eines Spiegels frühestens nach 30 Tagen und nur nach einem erfolgreichen Empfang. Frühestens 31 Tage nach dem ersten Sync (bzw. nach dem Rückweg in 16.17), mit mindestens vier Syncs in dieser Zeit, noch einen Sync, dann im **Unraid-Terminal von Groß**:
+
+```bash
+zfs list -t snapshot -o name,creation -s creation -d 1 mainpool/twinraid-mirror/twinraidtest
+grep 'retention of mirror' /var/log/syslog | tail -n 3
+```
+
+Erwartet: kein Snapshot älter als 30 Tage, die drei neuesten immer da; im Syslog `retention of mirror twinraidtest: … snapshots destroyed, 0 failed`. Auf Klein ist kein eigener Snapshot älter als 7 Tage, außer der Basis mit `userrefs` `1`.
+
+### 16.19 Abschluss
+
+Die Ergebnisse von G11, W10, 3, 3b, 4, A1, 5a, 5c, 5e, 6a bis 6d, 7, 5d, 8a und 8b, falls gemacht auch A2, 8c, M1 und 5b, bitte im Pull Request festhalten, A3 später. `actions.sync` kann eingeschaltet bleiben, ebenso `stop_containers: true`. Bevor eine echte Share dazukommt, gilt die Merkliste aus dem Konzept (10.2). Die Simulation ohne echte Server zeigt dasselbe: **Jetzt synchronisieren** in der Kachel **Sync** und `twinraid-admin mock-fault` mit den Namen aus Abschnitt 20.
+
+---
+
+## 17. Von 0.4.2 auf 0.4.3 umstellen
 
 Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API-Key mehr. Die Umstellung dauert etwa zehn Minuten. Groß sollte dabei an sein. Der Abschnitt beschreibt den Stand von 0.4.3; wer gleich auf 0.5.1 geht, bekommt in Schritt 3 `guard.sh` Version 3 und liest in Schritt 6 entsprechend `twinraid-guard 3`.
 
@@ -1948,7 +2689,7 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 
 ---
 
-## 17. Fehlerbilder und Abhilfe
+## 18. Fehlerbilder und Abhilfe
 
 | Anzeige im Dashboard | Bedeutung | Abhilfe |
 |---|---|---|
@@ -1961,20 +2702,32 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 | Klein: **Wächter: source-guard.conf ist ungültig** | Fehler in `source-guard.conf`; die Kachel nennt Grund und Zeile | `bash /boot/config/twinraid/source-guard.sh check-config` zeigt dasselbe; korrigieren, dann `… restart` |
 | Klein: **Wächter: Docker ist … nicht erreichbar** | Kurz nach dem Start von Klein normal: Der Wächter startet vor Docker | Verschwindet von selbst; bleibt es, den Docker-Dienst von Klein prüfen |
 | Klein: **Wächter hat seinen Zustand verloren** | Sein Ordner `private/` fehlt, meist nach einem Eingriff von Hand | Die genannten Container in Unraid prüfen und von Hand starten, dann `… restart` |
-| Klein: **Status des Wächters ungültig: … anderes Protokoll** | `source-guard.sh` passt nicht zur installierten Version von TwinRaid; TwinRaid ab 0.5.1 verlangt Version 2 | Skript wie in 15.2, Punkt 4, neu holen (Version im Pfad = installierte Version), dann `… restart` |
+| Klein: **Status des Wächters ungültig: … anderes Protokoll** | `source-guard.sh` passt nicht zur installierten Version von TwinRaid; TwinRaid ab 0.5.1 verlangt Version 2 oder 3 (Protokoll 2) | Skript wie in 16.2 neu holen (Version 3; Version 2 aus 15.2, Punkt 4, passt ebenfalls), dann `… restart` |
 | Klein: **… ist nach dem Lauf nicht wieder gestartet** | Ein angehaltener Container startete nicht wieder | In Unraid den Container ansehen und von Hand starten |
 | Hinweis: **Die Erlaubnisliste des Wächters … enthält den Container von TwinRaid** | In `source-guard.conf` steht TwinRaid unter `allow` | Die Zeile löschen, `… restart`; TwinRaid wird nie angehalten |
 | Klein: **Das Dataset mainpool/… fehlt** oder **Kompression ist … aus** | Ein Dataset aus `source-guard.conf` gibt es nicht, oder bei ihm ist `compression=off` | Share anlegen bzw. den Namen prüfen; in Unraid in den Einstellungen des Pools „Compression on“ wählen. `on` und `lz4` sind beide in Ordnung |
 | Sync: **Nächster Sync frühestens um …** | Pause von 30 Minuten nach jedem Lauf des Wächters | Normal. Für Tests hebt root auf Klein sie mit `bash /boot/config/twinraid/source-guard.sh reset-run-interval` auf |
 | Container startet nicht, Log: `exclude is no longer supported since v0.5.1` oder `protect_on_target is no longer supported since v0.5.1` | In `twinraid.yaml` stehen noch Einträge unter diesen Schlüsseln | Den Schlüssel samt Einträgen löschen (15.1), Container neu starten |
 | Log: `sync.appdata_share is ignored since v0.5.1` oder dasselbe für `max_deletions`, `exclude`, `protect_on_target` | Entfallene Schlüssel ohne Wirkung | Nur ein Hinweis; die Zeilen bei Gelegenheit löschen |
-| Button **Nur Probelauf** grau: „sync.shares in twinraid.yaml passt nicht zu den Zeilen dataset …“ | Die drei Ebenen enthalten verschiedene Namen | `sync.shares` und die Zeilen `dataset` in `source-guard.conf` angleichen, dann TwinRaid bzw. `source-guard.sh restart` (15.6) |
-| Button **Nur Probelauf** grau: „der Wächter … ist nicht aktiv oder ZFS ist dort nicht verfügbar“ | Wächter nicht aktiv, oder `mainpool` ist noch nicht da | Kachel Klein ansehen; kurz nach einem Start von Klein normal |
+| Button **Nur Probelauf** oder **Jetzt synchronisieren** grau: „sync.shares in twinraid.yaml passt nicht zu den Zeilen dataset …“ | Die drei Ebenen enthalten verschiedene Namen | `sync.shares` und die Zeilen `dataset` in `source-guard.conf` angleichen, dann TwinRaid bzw. `source-guard.sh restart` (15.6) |
+| Button **Nur Probelauf** oder **Jetzt synchronisieren** grau: „der Wächter … ist nicht aktiv oder ZFS ist dort nicht verfügbar“ | Wächter nicht aktiv, oder `mainpool` ist noch nicht da | Kachel Klein ansehen; kurz nach einem Start von Klein normal |
 | Probelauf: „Der Zielserver hat die Prüfung (check) nicht beantwortet.“ | Der Grund steht dabei: Key „sync“ fehlt, Hostkey nicht bestätigt, Key abgelehnt, SSH nicht erreichbar oder `guard.sh` zu alt | Test K1 (15.3) nachholen. Key abgelehnt: Zeile aus `init-key` auf Groß prüfen (`from=` muss die IP des Hosts Klein sein, nicht die von TwinRaid) |
 | Probelauf: „Die Rechte für den Empfang (zfs allow) … stimmen nicht“ | `zfs allow mainpool/twinraid-mirror` weicht von 15.3 ab | Delegation wie in 15.3 herstellen; mit `check` prüfen (`deleg=ok`). `id-in-use` heißt: UID oder GID 64000 steht in `/etc/passwd` oder `/etc/group` |
 | Probelauf: „… liegt an der Stelle eines Spiegels ein fremdes Dataset …“ | Unter `mainpool/twinraid-mirror/<Name>` liegt ein Dataset, das `guard.sh` nicht empfangen hat | Ansehen und, wenn es nichts Wichtiges enthält, ohne `-r` löschen: `zfs destroy mainpool/twinraid-mirror/<Name>` (15.8) |
 | Probelauf: „Ein Spiegel … ist gesperrt (props-mismatch) …“ | `guard.sh` hat einen Spiegel gesperrt | [WIEDERHERSTELLUNG.md](WIEDERHERSTELLUNG.md), Abschnitt „Spiegel gesperrt“ |
 | Probelauf: „Zu kurz nach dem letzten Snapshot …“ | Der Wächter legt höchstens alle 30 Minuten einen Snapshot an | 30 Minuten warten |
+| Button **Jetzt synchronisieren** grau: „der Wächter … hält die Pause zwischen zwei Läufen ein; frühestens um …“ | Nach jedem Lauf mit angehaltenen Containern gilt eine Pause von 30 Minuten | Bis zur genannten Uhrzeit warten; für Tests hebt root auf Klein sie mit `… reset-run-interval` auf |
+| Button **Jetzt synchronisieren** grau: „auf … besteht laut letzter Prüfung ein Klon eines Spiegels“ | Von einem Spiegel auf Groß gibt es einen Klon, etwa aus einem Notbetrieb; solange er besteht, nimmt `guard.sh` nichts an | Auf Groß ansehen: `zfs list -H -o name,origin -r mainpool \| grep twinraid-mirror`. Einen Klon nur löschen, wenn er nicht mehr gebraucht wird; danach ein Probelauf, damit TwinRaid den neuen Stand kennt |
+| Sync: „Die Löschungen wurden abgelehnt; nichts wurde gesendet.“ | Im Dialog wurde **Ablehnen** gewählt | Gewollt? Sonst nach 30 Minuten erneut synchronisieren und **Freigeben und senden** wählen (16.7) |
+| Sync: „Die Löschungen wurden nicht rechtzeitig freigegeben …“ | Der Dialog stand 30 Minuten ohne Antwort; der Wächter hat den Job geschlossen | Erneut synchronisieren und den Dialog beantworten |
+| Sync: „Gesendet, aber ein angehaltener Container läuft danach nicht wieder.“ | Die Daten sind auf Groß angekommen, aber ein Container auf Klein startete nach dem Snapshot nicht wieder; die Kachel **Unraid Klein** nennt ihn | Den Container in Unraid ansehen und von Hand starten |
+| Sync: „Das Senden ist gescheitert. …“ | Eine Share kam nicht an; der Grund steht darunter. Shares, die vorher angekommen sind, sind auf Groß aktuell | Grund beheben (etwa SSH auf Groß); der nächste Sync sendet die fehlenden Änderungen |
+| Sync: „Der Spiegel auf dem Zielserver wurde seit dem letzten Snapshot verändert …“ | Jemand hat im Spiegel auf Groß geschrieben (nur mit `readonly=off` möglich); ZFS nimmt dann nichts mehr an | Auf Groß ansehen, was sich geändert hat, dann auf den neuesten Snapshot zurücksetzen wie in 16.9, Fall (i) |
+| Sync: „Für einen inkrementellen Strom fehlt die Basis auf dem Quellserver.“ | Auf Klein fehlen der Snapshot und das Lesezeichen, auf denen der Spiegel aufbaut, etwa weil das Dataset neu angelegt wurde | Wie in 16.17: nach einer Entscheidung den Spiegel auf Groß von Hand löschen; der nächste Sync sendet vollständig |
+| Sync: „Der Wächter hat abgelehnt.“ mit „Grund: der Totmannschalter …“ oder „docker stop ist … fehlgeschlagen“ | Die Container-Phase ist gescheitert; TwinRaid hat vor dem Snapshot abgebrochen und die angehaltenen Container wieder starten lassen | Container in Unraid prüfen; beim Totmannschalter das Syslog von Klein ansehen (`twinraid-source-guard`) |
+| Sync: „Wird abgebrochen … (wartet auf den Container)“ | Ein Abbruch wartet, bis `docker stop` oder der Neustart eines Containers fertig ist | Normal; höchstens `stop_timeout_seconds` plus 15 Sekunden |
+| Sync: „Übertragung läuft weiter (vor dem Neustart begonnen).“ | TwinRaid wurde während des Sendens neu gestartet; der Wächter sendet weiter | Normal; am Ende steht der Lauf in der Historie mit „nach einem Neustart übernommen“ |
+| Hinweis Kachel Klein: „Die neue Basis von … ist nicht gehalten …“ | Nach dem Senden hat der Wächter den Snapshot nicht mit einem Hold festgehalten, oder auf Klein fehlt die Basis ganz | Der nächste erfolgreiche Sync behebt das. Endet er mit „fehlt die Basis“, wie in 16.17 |
 | Hinweis: **Auf … ist keine Grenze für den ZFS-Cache eingetragen** | Bei `zfs_arc_max` steht in Unraid `0` | Auf Groß *Settings → Disk Settings* → **Tunable (zfs_arc_max)** eintragen (13.6) |
 | VM: **Auf dem Server ist nicht genug Arbeitsspeicher frei** | `guard.sh` hat den Start abgelehnt (`memory-low`, 15.12) | Eine andere VM herunterfahren, oder die Grenze des ZFS-Caches senken |
 | VM: **Ein durchgereichtes Gerät der VM … wird gerade von einer anderen VM benutzt** | Eine andere VM nutzt dieselbe Grafikkarte (`device-busy`, 11.21) | Die andere VM in Unraid herunterfahren |
@@ -1987,11 +2740,11 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 | VM: **Statusverbindung wird aufgebaut …** | Groß ist gerade angegangen, SSH antwortet noch nicht | Normal nach dem Start von Groß; verschwindet nach wenigen Sekunden |
 | VM: **Statusverbindung unterbrochen – neuer Versuch folgt** | Die SSH-Verbindung für den Status ist abgebrochen | TwinRaid versucht es nach 5 s, 15 s, 60 s und dann alle 5 Minuten erneut; die Uhrzeit des nächsten Versuchs steht darunter (ab 0.4.4). Bleibt die Meldung, SSH auf Groß und das Netz prüfen |
 | VM: **Nächster Versuch um …** (ab 0.4.4) | Nach einem Fehler der Statusverbindung wartet TwinRaid, damit Groß nicht mit Anmeldungen überhäuft wird: nach Abbrüchen 5 Sekunden bis 5 Minuten, nach Fehlern bei Key, Hostkey oder `guard.sh` 30 Minuten | Die Ursache aus der Meldung darüber beheben, dann `twinraid-admin trust-host-key target`. Besteht der Test mit dem Key „status“, endet die Wartezeit sofort (Test G9, 11.22) |
-| VM: **Kein SSH-Key „status“** | Schritt 10.2 bzw. Abschnitt 16, Punkt 5 fehlt | `twinraid-admin init-ssh-keys --key status` und die Zeile auf Groß eintragen |
+| VM: **Kein SSH-Key „status“** | Schritt 10.2 bzw. Abschnitt 17, Punkt 5 fehlt | `twinraid-admin init-ssh-keys --key status` und die Zeile auf Groß eintragen |
 | VM: **SSH-Hostkey des Servers nicht bestätigt** | Hostkey von Groß noch nicht bestätigt | `twinraid-admin trust-host-key target` (10.2) |
 | VM: **Der Server lehnt den SSH-Key „status“ ab** | Zeile für „status“ fehlt oder ist abgeschnitten, oder TwinRaid hat eine andere IP als in `from=` | `twinraid-admin init-ssh-keys --key status` (gibt die Zeile erneut aus) und auf Groß eintragen oder ersetzen; danach `twinraid-admin trust-host-key target`, dann verbindet sich TwinRaid sofort statt erst zur angezeigten Uhrzeit |
 | VM: **guard.sh lehnt ab** | Auf Groß liegt noch `guard.sh` Version 1 (kennt den Key „status“ nicht), oder die Zeile ruft `guard.sh` in einem anderen Modus auf | `guard.sh` wie in 9.2 neu holen; die Zeile für „status“ muss auf `guard.sh status` enden. Danach `twinraid-admin trust-host-key target` (verbindet sofort neu) |
-| VM: **guard.sh auf dem Server ist zu alt** | `guard.sh` ist älter als die installierte TwinRaid-Version verlangt; ab 0.5.1 ist das Version 3 | `guard.sh` wie in 9.2 neu holen, danach `twinraid-admin trust-host-key target` (verbindet sofort neu) |
+| VM: **guard.sh auf dem Server ist zu alt** | `guard.sh` ist älter als die installierte TwinRaid-Version verlangt; ab 0.5.1 ist das Version 3 | `guard.sh` wie in 16.2 neu holen, danach `twinraid-admin trust-host-key target` (verbindet sofort neu) |
 | VM: **VM auf dem Server nicht eingetragen** | `power.conf` fehlt oder ist ungültig | Schritt 9.3; die Datei enthält genau eine Zeile `vm <UUID>` |
 | VM: **VM nicht gefunden** | Die UUID in `power.conf` gehört zu keiner VM (VM neu angelegt?) | UUID wie in 9.3 neu eintragen |
 | VM: **VM-Dienst nicht bereit** | Auf Groß läuft der VM-Dienst nicht oder startet gerade (`virsh` antwortet nicht) | Kurz nach dem Start von Groß normal. Sonst *Settings → VM Manager* → **Enable VMs** prüfen |
@@ -2012,7 +2765,7 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 | „Der SSH-Hostkey des Servers hat sich geändert“ | Groß zeigt einen anderen SSH-Hostkey als bestätigt; TwinRaid sendet nichts mehr | Hast du Groß neu eingerichtet oder den USB-Stick ersetzt, den Fingerabdruck wie in 11.6 Schritt 3 prüfen und neu bestätigen. Sonst nichts bestätigen und herausfinden, warum er anders ist |
 | „Der Server lehnt den SSH-Key ab“ (bei einer Aktion) | Zeile für „power“ fehlt unter *Users → root → SSH authorized keys*, ist abgeschnitten, oder TwinRaid hat eine andere IP als in `from=` | `twinraid-admin init-ssh-keys --key power` erneut ausführen (gibt die Zeile wieder aus) und die Zeile auf Groß ersetzen |
 | „SSH auf dem Server ist nicht erreichbar“ | SSH auf Groß aus oder anderer Port | *Settings → Management Access → Use SSH* einschalten; abweichenden Port als `servers.target.ssh_port` eintragen |
-| „guard.sh auf dem Server hat den Befehl abgelehnt“ | `guard.sh` auf Groß ist veraltet, oder die Zeile für „power“ ruft einen anderen Modus auf | `guard.sh` wie in 9.2 neu holen (Version im Pfad = installierte Version) |
+| „guard.sh auf dem Server hat den Befehl abgelehnt“ | `guard.sh` auf Groß ist veraltet, oder die Zeile für „power“ ruft einen anderen Modus auf | `guard.sh` wie in 16.2 neu holen |
 | „Der Befehl ist auf dem Server fehlgeschlagen“ | `guard.sh` fehlt unter `/boot/config/twinraid/guard.sh`, oder `virsh` meldet einen Fehler | Ablage von `guard.sh` prüfen (9.2); Syslog von Groß ansehen (*Tools → System Log*, `twinraid-guard`) |
 | „Die VM ist auf dem Server nicht eingetragen“ (bei einer Aktion) | `power.conf` fehlt oder ist ungültig | Schritt 9.3 |
 | „Der Server wurde nicht ausgeschaltet, weil die VM noch lief“ | `guard.sh` hat unmittelbar vor dem Ausschalten eine laufende VM gesehen | VM herunterfahren (lassen) und Groß erneut herunterfahren |
@@ -2058,24 +2811,25 @@ Danach den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart
 
 ---
 
-## 18. Updates einspielen und Herkunft prüfen
+## 19. Updates einspielen und Herkunft prüfen
 
 - Unraid prüft regelmäßig, ob es eine neue Version gibt. Im Reiter **Docker** steht dann bei TwinRaid **update ready**. Klick auf das Symbol → **Update**. Daten und Einstellungen bleiben erhalten, die MAC dank des Felds **Fixed MAC address** ebenso. Nach dem ersten Update einmal wie in Schritt 5.4 vergleichen.
 - Von 0.4.3 auf 0.4.4 genügt das Update: `guard.sh` (Version 2), `power.conf`, die Keys und `twinraid.yaml` bleiben unverändert.
 - Von 0.4.4 auf 0.5.0 genügt für den bisherigen Betrieb ebenfalls das Update; `guard.sh` bleibt Version 2. Neu ist der Wächter auf Klein mit zwei weiteren Pfaden im Template; bis er eingerichtet ist (Abschnitt 12, ab Test W1), zeigt die Kachel Klein grau „Wächter nicht eingerichtet“.
 - Von 0.5.0 auf 0.5.1 genügt das Update **nicht**: Vorher `exclude` und `protect_on_target` aus `twinraid.yaml` entfernen, sonst startet der Container nicht. TwinRaid 0.5.1 verlangt `guard.sh` Version 3 und `source-guard.sh` Version 2. Reihenfolge und Rückweg stehen in 15.1 und 15.2. Erst TwinRaid aktualisieren, dann `guard.sh` kopieren, dann `twinraid-admin trust-host-key target`, dann `source-guard.sh` kopieren.
+- Von 0.5.1 auf 0.5.2 genügt das Update für den bisherigen Betrieb: `twinraid.yaml` bleibt, und TwinRaid 0.5.2 arbeitet mit `guard.sh` 3 und `source-guard.sh` 2 aus 0.5.1. Für den echten Sync kommen `source-guard.sh` Version 3, `guard.sh` mit 2 GiB Abstand und `testdata.sh` auf beiden Servern dazu, in der Reihenfolge aus 16.2; erst danach `actions.sync` freischalten. Der Rückweg steht in 16.2.
 - Das Template verwendet `ghcr.io/mantua1/twinraid:latest`. Dieser Tag zeigt immer auf das neueste Release. Wer eine Version festhalten möchte, trägt unter *Repository* zum Beispiel `ghcr.io/mantua1/twinraid:0.3` ein.
 - Jedes Image wird ausschließlich von GitHub Actions aus diesem Repository gebaut und hat einen signierten Herkunftsnachweis. Prüfen kannst du ihn auf einem PC mit der GitHub-CLI (`gh`):
 
 ```bash
-gh attestation verify oci://ghcr.io/mantua1/twinraid:0.5.1 --owner mantua1
+gh attestation verify oci://ghcr.io/mantua1/twinraid:0.5.2 --owner mantua1
 ```
 
 Steht am Ende `Verification succeeded!`, stammt das Image nachweislich aus diesem Repository.
 
 ---
 
-## 19. Befehle der Admin-CLI
+## 20. Befehle der Admin-CLI
 
 Alle Befehle laufen in der **Container-Konsole**.
 
@@ -2089,9 +2843,10 @@ Alle Befehle laufen in der **Container-Konsole**.
 | `twinraid-admin init-ssh-keys` | SSH-Keys erzeugen (falls noch keine da sind) und die Zeilen für *Users → root → SSH authorized keys* auf Groß ausgeben: „status“ immer, „power“, sobald `actions.vm` oder `actions.shutdown` freigeschaltet ist. `--key status` bzw. `--key power` nur für diesen Key; `--key … --new` ersetzt ihn |
 | `twinraid-admin trust-host-key target` | SSH-Hostkey von Unraid Groß bestätigen und die Verbindung zu `guard.sh` mit jedem vorhandenen Key testen (ändert nichts auf Groß). Besteht der Test mit dem Key „status“, beendet er eine Wartezeit der Statusverbindung sofort (ab 0.4.4) |
 | `twinraid-admin show-action-log` | Aktionslog des Workers anzeigen (`--lines 100` für mehr Einträge) |
+| `twinraid-admin show-sync-log` | Ab 0.5.2: Sync-Historie anzeigen, je Lauf eine Zeile mit Art, Ergebnis und Grund, darunter je Share Modus, Zählungen, Größe und gesendete Menge (`--lines 100` für mehr Läufe) |
 | `twinraid-admin sync-check` | Ab 0.5.1, nur im Modus `real`, ändert nichts: die drei Ebenen (`twinraid.yaml`, `source-guard.conf`, `mirror.conf`), den Wächter, das eigene Dataset von TwinRaid, die Spiegel auf Groß aus dem letzten Probelauf und die Grenze des ZFS-Caches auf Groß |
 | `twinraid-admin mock-tour on` / `off` | Nur im Simulationsmodus: alle Zustände und Ursachen nacheinander zeigen (Aktionen sind dann gesperrt) |
-| `twinraid-admin mock-fault <Name> on` / `off` | Nur im Simulationsmodus: Fehler vortäuschen, `<Name>` ist `vm-hang`, `ssh-denied`, `no-boot`, `other-vm` (eine weitere VM läuft), `vm-not-configured`, `libvirt-down`, `guard-outdated`, `connect-plugin`, `status-key-rejected` (Groß lehnt den Key „status“ ab), ab 0.5.0 `source-guard-inactive` (Wächter läuft nicht), `source-guard-lost` (Wächter hat seinen Zustand verloren) oder `source-guard-start-failed` (ein Container startet nach dem Lauf nicht wieder), ab 0.5.1 `sync-deletions`, `sync-empty-source`, `sync-target-refused`, `target-exists`, `target-clone` (wirken auf den Probelauf), `sync-send-error`, `sync-slow` (wirken erst mit dem Senden in 0.5.2), `vm-device-busy`, `vm-memory-low` (Start der VM scheitert) und `arc-unlimited` (keine Grenze für den ZFS-Cache auf Groß) |
+| `twinraid-admin mock-fault <Name> on` / `off` | Nur im Simulationsmodus: Fehler vortäuschen, `<Name>` ist `vm-hang`, `ssh-denied`, `no-boot`, `other-vm` (eine weitere VM läuft), `vm-not-configured`, `libvirt-down`, `guard-outdated`, `connect-plugin`, `status-key-rejected` (Groß lehnt den Key „status“ ab), ab 0.5.0 `source-guard-inactive` (Wächter läuft nicht), `source-guard-lost` (Wächter hat seinen Zustand verloren) oder `source-guard-start-failed` (ein Container startet nach dem Lauf nicht wieder), ab 0.5.1 `sync-deletions` (1500 Löschungen; ab 0.5.2 fragt der Sync nach der Freigabe), `sync-empty-source` (Quelle fast leer; ab 0.5.2 ebenso mit Freigabe), `sync-target-refused`, `target-exists`, `target-clone` (wirken auf Probelauf und Sync), `sync-send-error` (ab 0.5.2: die letzte Share scheitert mit „Das Senden ist gescheitert“, Grund „SSH auf … nicht erreichbar“; die übrigen kommen an und behalten ihre neue Basis), `sync-slow` (ab 0.5.2: Senden mit 1 MiB/s, knapp 6 Minuten je Share, zum Ausprobieren von Abbrechen und Restzeit), `vm-device-busy`, `vm-memory-low` (Start der VM scheitert) und `arc-unlimited` (keine Grenze für den ZFS-Cache auf Groß) |
 
 `set-api-key` und `trust-api-cert` gibt es seit 0.4.3 nicht mehr.
 
@@ -2104,10 +2859,15 @@ Alle Befehle laufen in der **Container-Konsole**.
 | `check-config` | `source-guard.conf` prüfen, ohne etwas zu ändern |
 | `selftest <Container>` | Lauf öffnen, den Container anhalten, Lauf beenden; nur für Tests (12.4) |
 | `selftest-deadman <Container>` | wie `selftest`, aber ohne Herzschlag: Der Totmannschalter muss den Container wieder starten (12.5) |
-| `reset-run-interval` | die Pause von 30 Minuten nach einem Lauf aufheben; nur root auf Klein kann das, TwinRaid nicht. Der Abstand von 30 Minuten zwischen zwei Snapshots bleibt |
+| `reset-run-interval` | die Pause von 30 Minuten nach einem Lauf aufheben; nur root auf Klein kann das, TwinRaid nicht. Der Abstand von 30 Minuten zwischen zwei Snapshots bleibt. Ab Version 3 meldet der Befehl Erfolg erst, wenn der neue Status geschrieben ist |
 | `init-key` | ab 0.5.1: Key „sync“ erzeugen, falls er fehlt, und die Zeile für *Users → root → SSH authorized keys* auf Groß ausgeben (15.3); `--new` ersetzt ihn |
 | `trust-target` | ab 0.5.1: Hostkey von Groß anzeigen, nach `yes` speichern und `guard.sh sync check` testen (15.3); `--fingerprint SHA256:…` statt der Frage |
 
-**Testdaten** (ab 0.5.1, 15.5), im Unraid-Terminal von Klein: `bash /boot/config/twinraid/testdata.sh create` legt sie in `/mnt/mainpool/twinraidtest/testdata` an, `… change` ändert sie auf bekannte Weise, `… verify [Ordner]` vergleicht einen Ordner mit der Prüfliste und ändert nichts, auch im Spiegel auf Groß.
+**Testdaten** (ab 0.5.1, 15.5), im Unraid-Terminal von Klein: `bash /boot/config/twinraid/testdata.sh create` legt sie in `/mnt/mainpool/twinraidtest/testdata` an, `… change` ändert sie auf bekannte Weise, `… verify [Ordner]` vergleicht einen Ordner mit der Prüfliste und ändert nichts. Auf Groß prüft `verify` nur in einem Snapshot (`…/.zfs/snapshot/<Name>/testdata`); den eingehängten Spiegel lehnt es ab 0.5.2 ab, weil der Kernel dort eine alte ACL zeigen kann. Ab 0.5.2, im Unraid-Terminal von Groß (16.2):
+
+| Befehl | Wirkung |
+|---|---|
+| `… verify-latest [Dataset]` | `verify` im neuesten Snapshot des Datasets, ohne Angabe `mainpool/twinraid-mirror/twinraidtest`; nennt den Snapshot. Liest nur |
+| `… verify-container [Dataset\|Ordner]` | sagt, ob der Testcontainer beim neuesten Snapshot (oder im angegebenen Snapshot-Ordner) sauber angehalten war oder lief. Liest nur |
 
 **Machbarkeitstest Z1** (ab 0.5.0, 13.3): `bash /tmp/zfs-check.sh target` auf Groß, `… source` auf Klein, `… cleanup target|source` nach einem harten Abbruch.

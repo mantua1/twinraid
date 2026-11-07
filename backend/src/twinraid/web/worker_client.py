@@ -18,6 +18,7 @@ from twinraid.shared.ipc import (
     ShutdownTarget,
     ShutdownTargetForceVm,
     SyncCancel,
+    SyncConfirmDeletions,
     SyncDryRun,
     SyncStart,
     VerifyPassword,
@@ -60,6 +61,8 @@ class WorkerApi(Protocol):
     async def request_action(self, action: ActionName) -> None: ...
 
     async def cancel_sync(self, job_id: str) -> None: ...
+
+    async def confirm_deletions(self, job_id: str) -> None: ...
 
 
 # Aktionen sind Befehle ohne Parameter aus der festen Liste (Konzept 3.2).
@@ -127,5 +130,9 @@ class WorkerClient:
         await self.send(_ACTION_COMMANDS[action])
 
     async def cancel_sync(self, job_id: str) -> None:
-        """Bricht den laufenden Probelauf mit dieser vom Worker vergebenen Kennung ab."""
+        """Bricht den laufenden Lauf mit dieser vom Worker vergebenen Kennung ab."""
         await self.send(SyncCancel(command="sync_cancel", job_id=job_id))
+
+    async def confirm_deletions(self, job_id: str) -> None:
+        """Gibt die Löschungen des Syncs mit dieser vom Worker vergebenen Kennung frei."""
+        await self.send(SyncConfirmDeletions(command="sync_confirm_deletions", job_id=job_id))

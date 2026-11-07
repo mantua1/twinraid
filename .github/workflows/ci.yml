@@ -160,21 +160,50 @@ jobs:
           CHECK_EACH_CAP: "1"
       # SSH und Aktionen gegen ein nachgebautes Unraid Groß (Konzept 5.6).
       - run: docker/ssh-test.sh twinraid:ci
-      - name: Save image for publishing
-        if: github.event_name == 'push'
+      # Auch bei Pull Requests: Der Ende-zu-Ende-Test des Syncs prüft genau dieses Image.
+      - name: Save image for the sync test and publishing
         run: docker save twinraid:ci | gzip -1 > twinraid-image.tar.gz
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: github.event_name == 'push'
         with:
           name: twinraid-image
           path: twinraid-image.tar.gz
           retention-days: 1
           if-no-files-found: error
 
+  # Sync Ende zu Ende (Konzept 5.6, ab v0.5.2): das getestete Image gehärtet im Modus real,
+  # der Wächter mit echtem Docker und zwei Pools in Dateien als Klein und Groß.
+  sync-e2e:
+    name: Sync end to end (real mode, file pools)
+    runs-on: ubuntu-24.04
+    needs: [container]
+    timeout-minutes: 30
+    env:
+      ZFS_VERSION: 2.2.2-0ubuntu9.5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install ZFS (pinned)
+        run: |
+          sudo apt-get update -qq
+          if ! sudo apt-get install -y --no-install-recommends "zfsutils-linux=${ZFS_VERSION}"; then
+            echo "zfsutils-linux ${ZFS_VERSION} is not available; candidate:" >&2
+            apt-cache policy zfsutils-linux >&2
+            exit 1
+          fi
+          sudo modprobe zfs
+          # Wie im Job zfs-check: ohne es scheitert der Empfang als UID 64000.
+          sudo chmod 0666 /dev/zfs
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: twinraid-image
+      - run: gunzip -c twinraid-image.tar.gz | docker load
+      - run: sudo SYNC_E2E_TEST_HOST=disposable docker/sync-e2e-test.sh twinraid:ci
+
   publish:
     name: Publish image (ghcr.io)
     runs-on: ubuntu-24.04
-    needs: [container, source-guard, zfs-check]
+    needs: [container, source-guard, zfs-check, sync-e2e]
     if: >-
       github.event_name == 'push'
       && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))

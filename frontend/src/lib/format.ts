@@ -39,3 +39,18 @@ export function formatBytes(language: string | undefined, bytes: number) {
   }).format(value);
   return `${number} ${UNITS[unit] ?? "B"}`;
 }
+
+/** Dauer in Sekunden als „45 s“, „3 min 20 s“ oder „1 h 5 min“; die Einheiten gelten in DE und EN. */
+export function formatDuration(seconds: number) {
+  const total = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const rest = total % 60;
+  if (hours > 0) {
+    return `${String(hours)} h ${String(minutes)} min`;
+  }
+  if (minutes > 0) {
+    return rest > 0 ? `${String(minutes)} min ${String(rest)} s` : `${String(minutes)} min`;
+  }
+  return `${String(rest)} s`;
+}

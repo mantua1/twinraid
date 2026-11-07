@@ -408,6 +408,14 @@ expect_contains "without the markers there is no notice" "$(worker get_status)" 
 expect_equal "again exactly one new login" "$(logins "${status_fp}")" "$((before + 1))"
 
 # --- 8. Abläufe aus Phase 4; Anmeldung nur für den Befehl selbst --------------------------------
+# guard.sh startet die VM nur, wenn MemAvailable für sie plus 2 GiB Abstand reicht (Konzept
+# 3.5). Das nachgebaute Groß liest /proc/meminfo des Runners; fehlt dort der Platz, scheiterten
+# die Starts unten mit vm_memory_low statt mit einer klaren Meldung.
+read -r _ available_kib _ <<<"$(fake grep '^MemAvailable:' /proc/meminfo)"
+if ((available_kib < 3 * 1024 * 1024)); then
+  echo "FAIL  the runner has only ${available_kib} kB MemAvailable; vm-start needs 512 MiB + 2 GiB" >&2
+  exit 1
+fi
 status_logins="$(logins "${status_fp}")"
 power_logins="$(logins "${power_fp}")"
 run_action vm_start success

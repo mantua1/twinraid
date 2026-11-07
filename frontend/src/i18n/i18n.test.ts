@@ -158,6 +158,23 @@ describe("sync texts", () => {
     }
   });
 
+  it("say that only the shares that did not arrive keep their previous state", () => {
+    // Nach einem gescheiterten Share sind die schon gesendeten auf Groß aktuell (Konzept 3.6, „send“).
+    expect(german.get("actions.outcomes.send_failed")).toContain(
+      "Shares, die nicht angekommen sind (gescheitert oder übersprungen), behalten",
+    );
+    expect(german.get("actions.outcomes.send_failed")).toContain(
+      "erfolgreich gesendete Shares sind dort aktuell",
+    );
+    const english = flatten(en);
+    expect(english.get("actions.outcomes.send_failed")).toContain(
+      "Shares that did not arrive (failed or skipped) keep their previous state",
+    );
+    expect(english.get("actions.outcomes.send_failed")).toContain(
+      "shares sent successfully are up to date there",
+    );
+  });
+
   it("tell the user which guard to copy after a protocol change", () => {
     expect(german.get("guard.statusProblems.protocol_mismatch")).toContain(
       "source-guard.sh Version 2",

@@ -165,3 +165,51 @@ def test_cancel_with_the_worker_down(tmp_path: Path) -> None:
     worker.available = False
     response = client.post(f"/api/sync/{JOB_ID}/cancel", headers={"X-CSRF-Token": csrf})
     assert response.status_code == 503
+
+
+# --- Löschungen freigeben (Konzept 4.3, Schritt 5, ab v0.5.2) ----------------------------
+
+
+def test_confirm_deletions(tmp_path: Path) -> None:
+    worker = FakeWorker()
+    client, csrf = _client(tmp_path, worker)
+    response = client.post(f"/api/sync/{JOB_ID}/confirm-deletions", headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 202
+    assert response.json() == {"detail": "accepted"}
+    assert worker.confirmed == [JOB_ID]
+    assert _audit(client)[0] == ("sync_confirm_deletions", "requested", CLIENT_IP)
+
+
+def test_confirm_needs_login_and_csrf(tmp_path: Path) -> None:
+    worker = FakeWorker()
+    (tmp_path / "anonymous").mkdir()
+    anonymous = make_client(make_app(tmp_path / "anonymous", worker))
+    assert anonymous.post(f"/api/sync/{JOB_ID}/confirm-deletions").status_code == 401
+    client, _ = _client(tmp_path, worker)
+    assert client.post(f"/api/sync/{JOB_ID}/confirm-deletions").status_code == 403
+    assert worker.confirmed == []
+
+
+@pytest.mark.parametrize("job_id", [JOB_ID.upper(), JOB_ID[:-1], "../" + JOB_ID[3:]])
+def test_confirm_takes_only_a_job_id(tmp_path: Path, job_id: str) -> None:
+    worker = FakeWorker()
+    client, csrf = _client(tmp_path, worker)
+    response = client.post(
+        f"/api/sync/{job_id}/confirm-deletions",
+        headers={"X-CSRF-Token": csrf},
+        json={"max_deletions": 999999},
+    )
+    assert response.status_code in {404, 422}
+    assert "sync_confirm_deletions" not in worker.calls
+
+
+def test_confirm_rejected_by_the_worker(tmp_path: Path) -> None:
+    worker = FakeWorker()
+    worker.action_error = WorkerCommandError(ErrorCode.ACTION_BLOCKED, "nothing to confirm")
+    client, csrf = _client(tmp_path, worker)
+    response = client.post(f"/api/sync/{JOB_ID}/confirm-deletions", headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 409
+    assert _audit(client)[0] == ("sync_confirm_deletions", "rejected", CLIENT_IP)
+    worker.available = False
+    response = client.post(f"/api/sync/{JOB_ID}/confirm-deletions", headers={"X-CSRF-Token": csrf})
+    assert response.status_code == 503

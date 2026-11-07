@@ -5,7 +5,7 @@ import contextlib
 import logging
 import math
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -433,19 +433,35 @@ def _register_api_routes(
         await _run(audit.record, audit_action, AuditResult.REQUESTED, ip)
         return JSONResponse({"detail": "accepted"}, status_code=202)
 
-    @api.post("/api/sync/{job_id}/cancel")
-    async def cancel_sync(request: Request, job_id: JobId) -> Response:
-        """Bricht den laufenden Probelauf ab. Nur die vom Worker vergebene Kennung (Konzept 3.2)."""
+    async def sync_command(
+        request: Request, audit_action: AuditAction, send: Callable[[], Awaitable[None]]
+    ) -> Response:
         ip = client_ip(request)
         try:
-            await worker.cancel_sync(job_id)
+            await send()
         except WorkerUnavailableError:
             return JSONResponse({"detail": "worker_unavailable"}, status_code=503)
         except WorkerCommandError:
-            await _run(audit.record, AuditAction.SYNC_CANCEL, AuditResult.REJECTED, ip)
+            await _run(audit.record, audit_action, AuditResult.REJECTED, ip)
             return JSONResponse({"detail": "rejected"}, status_code=409)
-        await _run(audit.record, AuditAction.SYNC_CANCEL, AuditResult.REQUESTED, ip)
+        await _run(audit.record, audit_action, AuditResult.REQUESTED, ip)
         return JSONResponse({"detail": "accepted"}, status_code=202)
+
+    @api.post("/api/sync/{job_id}/cancel")
+    async def cancel_sync(request: Request, job_id: JobId) -> Response:
+        """Bricht den laufenden Lauf ab. Nur die vom Worker vergebene Kennung (Konzept 3.2)."""
+        return await sync_command(
+            request, AuditAction.SYNC_CANCEL, lambda: worker.cancel_sync(job_id)
+        )
+
+    @api.post("/api/sync/{job_id}/confirm-deletions")
+    async def confirm_deletions(request: Request, job_id: JobId) -> Response:
+        """Gibt die Löschungen des laufenden Syncs frei (Konzept 4.3, Schritt 5); ohne Body."""
+        return await sync_command(
+            request,
+            AuditAction.SYNC_CONFIRM_DELETIONS,
+            lambda: worker.confirm_deletions(job_id),
+        )
 
     @api.get("/api/audit")
     async def audit_entries() -> AuditList:

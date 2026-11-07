@@ -23,6 +23,7 @@ from twinraid.worker.handler import CommandHandler
 from twinraid.worker.monitor import StatusMonitor
 from twinraid.worker.password_check import PasswordCheck
 from twinraid.worker.server import SocketPathError, WorkerServer
+from twinraid.worker.sync_history import SyncHistory
 
 logger = logging.getLogger("twinraid.worker")
 
@@ -61,9 +62,15 @@ def main() -> int:
     integrations = build_integrations(mode, config, paths, runtime.mock_flag_dir(env), wol)
     monitor = StatusMonitor(integrations.status, changes=integrations.status_changed)
     action_log = ActionLog(paths.action_log)
-    # Probelauf (ab v0.5.1): eigene Ressource „Sync“; „Kopierjob läuft“ kommt von hier.
+    # Probelauf und Sync (ab v0.5.1): eigene Ressource „Sync“; „Kopierjob läuft“ kommt von hier.
     sync = SyncCoordinator(
-        integrations.guard_channel, integrations.source_guard, monitor, config, mode, action_log
+        integrations.guard_channel,
+        integrations.source_guard,
+        monitor,
+        config,
+        mode,
+        action_log,
+        SyncHistory(paths.sync_history),
     )
     actions = ActionCoordinator(
         integrations.control,

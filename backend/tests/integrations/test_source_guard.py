@@ -26,13 +26,16 @@ from tests.support.guard_status import (
     raw,
 )
 from twinraid.integrations.source_guard import (
+    HOLD_NOTICE_SECONDS,
     MAX_STATUS_BYTES,
     GuardObservation,
     GuardPaths,
+    HoldNoticeDelay,
     InvalidStatusError,
     RealSourceGuard,
     check_mounts,
     evaluate,
+    hold_missing,
     own_container_id,
     parse_mountinfo,
     parse_status,
@@ -445,6 +448,19 @@ def test_notices_only_from_a_fresh_status() -> None:
     assert evaluate(_observation(data), NOW).notices == ()
 
 
+def test_own_container_in_allowed() -> None:
+    """Für die eigene ID schickt der Worker nie stop (Konzept 3.6); sie steht nicht im Status."""
+    data = copy.deepcopy(STATUS)
+    data["allowed"][0]["id"] = OWN_ID
+    name = data["allowed"][0]["name"]
+    report = evaluate(_observation(data), NOW)
+    assert report.own_allowed == frozenset({name})
+    assert OWN_ID not in report.status.model_dump_json()
+    assert evaluate(_observation(data, own_id=None), NOW).own_allowed == frozenset()
+    data["allowed"][0]["id"] = "0" * 64
+    assert evaluate(_observation(data), NOW).own_allowed == frozenset()
+
+
 async def test_real_source_guard_logs_only_codes(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -627,3 +643,139 @@ def test_details_without_job_and_check() -> None:
     details = evaluate(_observation(data), NOW).status.details
     assert details is not None
     assert (details.job, details.target_check) == (None, None)
+
+
+# --- Hinweis source_base_hold_missing (Konzept 3.6, „Lesen in TwinRaid“, ab v0.5.2) ---------
+
+NEW_GUID = "9876543210987654321"
+
+
+def _sent_job(data: dict[str, Any], result: str = "ok") -> None:
+    """Der Job hat twinraidtest gesendet; sein Snapshot ist jünger als die gehaltene Basis."""
+    job = data["job"]
+    job["state"], job["result"] = "done", "ok"
+    job["deadline"] = None
+    job["datasets"][0]["result"] = result
+
+
+def _mirror_newer(data: dict[str, Any], created: int) -> None:
+    mirror = data["target"]["check"]["mirrors"][0]
+    mirror["newest_guid"], mirror["newest_created"] = NEW_GUID, created
+
+
+def _candidates(data: dict[str, Any]) -> frozenset[str]:
+    return hold_missing(parse_status(raw(data)))
+
+
+def test_hold_is_fine_by_default() -> None:
+    assert _candidates(copy.deepcopy(STATUS)) == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("base", "expected"),
+    [
+        # Gehaltene Basis älter als der Snapshot des Jobs: Hold am neuen gescheitert.
+        ({"guid": GUID, "created_at": HEARTBEAT - 90000}, {"twinraidtest"}),
+        (None, {"twinraidtest"}),
+        # Der Hold sitzt am gesendeten Snapshot.
+        ({"guid": NEW_GUID, "created_at": HEARTBEAT - 60}, set()),
+    ],
+)
+def test_hold_from_the_job(base: dict[str, Any] | None, expected: set[str]) -> None:
+    data = copy.deepcopy(STATUS)
+    _sent_job(data)
+    # Der letzte check stammt noch aus prepare und kennt den gesendeten Snapshot nicht.
+    data["zfs"]["datasets"][0]["base"] = base
+    assert _candidates(data) == expected
+
+
+def test_not_sent_datasets_do_not_count() -> None:
+    data = copy.deepcopy(STATUS)
+    _sent_job(data, result="skipped")
+    assert _candidates(data) == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("base", "mirror_created", "expected"),
+    [
+        # Nach einem Probelauf ist der Job ersetzt; der check kennt den gesendeten Snapshot.
+        ({"guid": GUID, "created_at": HEARTBEAT - 90000}, HEARTBEAT - 60, {"twinraidtest"}),
+        # Test 5b: Dataset auf Klein neu angelegt, keine gehaltene Basis.
+        (None, HEARTBEAT - 60, {"twinraidtest"}),
+        # Nach einem erfolgreichen Sync: check noch aus dessen prepare, Basis neuer.
+        ({"guid": GUID, "created_at": HEARTBEAT - 30}, HEARTBEAT - 90000, set()),
+        # Basis ist der neueste Snapshot des Spiegels.
+        ({"guid": NEW_GUID, "created_at": HEARTBEAT - 60}, HEARTBEAT - 60, set()),
+    ],
+)
+def test_hold_from_the_last_check(
+    base: dict[str, Any] | None, mirror_created: int, expected: set[str]
+) -> None:
+    data = copy.deepcopy(STATUS)
+    data["job"] = None
+    data["zfs"]["datasets"][0]["base"] = base
+    _mirror_newer(data, mirror_created)
+    assert _candidates(data) == expected
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["check_failed", "no_check", "absent", "not_present", "no_guid"],
+)
+def test_hold_needs_a_mirror_and_a_dataset(change: str) -> None:
+    data = copy.deepcopy(STATUS)
+    data["job"] = None
+    data["zfs"]["datasets"][0]["base"] = None
+    _mirror_newer(data, HEARTBEAT - 60)
+    mirror = data["target"]["check"]["mirrors"][0]
+    match change:
+        case "check_failed":
+            data["target"]["check"] = {
+                "at": HEARTBEAT,
+                "result": "unreachable",
+                "summary": None,
+                "mirrors": [],
+            }
+        case "no_check":
+            data["target"]["check"] = None
+        case "absent":
+            mirror.update(state="absent", newest_guid=None, newest_created=None)
+        case "not_present":
+            data["zfs"]["datasets"][0]["present"] = False
+        case "no_guid":
+            mirror["newest_guid"] = None
+    assert _candidates(data) == frozenset()
+
+
+def test_hold_notice_waits_60_seconds() -> None:
+    """Der Wächter liest ZFS nur alle 30 s; kurz nach dem Senden steht die Basis noch alt."""
+    delay = HoldNoticeDelay()
+    names = frozenset({"twinraidtest"})
+    assert delay.confirmed(names, NOW) == frozenset()
+    later = NOW + timedelta(seconds=HOLD_NOTICE_SECONDS - 1)
+    assert delay.confirmed(names, later) == frozenset()
+    assert delay.confirmed(names, NOW + timedelta(seconds=HOLD_NOTICE_SECONDS)) == names
+    # Eine Unterbrechung beginnt von vorn.
+    assert delay.confirmed(frozenset(), NOW + timedelta(seconds=61)) == frozenset()
+    assert delay.confirmed(names, NOW + timedelta(seconds=62)) == frozenset()
+
+
+async def test_real_source_guard_reports_the_hold_notice(tmp_path: Path) -> None:
+    paths = guard_paths(tmp_path)
+    data = copy.deepcopy(STATUS)
+    _sent_job(data)
+    paths.status_file.write_bytes(raw(data))
+    now = [NOW]
+    guard = RealSourceGuard(paths, clock=lambda: now[0])
+    await guard.refresh()
+    first = guard.report()
+    assert StatusNotice.SOURCE_BASE_HOLD_MISSING not in first.notices
+    now[0] = NOW + timedelta(seconds=HOLD_NOTICE_SECONDS)
+    data["heartbeat_at"] = int(now[0].timestamp())
+    paths.status_file.write_bytes(raw(data))
+    await guard.refresh()
+    report = guard.report()
+    assert StatusNotice.SOURCE_BASE_HOLD_MISSING in report.notices
+    assert report.status.details is not None
+    flags = {d.name: d.base_hold_missing for d in report.status.details.zfs.datasets}
+    assert flags == {"twinraidtest": True, "dokumente": False}

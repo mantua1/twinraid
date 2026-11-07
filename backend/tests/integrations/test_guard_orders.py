@@ -48,12 +48,34 @@ def test_order_line_is_accepted_by_the_guard(order: GuardOrder) -> None:
     assert checksum == hashlib.sha256(payload.encode()).hexdigest()[:16]
 
 
+@pytest.mark.parametrize("container", ["web", "a", "Web_2.db-1", "x" * 128])
+def test_stop_line_is_accepted_by_the_guard(container: str) -> None:
+    line = order_line(3, GuardOrder.STOP, container)
+    assert len(line) == 256
+    text = line[:-1].decode("ascii")
+    match = _script_order_re().fullmatch(text)
+    assert match is not None
+    payload, checksum = text.rstrip(" ").rsplit(" ", 1)
+    assert payload == f"TRSG1 3 stop {container}"
+    assert checksum == hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+
 @pytest.mark.parametrize(("seq", "order"), [(0, GuardOrder.PING), (MAX_SEQ + 1, GuardOrder.PING)])
 def test_order_line_limits(seq: int, order: GuardOrder) -> None:
     with pytest.raises(ValueError, match="out of range"):
         order_line(seq, order)
     with pytest.raises(ValueError, match="container"):
         order_line(1, GuardOrder.STOP)
+    with pytest.raises(ValueError, match="container"):
+        order_line(1, GuardOrder.PING, "web")
+
+
+@pytest.mark.parametrize(
+    "container", ["", "-web", ".web", "web db", "web;rm", "web\n", "x" * 129, "ä", "a/b"]
+)
+def test_stop_line_refuses_bad_names(container: str) -> None:
+    with pytest.raises(ValueError, match="invalid container name"):
+        order_line(1, GuardOrder.STOP, container)
 
 
 def test_write_order_in_place(tmp_path: Path) -> None:
@@ -113,14 +135,14 @@ class FakeGuard:
                 self.status["last_seq"] += 5
         self.on_wait = []
         line = self.paths.request.read_bytes()
-        match = re.match(rb"TRSG1 ([0-9]+) ([a-z]+) ", line)
+        match = re.match(rb"TRSG1 ([0-9]+) ([a-z]+) (?:([A-Za-z0-9_.-]+) )?[0-9a-f]{16} ", line)
         if self.answer and match is not None and int(match[1]) > self.status["last_seq"]:
             seq = int(match[1])
             self.status["last_seq"] = seq
             self.status["last"] = {
                 "seq": seq,
                 "order": match[2].decode(),
-                "container": None,
+                "container": match[3].decode() if match[3] else None,
                 "result": self.result,
                 "at": HEARTBEAT,
             }
@@ -211,3 +233,46 @@ async def test_unusable_order_file(tmp_path: Path) -> None:
     with pytest.raises(GuardOrderError) as caught:
         await channel.order(GuardOrder.SNAPSHOT)
     assert caught.value.outcome is ActionOutcome.SOURCE_GUARD_INACTIVE
+
+
+async def test_stop_with_container_and_longer_wait(tmp_path: Path) -> None:
+    channel, guard = _channel(tmp_path)
+    guard.result = "stopped"
+    result = await channel.order(GuardOrder.STOP, "web", reply_seconds=75.0)
+    assert result is GuardOrderResult.STOPPED
+    assert guard.paths.request.read_bytes() == order_line(8, GuardOrder.STOP, "web")
+    # Ohne Antwort wartet der Kanal die längere Zeit ab (stop_timeout + 15 s, Konzept 3.6).
+    guard.answer = False
+    start = guard.monotonic
+    with pytest.raises(GuardOrderError):
+        await channel.order(GuardOrder.STOP, "db", reply_seconds=75.0)
+    assert guard.monotonic - start >= 75.0
+
+
+async def test_post_does_not_wait_for_the_answer(tmp_path: Path) -> None:
+    """Beim Ende des Workers: finish schreiben, ausführen tut es der Wächter (Konzept 4.3)."""
+    channel, guard = _channel(tmp_path)
+    guard.answer = False
+    await channel.post(GuardOrder.FINISH)
+    assert guard.paths.request.read_bytes() == order_line(8, GuardOrder.FINISH)
+    assert guard.sleeps == []
+
+
+async def test_number_after_an_unanswered_order(tmp_path: Path) -> None:
+    """Läuft der vorige Auftrag noch (ein langes stop), steht seine Nummer nicht im Status.
+
+    Der nächste Auftrag bekommt dann die folgende Nummer, sonst ignorierte der Wächter ihn.
+    """
+    channel, guard = _channel(tmp_path)
+    guard.answer = False
+    with pytest.raises(GuardOrderError):
+        await channel.order(GuardOrder.STOP, "web", reply_seconds=1.0)
+    assert guard.status["last_seq"] == 7
+    await channel.post(GuardOrder.FINISH)
+    assert guard.paths.request.read_bytes() == order_line(9, GuardOrder.FINISH)
+    # Eine neue Instanz des Wächters beginnt wieder bei ihrer eigenen Nummer.
+    guard.status["instance"] = "fedcba9876543210"
+    guard.status["last_seq"] = 0
+    guard.write()
+    await channel.post(GuardOrder.CLOSE)
+    assert guard.paths.request.read_bytes() == order_line(1, GuardOrder.CLOSE)

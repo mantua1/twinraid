@@ -68,6 +68,8 @@ class StatusNotice(StrEnum):
     SOURCE_GUARD_ALLOWS_SELF = "source_guard_allows_self"
     # Auf Groß ist keine Grenze für den ZFS-Cache eingetragen (arc_max 0, Konzept 3.5, ab v0.5.1).
     TARGET_ARC_UNLIMITED = "target_arc_unlimited"
+    # Die gehaltene Basis eines Datasets auf Klein fehlt oder ist veraltet (Konzept 3.6, ab v0.5.2).
+    SOURCE_BASE_HOLD_MISSING = "source_base_hold_missing"
 
 
 class ResourceInfo(StrictModel):

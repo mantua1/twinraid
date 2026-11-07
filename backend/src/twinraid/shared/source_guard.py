@@ -351,6 +351,9 @@ class GuardDataset(StrictModel):
     oldest_snapshot_at: datetime | None = None
     base_created_at: datetime | None = None
     bookmark: bool | None = None
+    # Ab v0.5.2: Die gehaltene Basis fehlt oder ist älter als der zuletzt gesendete Snapshot
+    # (Hinweis source_base_hold_missing, Konzept 3.6, „Lesen in TwinRaid“).
+    base_hold_missing: bool = False
 
 
 class GuardZfs(StrictModel):

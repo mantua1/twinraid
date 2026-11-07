@@ -123,8 +123,7 @@ COMMAND_NAMES: frozenset[str] = frozenset(
 
 # Befehle mit Außenwirkung (Konzept 4.2 und 6.4).
 ACTION_COMMANDS: frozenset[str] = COMMAND_NAMES - {"get_status", "verify_password"}
-# Befehle der Ressource „Sync“ (ab v0.5.1); sync_start und sync_confirm_deletions lehnt der
-# Worker bis v0.5.2 ab (next_version).
+# Befehle der Ressource „Sync“ (Probelauf ab v0.5.1, Sync ab v0.5.2).
 SYNC_COMMANDS: frozenset[str] = frozenset(
     {"sync_dry_run", "sync_start", "sync_cancel", "sync_confirm_deletions"}
 )

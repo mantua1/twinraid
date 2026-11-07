@@ -70,6 +70,6 @@ async def test_client_reports_rejected_command(worker_socket: Path) -> None:
     client = WorkerClient(worker_socket)
     with pytest.raises(WorkerCommandError) as excinfo:
         await client.send(SyncStart(command="sync_start"))
-    # In v0.5.1 gibt es nur den Probelauf; der Sync kommt mit v0.5.2.
+    # Vor der ersten Prüfung ist Groß unbekannt (Konzept 4.2).
     assert excinfo.value.error is ErrorCode.ACTION_BLOCKED
-    assert excinfo.value.blocked_by is ActionBlocker.NEXT_VERSION
+    assert excinfo.value.blocked_by is ActionBlocker.TARGET_UNKNOWN

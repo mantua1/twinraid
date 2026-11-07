@@ -430,9 +430,22 @@ expect_contains "action log records the dry run" \
   "$(docker exec "${main}" twinraid-admin show-action-log 2>&1)" "sync_dry_run  dashboard: dry_run_success"
 expect_contains "audit log lists the dry run" "$(https_get -b "${JAR}" "${BASE}/api/audit")" \
   '"action":"sync_dry_run","result":"requested"'
-expect_contains "the real sync comes with v0.5.2" \
-  "$(https_get -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/actions/sync_start")" \
-  '{"detail":"next_version"}'
+# Sync mit dem simulierten Wächter (Konzept 4.3 und 6.4, ab v0.5.2): Container-Phase,
+# prepare und Senden mit 25 MiB/s, drei Shares mit je 350 MiB.
+expect_equal "sync is accepted" \
+  "$(status_of -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/actions/sync_start")" "202"
+sync_status=""
+for _ in $(seq 1 120); do
+  sync_status="$(https_get -b "${JAR}" "${BASE}/api/status")"
+  [[ "${sync_status}" == *'"last":{"kind":"sync"'* ]] && break
+  sleep 1
+done
+expect_contains "simulated sync succeeds" "${sync_status}" '"last":{"kind":"sync","outcome":"success"'
+expect_contains "the history lists the sync" "${sync_status}" '"history":[{"id":"'
+expect_contains "action log records the sync" \
+  "$(docker exec "${main}" twinraid-admin show-action-log 2>&1)" "sync_start  dashboard: success"
+expect_contains "show-sync-log lists the sync" \
+  "$(docker exec "${main}" twinraid-admin show-sync-log 2>&1)" "sync: success"
 expect_equal "cancel takes only a job id of the worker" \
   "$(status_of -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/sync/not-a-job-id/cancel")" "422"
 expect_equal "cancel without a running dry run is rejected" \

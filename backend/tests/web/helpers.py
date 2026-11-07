@@ -73,6 +73,7 @@ class FakeWorker:
         self.action_error: WorkerCommandError | None = None
         self.actions: list[ActionName] = []
         self.cancelled: list[str] = []
+        self.confirmed: list[str] = []
 
     async def get_status(self) -> StatusSnapshot:
         self.calls.append("get_status")
@@ -113,6 +114,14 @@ class FakeWorker:
         if self.action_error is not None:
             raise self.action_error
         self.cancelled.append(job_id)
+
+    async def confirm_deletions(self, job_id: str) -> None:
+        self.calls.append("sync_confirm_deletions")
+        if not self.available:
+            raise WorkerUnavailableError("down")
+        if self.action_error is not None:
+            raise self.action_error
+        self.confirmed.append(job_id)
 
 
 class FakeClock:

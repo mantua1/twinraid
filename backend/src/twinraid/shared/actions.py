@@ -20,14 +20,21 @@ class ActionName(StrEnum):
     VM_START = "vm_start"
     VM_STOP = "vm_stop"
     VM_FORCE_STOP = "vm_force_stop"
-    # Ab v0.5.1 (Konzept 4.3, „Probelauf in TwinRaid“): Probelauf über den Wächter; der
-    # echte Sync ist in v0.5.1 noch gesperrt (next_version).
+    # Probelauf ab v0.5.1, echter Sync ab v0.5.2 (Konzept 4.3).
     SYNC_DRY_RUN = "sync_dry_run"
     SYNC_START = "sync_start"
 
 
 # Aktionen der Ressource „Sync“ (Konzept 4.2); die übrigen betreffen Groß und die VM.
 SYNC_ACTIONS: frozenset[ActionName] = frozenset({ActionName.SYNC_DRY_RUN, ActionName.SYNC_START})
+
+
+class SyncPart(StrEnum):
+    """Teilschritte eines Syncs, die nur im Aktionslog stehen (Konzept 4.3 und 5.3)."""
+
+    # Container der Erlaubnisliste anhalten; der Eintrag nennt nur ihre Anzahl.
+    SOURCE_GUARD_STOP = "source_guard_stop"
+    SOURCE_GUARD_FINISH = "source_guard_finish"
 
 
 class ActionGroup(StrEnum):
@@ -61,12 +68,15 @@ class ActionBlocker(StrEnum):
     # Simulationsmodus: Der feste Rundlauf ist eingeschaltet (twinraid-admin mock-tour).
     TOUR = "tour"
     # Ab v0.5.1, Sync und Probelauf (Konzept 4.2 und 4.3): Wächter nicht aktiv oder sein
-    # ZFS-Teil nicht bereit; sync.shares passt nicht zu den Datasets des Wächters; appdata
-    # ohne eigenes Dataset von TwinRaid; der echte Sync kommt erst mit v0.5.2.
+    # ZFS-Teil nicht bereit; die drei Ebenen passen nicht zusammen; appdata ohne eigenes
+    # Dataset von TwinRaid.
     SOURCE_GUARD_INACTIVE = "source_guard_inactive"
     LEVELS_MISMATCH = "levels_mismatch"
     SELF_DATASET_MISSING = "self_dataset_missing"
-    NEXT_VERSION = "next_version"
+    # Ab v0.5.2, nur der Sync: Pause des Wächters zwischen zwei Läufen; laut letztem check
+    # besteht auf Groß ein Klon eines Spiegels.
+    SOURCE_GUARD_TOO_SOON = "source_guard_too_soon"
+    TARGET_CLONE_ACTIVE = "target_clone_active"
 
 
 class ActionStep(StrEnum):
@@ -134,6 +144,12 @@ class ActionOutcome(StrEnum):
     TARGET_REFUSED = "target_refused"
     BASE_MISSING = "base_missing"
     SELF_DATASET_MISSING = "self_dataset_missing"
+    # Sync ab v0.5.2 (Konzept 4.3, „Sync in TwinRaid“); bei send_failed nennt reason den Grund.
+    DELETIONS_DECLINED = "deletions_declined"
+    CONFIRMATION_TIMEOUT = "confirmation_timeout"
+    CONTAINER_RESTART_FAILED = "container_restart_failed"
+    SEND_FAILED = "send_failed"
+    TARGET_MODIFIED = "target_modified"
     # Der Worker wurde beendet, während die Aktion lief (nur im Aktionslog).
     INTERRUPTED = "interrupted"
     INTERNAL_ERROR = "internal_error"

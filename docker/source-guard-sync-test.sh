@@ -305,7 +305,8 @@ for name in twinraidtest dokumente; do
     "$(value guid "${KLEIN}/${name}@${snap}")"
 done
 expect_equal "content on Groß" "$(cat /mnt/mainpool/twinraid-mirror/twinraidtest/datei1.txt)" "Datei 1"
-testdata_report="$(bash "${REPO_DIR}/host-scripts/testdata.sh" verify /mnt/mainpool/twinraid-mirror/dokumente/testdata 2>&1 || true)"
+testdata_report="$(bash "${REPO_DIR}/host-scripts/testdata.sh" verify-latest "${ROOT}/dokumente" 2>&1 || true)"
+expect_contains "verify-latest checks the newest snapshot" "${testdata_report}" "Snapshot: ${snap}"
 expect_contains "test data arrive unchanged" "${testdata_report}" "Keine Abweichung (Lauf 0)."
 expect_contains "with owners and ACLs" "${testdata_report}" "acl yes, Besitzer yes"
 expect_equal "xattr on Groß" \
@@ -313,6 +314,9 @@ expect_equal "xattr on Groß" \
     /mnt/mainpool/twinraid-mirror/dokumente/zufall.bin)" "wert"
 expect_equal "child dataset not sent" "$(zfs list -H -o name -- "${ROOT}/twinraidtest/kind" 2>/dev/null || true)" ""
 expect_contains "received as UID 64000" "$(zpool history -l mainpool | grep 'zfs receive' | tail -1)" "[user 64000"
+# Die ACL im eingehängten Spiegel einmal lesen, wie ein Nutzer, der dort nachsieht; danach
+# kann der Kernel sie nach dem nächsten Empfang veraltet zeigen (Konzept 3.7).
+getfacl -c /mnt/mainpool/twinraid-mirror/dokumente/testdata/acl/datei.txt >/dev/null
 first="${snap}"
 
 echo "== Zweiter Lauf: inkrementell mit Zählungen"
@@ -362,17 +366,24 @@ order send sending
 wait_job "done|failed"
 expect_equal "send after confirm" "$(job state):$(job result):$(job confirmed)" "done:ok:true"
 # Drei Sichten (Konzept 3.7, „ACLs im eingehängten Spiegel“): Der eingehängte Spiegel kann
-# eine vom ersten verify gelesene ACL noch aus dem Cache des Kernels zeigen; das meldet der
-# Test nur. Maßgeblich sind der Snapshot und der Spiegel nach neuem Einhängen.
+# eine schon gelesene ACL noch aus dem Cache des Kernels zeigen; das meldet der Test nur.
+# Maßgeblich sind der Snapshot (testdata.sh verify-latest) und der Spiegel nach neuem
+# Einhängen. verify selbst lehnt den eingehängten Spiegel ab.
 mirror_data=/mnt/mainpool/twinraid-mirror/dokumente
-verify_mirror() { bash "${REPO_DIR}/host-scripts/testdata.sh" verify "$1" 2>&1 || true; }
-echo "info  mounted mirror after the increment: $(verify_mirror "${mirror_data}/testdata" | head -n 3 | cut -c1-200)"
-expect_contains "changed test data in the snapshot" \
-  "$(verify_mirror "${mirror_data}/.zfs/snapshot/$(job snapshot)/testdata")" "Keine Abweichung (Lauf 1)."
+acl_in() { getfacl -c "$1/testdata/acl/datei.txt" 2>&1 | tr '\n' ' '; }
+expect_contains "verify refuses the mounted mirror" \
+  "$(bash "${REPO_DIR}/host-scripts/testdata.sh" verify "${mirror_data}/testdata" 2>&1 || true)" \
+  "eingehängte Spiegel"
+snapshot_data="${mirror_data}/.zfs/snapshot/$(job snapshot)"
+echo "info  ACL in the mounted mirror after the increment: $(acl_in "${mirror_data}")"
+echo "info  ACL in the new snapshot: $(acl_in "${snapshot_data}")"
+expect_contains "changed test data in the newest snapshot" \
+  "$(bash "${REPO_DIR}/host-scripts/testdata.sh" verify-latest "${ROOT}/dokumente" 2>&1 || true)" \
+  "Keine Abweichung (Lauf 1)."
 zfs unmount "${ROOT}/dokumente"
 zfs mount "${ROOT}/dokumente"
-expect_contains "changed test data after mounting again" \
-  "$(verify_mirror "${mirror_data}/testdata")" "Keine Abweichung (Lauf 1)."
+expect_equal "ACL after mounting again as in the snapshot" "$(acl_in "${mirror_data}")" \
+  "$(acl_in "${snapshot_data}")"
 
 echo "== Basis fehlt, Lesezeichen ist da"
 snap="$(job snapshot)"

@@ -20,10 +20,17 @@ from twinraid.worker.action_log import ActionLog
 from twinraid.worker.actions import ActionCoordinator, ActionTimings, StatusSource
 from twinraid.worker.handler import CommandHandler
 from twinraid.worker.monitor import StatusMonitor
+from twinraid.worker.sync_history import SyncHistory
 
 # Kurze Zeiten für den simulierten Wächter und den Probelauf.
-FAST_JOBS = MockJobTimings(snapshot_seconds=0.0, prepare_seconds=0.05)
-FAST_SYNC = SyncTimings(job_poll_seconds=0.01, startup_poll_seconds=0.01)
+FAST_JOBS = MockJobTimings(
+    snapshot_seconds=0.0,
+    prepare_seconds=0.05,
+    stop_seconds=0.0,
+    send_rate=50 * 1024**3,
+    slow_send_rate=2 * 1024**3,
+)
+FAST_SYNC = SyncTimings(job_poll_seconds=0.01, startup_poll_seconds=0.01, ping_seconds=0.05)
 
 
 @dataclass(frozen=True)
@@ -62,7 +69,14 @@ def make_worker(
     guard = source_guard or mock_guard
     action_log = ActionLog(directory / "actions.jsonl")
     sync = SyncCoordinator(
-        channel or mock_guard, guard, monitor, config, mode, action_log, timings=sync_timings
+        channel or mock_guard,
+        guard,
+        monitor,
+        config,
+        mode,
+        action_log,
+        SyncHistory(directory / "sync-history.jsonl"),
+        timings=sync_timings,
     )
     job_state = jobs or sync
     actions = ActionCoordinator(

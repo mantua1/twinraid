@@ -2,7 +2,7 @@
 
 Weboberfläche in einem einzigen Docker-Container, die zwei Unraid-Server steuert: Wake-on-LAN, Statusanzeige, Gaming-VM und Spiegel-Backup mit ZFS-Snapshots.
 
-> **Stand: v0.5.1 (Phase 5, „Nur Probelauf“).** Dashboard mit Live-Status beider Server und der Gaming-VM, eigene CA für HTTPS, Login und alle Schutzmaßnahmen aus Phase 2. Dazu Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Der Wächter `source-guard.sh` auf Klein und `guard.sh` Version 3 auf Groß prüfen im Probelauf, was ein Sync senden würde; nach Groß wird noch nichts geschrieben, der echte Sync folgt mit v0.5.2. Im Modus `real` werden die Aktionen einzeln in `twinraid.yaml` unter `actions` freigeschaltet.
+> **Stand: v0.5.2 (Phase 5, Sync der Test-Share).** Dashboard mit Live-Status beider Server und der Gaming-VM, eigene CA für HTTPS, Login und alle Schutzmaßnahmen aus Phase 2. Dazu Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Der Wächter `source-guard.sh` auf Klein sendet ZFS-Snapshots an `guard.sh` auf Groß, das sie in schreibgeschützte Spiegel übernimmt; vorerst nur für die Test-Share. Dazu kommen „Nur Probelauf“, Freigabe von Löschungen, Fortschritt mit Restzeit, Abbrechen und eine Sync-Historie. Im Modus `real` werden die Aktionen einzeln in `twinraid.yaml` unter `actions` freigeschaltet.
 
 - Konzept (verbindlich): [docs/KONZEPT.md](docs/KONZEPT.md)
 - Installation auf Unraid: [docs/EINRICHTUNG.md](docs/EINRICHTUNG.md)
@@ -88,7 +88,7 @@ CHECK_EACH_CAP=1 docker/smoke-test.sh  # zusätzlich: jede Capability ist nötig
 docker/ssh-test.sh                     # SSH und Aktionen gegen ein nachgebautes Groß
 ```
 
-Alle Befehle der Admin-CLI stehen in [docs/EINRICHTUNG.md, Abschnitt 19](docs/EINRICHTUNG.md#19-befehle-der-admin-cli).
+Alle Befehle der Admin-CLI stehen in [docs/EINRICHTUNG.md, Abschnitt 20](docs/EINRICHTUNG.md#20-befehle-der-admin-cli).
 
 Tests sprechen nie echte Server an: Eine Sperre in `backend/tests/conftest.py` lässt nur Verbindungen (auch UDP wie Wake-on-LAN) zu `127.0.0.1` und zum nie gerouteten Testnetz `192.0.2.0/24` zu. Der Starttest prüft den Modus `real` ebenfalls nur mit Adressen aus diesem Testnetz. `docker/ssh-test.sh` startet ein nachgebautes Unraid Groß als Wegwerf-Container (`docker/fake-target`) in einem eigenen Docker-Netz und prüft dagegen `guard.sh`, die Einschränkungen der `authorized_keys`-Zeilen der Keys „status“ und „power“, die strikte Hostkey-Prüfung, die Sitzung `vm-watch` und alle Aktionen.
 
