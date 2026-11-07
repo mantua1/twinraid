@@ -125,6 +125,14 @@ def _sha256(name: str) -> str:
     return hashlib.sha256((SCRIPTS / name).read_bytes()).hexdigest()
 
 
+def _blocks(text: str = SETUP) -> list[str]:
+    # Kästen in Aufzählungen sind eingerückt; die Einrückung zählt nicht zum Befehl.
+    return [
+        textwrap.dedent(block)
+        for _, block in re.findall(r"^( *)```bash\n(.*?)^\1```", text, flags=re.S | re.M)
+    ]
+
+
 def test_scripts_are_taken_from_the_release_of_each_section() -> None:
     version = re.search(r'^__version__ = "(.+)"$', _init(), flags=re.M)
     assert version is not None
@@ -188,12 +196,7 @@ def test_backup_of_the_configuration_is_never_overwritten(name: str, version: st
 
 def test_every_change_of_the_test_data_stands_alone_with_a_warning() -> None:
     """change zweimal verdoppelt die Zählungen; der Befehl steht deshalb allein in seinem Kasten."""
-    # Kästen in Aufzählungen sind eingerückt; die Einrückung zählt nicht zum Befehl.
-    blocks = [
-        textwrap.dedent(block)
-        for _, block in re.findall(r"^( *)```bash\n(.*?)^\1```", SETUP, flags=re.S | re.M)
-    ]
-    with_change = [block for block in blocks if "testdata.sh change" in block]
+    with_change = [block for block in _blocks() if "testdata.sh change" in block]
     assert len(with_change) == 3
     assert all(block == "bash /boot/config/twinraid/testdata.sh change\n" for block in with_change)
     warnings = re.findall(
@@ -204,15 +207,46 @@ def test_every_change_of_the_test_data_stands_alone_with_a_warning() -> None:
     assert len(warnings) == 3
 
 
-def test_poweroff_during_a_receive_stands_alone_after_the_check() -> None:
-    section = _section(16)
-    block = (
-        'SSH_ORIGINAL_COMMAND=poweroff bash /boot/config/twinraid/guard.sh power; echo "Exit: $?"\n'
+def test_poweroff_is_only_sent_while_a_receive_runs() -> None:
+    """poweroff steht nur in einer Zeile, die es allein bei receive=busy schickt."""
+    line = (
+        "SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync"
+        " | grep -q 'receive=busy'"
+        " && { SSH_ORIGINAL_COMMAND=poweroff bash /boot/config/twinraid/guard.sh power;"
+        ' echo "Exit: $?"; }'
+        ' || echo "kein Empfang, nichts geschickt"\n'
     )
-    assert section.count(block) == 1
-    before = section[: section.index(block)]
-    assert before.rstrip().endswith("```bash")
-    assert "**Nur bei `receive=busy` weitermachen:**" in before[-600:]
+    # Nur Abschnitt 16; frühere Abschnitte prüfen poweroff mit eigenen Sperren und Ablehnungen.
+    with_poweroff = [
+        block for block in _blocks(_section(16)) if "SSH_ORIGINAL_COMMAND=poweroff" in block
+    ]
+    assert with_poweroff == [line]
+    before = _section(16)[: _section(16).index(line.rstrip("\n"))]
+    assert "> **Diesen Kasten allein einfügen, und nur, während gesendet wird" in before[-900:]
+
+
+def test_wait_for_the_run_in_test_6c_ends_by_itself() -> None:
+    with_restart = [block for block in _blocks() if "docker restart TwinRaid" in block]
+    assert len(with_restart) == 1
+    assert "timeout 300 sh -c 'until grep -q" in with_restart[0]
+    assert '|| echo "kein Lauf geöffnet, nichts neu gestartet"' in with_restart[0]
+
+
+def test_test_data_are_single_files_whose_sum_is_shown_first() -> None:
+    """Keine ganze Share kopieren; die Summe der ausgewählten Dateien vorher zeigen."""
+    section = _section(16)
+    assert "cp -a" not in section
+    copies = [block for block in _blocks() if "/mnt/mainpool/twinraidtest/kopie" in block]
+    copies = [block for block in copies if block.startswith("mkdir ")]
+    assert len(copies) == 2
+    files = "/mnt/user/isos/<Datei1> /mnt/user/isos/<Datei2>"
+    assert all(f"cp -p {files} /mnt/mainpool/twinraidtest/kopie" in block for block in copies)
+    sum_block = f"du -ch {files}\n"
+    assert sum_block in _blocks()
+    assert section.index(sum_block) < section.index(copies[0])
+    # Die Rate von 2,5 GbE ist nur ein Beispiel, keine Eigenschaft der Server.
+    for match in re.finditer(r"298 MiB/s", section):
+        assert "Beispiel" in section[max(0, match.start() - 120) : match.start()]
 
 
 def test_mirror_on_the_target_is_only_verified_in_a_snapshot() -> None:

@@ -2428,11 +2428,11 @@ Nach etwa 35 Sekunden zeigt die Kachel **Unraid Klein** rot „Wächter: nicht a
 
 **6c: TwinRaid startet neu, während Container angehalten sind.** Das Anhalten des Testcontainers dauert nur einen Augenblick; deshalb löst das Terminal den Neustart aus, sobald der Lauf offen ist. Mindestens 30 Minuten nach dem Snapshot aus 6a im **Unraid-Terminal von Klein**:
 
-> **Diesen Kasten allein einfügen.** Die zweite Zeile wartet, bis ein Lauf offen ist, und startet dann TwinRaid neu. Startest du den Sync doch nicht, die Zeile mit `Strg+C` beenden; sonst startet sie TwinRaid beim nächsten Lauf neu.
+> **Diesen Kasten allein einfügen.** Die zweite Zeile wartet höchstens 5 Minuten, bis ein Lauf offen ist, und startet dann TwinRaid neu. Öffnet sich in dieser Zeit kein Lauf, endet sie von selbst mit `kein Lauf geöffnet, nichts neu gestartet`; dann den Kasten noch einmal einfügen und den Sync früher starten. Mit `Strg+C` lässt sie sich vorher beenden.
 
 ```bash
 bash /boot/config/twinraid/source-guard.sh reset-run-interval
-until grep -q '"run":{' /run/twinraid-source-guard/state/status.json; do sleep 0.2; done; docker restart TwinRaid
+timeout 300 sh -c 'until grep -q "\"run\":{" /run/twinraid-source-guard/state/status.json; do sleep 0.2; done' && docker restart TwinRaid || echo "kein Lauf geöffnet, nichts neu gestartet"
 ```
 
 Gleich danach im Dashboard **Jetzt synchronisieren** klicken. Das Dashboard verliert kurz die Verbindung. Nach etwa einer Minute:
@@ -2460,39 +2460,42 @@ Erwartet: Vorher und nachher derselbe Zeitpunkt; im Syslog von Klein nur `stop t
 
 ### 16.11 Test 7, 5d und 8a: Menge, gesperrtes Herunterfahren, Abbrechen
 
-Für diesen und die nächsten Tests muss das Senden einige Minuten dauern, sonst ist es vorbei, bevor du abbrechen kannst. 2,5 GbE überträgt höchstens etwa 298 MiB/s, also rund 17 GiB je Minute; für einige Minuten braucht es entsprechend viele Daten. Reicht der Platz dafür nicht, geht es mit weniger: Dann früher abbrechen und die Restzeit nur grob vergleichen.
+Für diesen und die nächsten Tests muss das Senden einige Minuten dauern, etwa 5, sonst ist es vorbei, bevor du abbrechen kannst. Die nötige Menge ist ungefähr **Rate des Netzes × Minuten**. Beispiel: Ein Netz mit 2,5 GbE überträgt höchstens etwa 298 MiB/s, also rund 17 GiB je Minute; für 5 Minuten wären das rund 87 GiB. Langsamer als das Netz ist es oft, dann dauert das Senden nur länger. Dateien, die sich kaum packen lassen (etwa ISO-Dateien), passen gut: Der Wächter sendet die Blöcke so, wie sie im Pool liegen, gut packbare Dateien wären also schneller durch. Reicht der Platz nicht, geht es mit weniger: Dann früher abbrechen und die Restzeit nur grob vergleichen.
 
 > **Nur unkritische Daten kopieren,** zum Beispiel ISO-Dateien: keine persönlichen Dokumente, keine Schlüssel, Passwörter oder Konfigurationen. Die Kopie bleibt nach dem Löschen (16.14) noch **7 Tage auf Klein** und **30 Tage auf Groß** in den Snapshots, und erst danach wird der Platz frei.
 
 **Platz prüfen.** Auf Klein `zfs list -o name,used,avail mainpool`, auf Groß `zfs list -o name,used,avail mainpool/twinraid-mirror`. Die Kopie muss auf beiden Seiten zweimal hineinpassen (für 16.13), und es muss die Reserve von 15 % frei bleiben; sonst lehnen der Wächter (`snapshot_low_space`) bzw. `guard.sh` (`space_low`) ab.
 
-**Kopieren** im **Unraid-Terminal von Klein**. Den Quellordner (hier das Beispiel `/mnt/user/isos`) an deine unkritischen Daten anpassen:
+**Dateien auswählen** im **Unraid-Terminal von Klein**: einzelne unkritische Dateien, nicht eine ganze Share. Statt `/mnt/user/isos/<Datei1> /mnt/user/isos/<Datei2>` die Pfade deiner Dateien eintragen, so viele wie nötig; Pfade mit Leerzeichen in Anführungszeichen setzen, und keine zwei Dateien mit demselben Namen wählen (sonst überschreibt die zweite die erste in der Kopie). Zuerst nur die Summe ansehen:
+
+```bash
+du -ch /mnt/user/isos/<Datei1> /mnt/user/isos/<Datei2>
+```
+
+Die letzte Zeile (`total`) ist die Summe. Liegt sie deutlich unter der Zielgröße, Dateien hinzunehmen, liegt sie über dem freien Platz, weglassen, und `du -ch` wiederholen. Die Liste der Pfade für das Kopieren und für 16.13 aufheben.
+
+**Kopieren** mit genau derselben Liste:
 
 > **Diesen Kasten allein und nur einmal einfügen.** Das Kopieren kann lange dauern. Gibt es `kopie` schon, bricht der Kasten ab, statt ein zweites Mal zu kopieren.
 
 ```bash
-mkdir /mnt/mainpool/twinraidtest/kopie && cp -a /mnt/user/isos/. /mnt/mainpool/twinraidtest/kopie/
-du -sh /mnt/mainpool/twinraidtest/kopie
+mkdir /mnt/mainpool/twinraidtest/kopie && cp -p /mnt/user/isos/<Datei1> /mnt/user/isos/<Datei2> /mnt/mainpool/twinraidtest/kopie/
 ```
+
+Danach zeigt `du -sh /mnt/mainpool/twinraidtest/kopie` ungefähr die Summe von eben.
 
 Dann **Jetzt synchronisieren** (30 Minuten nach dem letzten Snapshot) und während des Sendens:
 
 1. Bei etwa **10 %** Restzeit und „fertig gegen“ notieren.
-2. **Test 5d:** In der Kachel **Unraid Groß** ist **Herunterfahren** grau, „gesperrt, solange ein Sync läuft“. Im **Unraid-Terminal von Groß**:
+2. **Test 5d:** In der Kachel **Unraid Groß** ist **Herunterfahren** grau, „gesperrt, solange ein Sync läuft“. Im **Unraid-Terminal von Groß** schickt die folgende Zeile `poweroff` nur, wenn `check` unmittelbar vorher `receive=busy` meldet:
+
+   > **Diesen Kasten allein einfügen, und nur, während gesendet wird (bei etwa 10 %).** Ohne laufenden Empfang schaltet `poweroff` Groß wirklich aus, wenn keine VM läuft, und der Sync bricht ab. Die Zeile prüft das unmittelbar vorher; endet der Empfang aber genau zwischen `check` und `poweroff`, wirkt es trotzdem. Deshalb nicht kurz vor dem Ende des Sendens verwenden.
 
    ```bash
-   SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync | grep -o 'receive=[a-z]*'
+   SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync | grep -q 'receive=busy' && { SSH_ORIGINAL_COMMAND=poweroff bash /boot/config/twinraid/guard.sh power; echo "Exit: $?"; } || echo "kein Empfang, nichts geschickt"
    ```
 
-   **Nur bei `receive=busy` weitermachen:**
-
-   > **Diesen Kasten allein einfügen, und nur, solange `receive=busy` gilt.** Ohne laufenden Empfang schaltet er Groß wirklich aus, wenn keine VM läuft, und der Sync bricht ab.
-
-   ```bash
-   SSH_ORIGINAL_COMMAND=poweroff bash /boot/config/twinraid/guard.sh power; echo "Exit: $?"
-   ```
-
-   Erwartet: `twinraid-guard: refused sync-running`, `Exit: 3`, Groß bleibt an.
+   Erwartet: `twinraid-guard: refused sync-running`, `Exit: 3`, Groß bleibt an. Steht dort `kein Empfang, nichts geschickt`, lief gerade kein Empfang; dann wurde nichts geschickt, und der Test wird beim nächsten Sync wiederholt.
 3. **Test 8a:** Bei etwa **50 %** auf **Abbrechen** klicken und im Dialog „Sync abbrechen?“ **Sync abbrechen** wählen.
 
 Danach im **Unraid-Terminal von Groß**:
@@ -2536,16 +2539,18 @@ Mindestens 30 Minuten nach dem abgebrochenen Lauf noch einmal **Jetzt synchronis
 | `show-action-log` | `sync_start … interrupted` und `sync_start … success, adopted` |
 | Groß | ein Snapshot mehr; `verify-latest` meldet `Keine Abweichung` mit dem Lauf aus dem letzten `change` |
 
-**Im PR festhalten, nur in Prozent:** den Durchsatz als Anteil an 2,5 GbE (die Rate aus der Kachel, geteilt durch etwa 298 MiB/s) und die Abweichung von `E1` und `E2` vom tatsächlichen Ende, jeweils bezogen auf die Dauer des Sendens.
+**Im PR festhalten, nur in Prozent:** den Durchsatz als Anteil an der Rate des Netzes (die Rate aus der Kachel geteilt durch die Rate des Netzes, bei 2,5 GbE zum Beispiel etwa 298 MiB/s) und die Abweichung von `E1` und `E2` vom tatsächlichen Ende, jeweils bezogen auf die Dauer des Sendens.
 
 ### 16.13 Test 8c (optional): Neustart von Klein während des Sendens
 
 Klein ist der Server, der immer läuft; nur machen, wenn ein Neustart gerade passt. Es braucht neue Daten, sonst gibt es nichts zu senden.
 
-> **Diesen Kasten allein und nur einmal einfügen.** Er kopiert dieselben unkritischen Daten ein zweites Mal; auch diese Kopie bleibt 7 bzw. 30 Tage in den Snapshots.
+> **Diesen Kasten allein und nur einmal einfügen.** Er kopiert dieselben unkritischen Dateien wie in 16.11 ein zweites Mal; auch diese Kopie bleibt 7 bzw. 30 Tage in den Snapshots. Gibt es `kopie2` schon, bricht er ab.
+
+Statt `/mnt/user/isos/<Datei1> /mnt/user/isos/<Datei2>` dieselbe Liste wie in 16.11 eintragen:
 
 ```bash
-mkdir /mnt/mainpool/twinraidtest/kopie2 && cp -a /mnt/user/isos/. /mnt/mainpool/twinraidtest/kopie2/
+mkdir /mnt/mainpool/twinraidtest/kopie2 && cp -p /mnt/user/isos/<Datei1> /mnt/user/isos/<Datei2> /mnt/mainpool/twinraidtest/kopie2/
 ```
 
 Dann **Jetzt synchronisieren** und bei etwa **30 %** Klein neu starten (Unraid-Oberfläche von Klein → *Reboot*). Wenn Klein wieder läuft, im **Unraid-Terminal von Groß** die drei Befehle aus 16.11, und auf Klein `bash /boot/config/twinraid/source-guard.sh status | grep -o '"last_seq":[0-9]*'`.
