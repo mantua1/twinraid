@@ -523,6 +523,8 @@ expect_equal "nothing written" "$(ls "/mnt/${KLEIN}/twinraidtest/kopie" 2>/dev/n
 bulk_out="$(bash "${WORK}/testdata-klein.sh" bulk 1 2>&1)" && rc=0 || rc=$?
 expect_equal "bulk 1 GiB" "${rc}:$(stat -c %s "/mnt/${KLEIN}/twinraidtest/kopie/zufall-001.bin")" "0:1073741824"
 expect_contains "bulk reports progress" "${bulk_out}" "1 von 1 GiB geschrieben"
+# Erst nach dem Abschluss der Transaktion zählt ZFS die Daten mit.
+zpool sync "${KLEIN}"
 zfs_written="$(zfs get -H -p -o value logicalused "${KLEIN}/twinraidtest")"
 if ((zfs_written >= 1073741824)); then pass "random data in the pool (${zfs_written})"; else fail "logicalused ${zfs_written}"; fi
 expect_equal "bulk refuses an existing folder" \
