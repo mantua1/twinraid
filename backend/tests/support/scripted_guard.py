@@ -180,6 +180,8 @@ class ScriptedGuard:
     # Wartet bei diesem Auftrag, nachdem er ausgeführt ist, bis release gesetzt wird.
     hold: GuardOrder | None = None
     release: asyncio.Event = field(default_factory=asyncio.Event)
+    # Abstand zwischen zwei Snapshots in limits (ab v0.5.3).
+    snapshot_interval: int = 30
     # Wird bei jedem observe aufgerufen (etwa um den Wächter mitten im Lauf zu ändern).
     on_observe: Callable[[ScriptedGuard], None] | None = None
     orders: list[GuardOrder] = field(default_factory=list)
@@ -206,7 +208,9 @@ class ScriptedGuard:
                 ),
                 self_dataset=self.self_dataset,
             ),
-            limits=LIMITS,
+            limits=LIMITS.model_copy(
+                update={"min_snapshot_interval_minutes": self.snapshot_interval}
+            ),
             target_configured=True,
             target_port=22,
             rejected_count=0,

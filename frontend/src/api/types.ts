@@ -41,6 +41,7 @@ export const STATUS_NOTICES = [
   "target_arc_unlimited",
   // Kachel Klein, ab v0.5.2: gehaltene Basis fehlt oder ist veraltet (Konzept 3.6).
   "source_base_hold_missing",
+  "source_snapshot_interval_test",
 ] as const;
 export type StatusNotice = (typeof STATUS_NOTICES)[number];
 
@@ -429,6 +430,7 @@ export const ACTION_BLOCKERS = [
   // Ab v0.5.2, nur für den Sync.
   "source_guard_too_soon",
   "target_clone_active",
+  "source_guard_snapshot_too_soon",
 ] as const;
 export type ActionBlocker = (typeof ACTION_BLOCKERS)[number];
 
@@ -644,6 +646,8 @@ export interface SyncLevels {
 export interface SyncHistoryShare {
   name: string;
   mode: "full" | "incremental" | null;
+  // Ab v0.5.3; ältere Zeilen der Historie haben null.
+  base_type: "snapshot" | "bookmark" | null;
   deleted: number | null;
   modified: number | null;
   added: number | null;
@@ -674,6 +678,16 @@ export interface SyncStatus {
   levels: SyncLevels;
   // Die letzten 20 Läufe, neueste zuerst (ab v0.5.2).
   history: SyncHistoryEntry[];
+  // Ab v0.5.3: Dialog vor dem Sync und frühester nächster Snapshot (Konzept 4.1).
+  preview: SyncPreview;
+  snapshot_allowed_at: string | null;
+}
+
+// Container, die der Sync voraussichtlich anhält (null bei stop_containers: false), und ob
+// Groß geweckt würde.
+export interface SyncPreview {
+  containers: string[] | null;
+  wake: boolean;
 }
 
 export interface StatusSnapshot {

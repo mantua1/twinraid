@@ -80,8 +80,8 @@ MAX_STATUS_BYTES = 64 * 1024
 # Protokoll 2 ab source-guard.sh Version 2 (TwinRaid v0.5.1), Protokoll 3 ab Version 4
 # (v0.5.3) mit dem Abstand zwischen Snapshots in limits (Konzept 3.6).
 PROTOCOLS = (2, 3)
-# Bei Protokoll 2 gilt der feste Abstand zwischen zwei Snapshots.
-FIXED_SNAPSHOT_INTERVAL_MINUTES = 30
+# Abstand zwischen zwei Snapshots: Standard in source-guard.conf, bei Protokoll 2 fest.
+DEFAULT_SNAPSHOT_INTERVAL_MINUTES = 30
 
 # Zeichenregeln wie im Wächter.
 ContainerName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")]
@@ -578,7 +578,7 @@ def _details(file: GuardFile) -> GuardDetails:
         limits=GuardLimits(
             **file.limits.model_dump(exclude={"min_snapshot_interval_minutes"}),
             min_snapshot_interval_minutes=(
-                file.limits.min_snapshot_interval_minutes or FIXED_SNAPSHOT_INTERVAL_MINUTES
+                file.limits.min_snapshot_interval_minutes or DEFAULT_SNAPSHOT_INTERVAL_MINUTES
             ),
         ),
         target_configured=file.target.configured,
@@ -750,6 +750,10 @@ def _notices(file: GuardFile, own_id: str | None) -> tuple[StatusNotice, ...]:
         notices.append(StatusNotice.SOURCE_FLASH_BACKUP)
     if own_id is not None and any(item.id == own_id for item in file.allowed):
         notices.append(StatusNotice.SOURCE_GUARD_ALLOWS_SELF)
+    interval = file.limits.min_snapshot_interval_minutes
+    if interval is not None and interval < DEFAULT_SNAPSHOT_INTERVAL_MINUTES:
+        # Ein Testwert soll nicht liegen bleiben (Konzept 3.6, F17).
+        notices.append(StatusNotice.SOURCE_SNAPSHOT_INTERVAL_TEST)
     return tuple(notices)
 
 

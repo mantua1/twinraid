@@ -58,6 +58,7 @@ const EXPLAINED = new Set<ActionBlocker>([
   "self_dataset_missing",
   "source_guard_too_soon",
   "target_clone_active",
+  "source_guard_snapshot_too_soon",
 ]);
 
 /** Buttons einer Kachel. Verfügbar ist nur, was der Worker als möglich meldet (Konzept 4.2). */

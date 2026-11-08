@@ -15,7 +15,7 @@ import secrets
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from twinraid.config import TwinRaidConfig
@@ -56,6 +56,7 @@ from twinraid.shared.sync import (
     SyncKind,
     SyncLevels,
     SyncMirror,
+    SyncPreview,
     SyncReason,
     SyncReport,
     SyncResult,
@@ -267,7 +268,13 @@ class SyncCoordinator:
             or details.zfs.state is not GuardZfsState.OK
         ):
             return ActionBlocker.SOURCE_GUARD_INACTIVE
-        if sync and self._too_soon(details):
+        # Pause zwischen zwei Läufen (nur Sync) und Abstand zwischen zwei Snapshots (beide);
+        # gelten beide, zählt die spätere Uhrzeit (Konzept 4.3).
+        run_at = self._run_allowed_at(details) if sync else None
+        snapshot_at = snapshot_allowed_at(details, self._clock())
+        if snapshot_at is not None and (run_at is None or snapshot_at > run_at):
+            return ActionBlocker.SOURCE_GUARD_SNAPSHOT_TOO_SOON
+        if run_at is not None:
             return ActionBlocker.SOURCE_GUARD_TOO_SOON
         shares = set(self._config.sync.shares)
         if shares != {dataset.name for dataset in details.zfs.datasets}:
@@ -286,14 +293,15 @@ class SyncCoordinator:
             return ActionBlocker.TARGET_CLONE_ACTIVE
         return self._target_blocker(status)
 
-    def _too_soon(self, details: GuardDetails) -> bool:
-        """Pause des Wächters zwischen zwei Läufen; nur mit stop_containers (Konzept 4.2)."""
+    def _run_allowed_at(self, details: GuardDetails) -> datetime | None:
+        """Ende der Pause zwischen zwei Läufen, wie die Kachel es zeigt (auf die volle Minute
+        aufgerundet); nur mit stop_containers (Konzept 4.2). None, wenn sie nicht gilt."""
         allowed_at = details.run_allowed_at
-        return (
-            self._config.sync.stop_containers
-            and allowed_at is not None
-            and allowed_at > self._clock()
-        )
+        if not self._config.sync.stop_containers or allowed_at is None:
+            return None
+        if allowed_at <= self._clock():
+            return None
+        return _round_up_to_minute(allowed_at)
 
     def _target_blocker(self, status: ResourceStatus) -> ActionBlocker | None:
         target = self._target
@@ -331,13 +339,27 @@ class SyncCoordinator:
                 cancelling=run.cancel_requested,
                 waiting_for_container=run.cancel_requested and run.run_order_pending,
             )
+        report = self._guard.report()
         return SyncStatus(
             running=running,
             last=self._last,
             report=self._report,
             levels=self._levels(),
             history=self._history.recent(),
+            preview=self._preview(report),
+            snapshot_allowed_at=snapshot_allowed_at(report.status.details, self._clock()),
         )
+
+    def _preview(self, report: GuardReport) -> SyncPreview:
+        """Für den Dialog vor dem Sync: Kandidaten wie in Schritt 2 aus dem aktuellen Status
+        und ob Groß geweckt würde (Konzept 4.1). Der Sync bestimmt sie beim Start neu."""
+        containers: tuple[str, ...] | None = None
+        if self._config.sync.stop_containers:
+            details = report.status.details
+            active = report.status.state is GuardState.ACTIVE and details is not None
+            containers = tuple(self._candidates(report, details)) if details and active else ()
+        wake = self._status.current().target.state is ResourceState.OFFLINE
+        return SyncPreview(containers=containers, wake=wake)
 
     def _levels(self) -> SyncLevels:
         details = self._guard.report().status.details
@@ -968,6 +990,29 @@ class SyncCoordinator:
             self._start(run)
 
 
+def _round_up_to_minute(moment: datetime) -> datetime:
+    """Auf die volle Minute aufgerundet: Ein Versuch zur angezeigten Zeit scheitert dann nicht
+    an too_soon (Konzept 3.6, „Lesen in TwinRaid“)."""
+    whole = moment.replace(second=0, microsecond=0)
+    return whole if whole == moment else whole + timedelta(minutes=1)
+
+
+def snapshot_allowed_at(details: GuardDetails | None, now: datetime) -> datetime | None:
+    """Frühester nächster Snapshot (Konzept 3.6, „Nächster Snapshot“, ab v0.5.3).
+
+    Aus dem Job im frischen Status: Der Wächter legt ihn nur nach einem erfolgreichen
+    zfs snapshot an, und er bleibt stehen, bis der nächste ihn ersetzt. Dazu der Abstand aus
+    limits (bei Protokoll 2 fest 30 min). Kein Job, ein Zeitpunkt in der Zukunft (Uhr von
+    Klein gesprungen) oder ein schon erreichter Zeitpunkt: None, keine Sperre. Maßgeblich
+    bleibt der Wächter (too_soon).
+    """
+    if details is None or details.job is None or details.job.created_at > now:
+        return None
+    interval = timedelta(minutes=details.limits.min_snapshot_interval_minutes)
+    allowed_at = _round_up_to_minute(details.job.created_at + interval)
+    return allowed_at if allowed_at > now else None
+
+
 def _seconds(moment: datetime) -> datetime:
     """Zeitpunkte des Wächters haben ganze Sekunden."""
     return moment.replace(microsecond=0)
@@ -1011,6 +1056,7 @@ def _history_shares(job: GuardJob | None) -> tuple[SyncHistoryShare, ...]:
         SyncHistoryShare(
             name=item.name,
             mode=item.mode,
+            base_type=item.base_type,
             deleted=item.deleted,
             modified=item.modified,
             added=item.added,

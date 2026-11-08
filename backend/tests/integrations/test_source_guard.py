@@ -489,6 +489,20 @@ def test_notices_only_from_a_fresh_status() -> None:
     assert evaluate(_observation(data), NOW).notices == ()
 
 
+@pytest.mark.parametrize(("interval", "notice"), [(5, True), (29, True), (30, False), (60, False)])
+def test_notice_for_a_test_value_of_the_snapshot_interval(interval: int, notice: bool) -> None:
+    """Ab v0.5.3 (F17): ein Abstand unter 30 min ist ein Testwert, der nicht liegen bleiben soll."""
+    notices = evaluate(_observation(protocol_3(interval)), NOW).notices
+    assert (StatusNotice.SOURCE_SNAPSHOT_INTERVAL_TEST in notices) is notice
+
+
+def test_no_interval_notice_with_protocol_2() -> None:
+    assert (
+        StatusNotice.SOURCE_SNAPSHOT_INTERVAL_TEST
+        not in evaluate(_observation(STATUS), NOW).notices
+    )
+
+
 def test_own_container_in_allowed() -> None:
     """Für die eigene ID schickt der Worker nie stop (Konzept 3.6); sie steht nicht im Status."""
     data = copy.deepcopy(STATUS)

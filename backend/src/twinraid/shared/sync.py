@@ -159,6 +159,8 @@ class SyncLevels(StrictModel):
 class SyncHistoryShare(StrictModel):
     name: str
     mode: Literal["full", "incremental"] | None
+    # Ab v0.5.3: Basis Snapshot oder Lesezeichen; ältere Zeilen haben das Feld nicht.
+    base_type: Literal["snapshot", "bookmark"] | None = None
     deleted: int | None
     modified: int | None
     added: int | None
@@ -184,6 +186,16 @@ class SyncHistoryEntry(StrictModel):
     shares: tuple[SyncHistoryShare, ...]
 
 
+class SyncPreview(StrictModel):
+    """Für den Dialog vor dem Sync (Konzept 4.1 und 4.3, ab v0.5.3)."""
+
+    # Container, die der Sync voraussichtlich anhält, mit derselben Regel wie Schritt 2;
+    # None bei stop_containers: false, leer, wenn der Wächter nicht aktiv ist.
+    containers: tuple[str, ...] | None
+    # Groß ist aus und würde geweckt.
+    wake: bool
+
+
 class SyncStatus(StrictModel):
     running: SyncRun | None = None
     last: SyncResult | None = None
@@ -191,3 +203,7 @@ class SyncStatus(StrictModel):
     levels: SyncLevels
     # Die letzten 20 Läufe aus der Sync-Historie, neueste zuerst (ab v0.5.2).
     history: tuple[SyncHistoryEntry, ...] = ()
+    # Ab v0.5.3, auch ohne laufenden Lauf: Dialog vor dem Sync und frühester nächster
+    # Snapshot (None, wenn keine Grenze gilt).
+    preview: SyncPreview
+    snapshot_allowed_at: datetime | None = None

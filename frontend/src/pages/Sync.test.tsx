@@ -491,6 +491,7 @@ describe("finished sync", () => {
       {
         name: "twinraidtest",
         mode: "incremental",
+        base_type: "snapshot",
         deleted: 12,
         modified: 34,
         added: 56,

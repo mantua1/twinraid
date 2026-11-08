@@ -70,6 +70,8 @@ class StatusNotice(StrEnum):
     TARGET_ARC_UNLIMITED = "target_arc_unlimited"
     # Die gehaltene Basis eines Datasets auf Klein fehlt oder ist veraltet (Konzept 3.6, ab v0.5.2).
     SOURCE_BASE_HOLD_MISSING = "source_base_hold_missing"
+    # Der Wächter meldet einen Abstand zwischen Snapshots unter 30 min (Testwert, ab v0.5.3).
+    SOURCE_SNAPSHOT_INTERVAL_TEST = "source_snapshot_interval_test"
 
 
 class ResourceInfo(StrictModel):

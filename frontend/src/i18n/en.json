@@ -68,7 +68,8 @@
       "source_flash_backup": "Unraid Connect Flash Backup is active on {{target}}.",
       "source_guard_allows_self": "The guard's allow list on {{target}} contains TwinRaid's container. Check source-guard.conf: TwinRaid is never stopped.",
       "target_arc_unlimited": "No limit for the ZFS cache is set on {{target}}. Set it in Unraid under Settings → Disk Settings.",
-      "source_base_hold_missing": "The new base of {{datasets}} on {{target}} is not held; the next successful sync fixes that."
+      "source_base_hold_missing": "The new base of {{datasets}} on {{target}} is not held; the next successful sync fixes that.",
+      "source_snapshot_interval_test": "Test value active: interval between snapshots {{minutes}} min (default 30)."
     }
   },
   "dashboard": {
@@ -319,7 +320,8 @@
       "levels_mismatch": "sync.shares in twinraid.yaml does not match the dataset lines in source-guard.conf on {{source}}",
       "self_dataset_missing": "appdata is mirrored, but the own dataset mainpool/appdata/twinraid is missing (test Z4 in docs/EINRICHTUNG.md)",
       "source_guard_too_soon": "the source guard on {{source}} keeps the pause between two runs",
-      "target_clone_active": "according to the last check, a clone of a mirror exists on {{target}}"
+      "target_clone_active": "according to the last check, a clone of a mirror exists on {{target}}",
+      "source_guard_snapshot_too_soon": "the minimum interval since the last snapshot on {{source}} has not passed yet"
     },
     "outcomes": {
       "success": "successful",

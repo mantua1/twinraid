@@ -137,6 +137,8 @@ export const SYNC_IDLE: SyncStatus = {
     target_checked_at: null,
   },
   history: [],
+  preview: { containers: ["twinraid-testcontainer"], wake: false },
+  snapshot_allowed_at: null,
 };
 
 /** Laufender Lauf; ohne Angaben ein Probelauf im Schritt preparing. */
