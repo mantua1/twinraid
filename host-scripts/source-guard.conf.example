@@ -14,6 +14,10 @@ heartbeat_timeout_seconds 120      # Frist ohne ping (30–600)
 stop_timeout_seconds 60            # docker stop vor SIGKILL (10–600)
 min_run_interval_minutes 30        # Pause zwischen zwei Läufen (10–1440); aufheben nur von Hand
                                    # mit "source-guard.sh reset-run-interval"
+# min_snapshot_interval_minutes 30 # Abstand zwischen zwei Snapshots (5–1440, ab Version 4),
+                                   # nur für Tests verkürzen und danach wieder entfernen;
+                                   # Werte unter 30 zeigt TwinRaid als Testwert an.
+                                   # reset-run-interval hebt diesen Abstand nicht auf.
 
 # Datasets mainpool/<Name>, die gespiegelt werden (ab v0.5.1). Nie system oder domains.
 dataset twinraidtest

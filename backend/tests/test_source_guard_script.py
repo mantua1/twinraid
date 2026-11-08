@@ -58,8 +58,8 @@ def test_start_mounts_tmpfs_and_creates_files(host: Host) -> None:
     assert host.private.stat().st_mode & 0o777 == 0o700
     status = host.wait_status(lambda s: s["error"] is None)
     assert host.status_file.stat().st_mode & 0o777 == 0o644
-    assert status["protocol"] == 2
-    assert status["version"] == 3
+    assert status["protocol"] == 3
+    assert status["version"] == 4
     assert len(status["instance"]) == 16
     assert status["last_seq"] == 0
     assert status["last"] is None
@@ -82,6 +82,7 @@ def test_status_lists_allowed_containers_and_limits(running: Host) -> None:
         "heartbeat_timeout_seconds": 120,
         "stop_timeout_seconds": 60,
         "min_run_interval_minutes": 30,
+        "min_snapshot_interval_minutes": 30,
         "max_deletions": 1000,
         "snapshot_keep_days": 7,
         "snapshot_reserve_percent": 15,
@@ -186,6 +187,11 @@ def test_example_config_is_valid(host: Host) -> None:
         ("stop_timeout_seconds 1e3\n", "bad_value", 1),
         ("min_run_interval_minutes 9\n", "bad_value", 1),
         ("min_run_interval_minutes 1441\n", "bad_value", 1),
+        ("min_snapshot_interval_minutes 4\n", "bad_value", 1),
+        ("min_snapshot_interval_minutes 1441\n", "bad_value", 1),
+        ("min_snapshot_interval_minutes abc\n", "bad_value", 1),
+        ("min_snapshot_interval_minutes\n", "syntax", 1),
+        ("min_snapshot_interval_minutes 10\nmin_snapshot_interval_minutes 20\n", "duplicate", 2),
         ("target_host 999.1.1.1\n", "bad_value", 1),
         ("target_host Host_Name\n", "bad_value", 1),
         ("target_port 0\n", "bad_value", 1),
@@ -214,6 +220,8 @@ def test_invalid_config(host: Host, text: str, detail: str, line: int) -> None:
         "target_host 192.168.10.11\ntarget_port 2222\n",
         "min_run_interval_minutes 10\n",
         "min_run_interval_minutes 1440\n",
+        "min_snapshot_interval_minutes 5\n",
+        "min_snapshot_interval_minutes 1440  # Kommentar\n",
         "target_host groß.example\n".replace("ß", "ss"),
         "",
     ],

@@ -265,7 +265,7 @@ sed -e "s|^readonly CONF=.*|readonly CONF=${WORK}/source-guard.conf|" \
   -e "s|^readonly KNOWN_HOSTS=.*|readonly KNOWN_HOSTS=${WORK}/target-known-hosts|" \
   -e "s|^readonly POOL=.*|readonly POOL=${KLEIN}|" \
   -e "s|^readonly SELF_DATASET=.*|readonly SELF_DATASET=${KLEIN}/appdata/twinraid|" \
-  -e "s|^readonly SNAPSHOT_GAP=.*|readonly SNAPSHOT_GAP=0|" \
+  -e "s|^readonly SNAPSHOT_MINUTE=.*|readonly SNAPSHOT_MINUTE=0|" \
   "${REPO_DIR}/host-scripts/source-guard.sh" >"${SOURCE_GUARD}"
 expect_equal "source guard: only the test values differ" \
   "$(diff "${REPO_DIR}/host-scripts/source-guard.sh" "${SOURCE_GUARD}" | grep -c '^>' || true)" 10

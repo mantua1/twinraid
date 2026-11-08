@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Test von host-scripts/source-guard.sh Version 2 mit echtem ZFS in Dateien und dem echten
-# guard.sh 3 als Gegenseite (Konzept 3.6 „Job, Prüfen und Senden“, 3.7).
+# Test von host-scripts/source-guard.sh (ab Version 2, jetzt 4) mit echtem ZFS in Dateien und
+# dem echten guard.sh 3 als Gegenseite (Konzept 3.6 „Job, Prüfen und Senden“, 3.7).
 #
 # Läuft als root auf einem Wegwerf-Rechner (CI-Runner) mit installiertem zfsutils-linux
 # und nur mit SOURCE_GUARD_SYNC_TEST_HOST=disposable. Ein Pool "mainpool" spielt Groß
@@ -20,6 +20,9 @@
 # Groß (base_missing), Ablehnungen von guard.sh (too-soon, receive-busy), close und
 # Neustart während einer Übertragung, Aufbewahrung auf Klein, Testdaten aus testdata.sh
 # kommen mit Besitzern, xattrs und ACLs unverändert an, vollständig und inkrementell.
+# Ab Version 4 (v0.5.3): check nach dem Senden, testdata.sh report auf beiden Seiten nach
+# einem echten Sync (in Ordnung, dann mit readonly=off am Spiegel) und testdata.sh bulk mit
+# einem echten Pool.
 #
 # Aufruf aus dem Repo-Hauptordner:
 #   sudo SOURCE_GUARD_SYNC_TEST_HOST=disposable docker/source-guard-sync-test.sh
@@ -212,10 +215,14 @@ zfs snapshot "${KLEIN}/twinraidtest@manuell"
 
 cp /etc/passwd "${WORK}/passwd"
 cp /etc/group "${WORK}/group"
-# shellcheck disable=SC2016 # $4 gehört in das erzeugte Skript (logger -t … -- Meldung).
-printf '#!/bin/sh\nprintf "%%s\\n" "$4" >>%s\n' "${WORK}/syslog-gross.log" >"${WORK}/logger-gross"
-# shellcheck disable=SC2016 # wie oben
-printf '#!/bin/sh\nprintf "%%s\\n" "$4" >>%s\n' "${WORK}/syslog-klein.log" >"${WORK}/logger-klein"
+# Wie das Syslog von Unraid: Zeit, Rechner, Kennung und Meldung (logger -t <Kennung> --
+# <Meldung>); testdata.sh report liest dieses Format.
+for side in gross klein; do
+  cat >"${WORK}/logger-${side}" <<EOF
+#!/bin/sh
+printf 'Nov  8 10:00:00 Server %s: %s\\n' "\$2" "\$4" >>"${WORK}/syslog-${side}.log"
+EOF
+done
 chmod 0755 "${WORK}/logger-gross" "${WORK}/logger-klein"
 sed -e "s|^readonly LOGGER=.*|readonly LOGGER=${WORK}/logger-gross|" \
   -e "s|^readonly MIRROR_CONF=.*|readonly MIRROR_CONF=${WORK}/mirror.conf|" \
@@ -233,7 +240,7 @@ sed -e "s|^readonly CONF=.*|readonly CONF=${WORK}/source-guard.conf|" \
   -e "s|^readonly POOL=.*|readonly POOL=${KLEIN}|" \
   -e "s|^readonly SELF_DATASET=.*|readonly SELF_DATASET=${KLEIN}/appdata/twinraid|" \
   -e "s|^readonly DAY=.*|readonly DAY=1|" \
-  -e "s|^readonly SNAPSHOT_GAP=.*|readonly SNAPSHOT_GAP=0|" \
+  -e "s|^readonly SNAPSHOT_MINUTE=.*|readonly SNAPSHOT_MINUTE=0|" \
   "${REPO_DIR}/host-scripts/source-guard.sh" >"${SOURCE_GUARD}"
 expect_equal "source guard: only the test values differ" \
   "$(diff "${REPO_DIR}/host-scripts/source-guard.sh" "${SOURCE_GUARD}" | grep -c '^>' || true)" 11
@@ -271,7 +278,8 @@ EOF
 /bin/bash "${SOURCE_GUARD}" start
 wait_status zfs.state ok 30
 expect_equal "guard active" "$(status_field error)" "null"
-expect_equal "protocol 2" "$(status_field protocol)" "2"
+expect_equal "protocol 3" "$(status_field protocol)" "3"
+expect_equal "snapshot interval in limits" "$(status_field limits.min_snapshot_interval_minutes)" "30"
 
 echo "== Erster Lauf: vollständig"
 order prepare no_job
@@ -296,6 +304,11 @@ order send sending
 wait_job "done|failed"
 expect_equal "first send" "$(job state):$(job result)" "done:ok"
 expect_equal "sent bytes" "$(dataset_field 0 sent)" "${size0}"
+# Ab Version 4: check nach dem Senden; der Status kennt den Spiegel mit dem neuen Snapshot.
+wait_status target.check.mirrors.0.count 1 10 || true
+expect_equal "check after sending" \
+  "$(status_field target.check.mirrors.0.state):$(status_field target.check.mirrors.0.count):$(status_field target.check.mirrors.0.newest_guid)" \
+  "mirror:1:$(value guid "${KLEIN}/twinraidtest@${snap}")"
 for name in twinraidtest dokumente; do
   expect_equal "mirror ${name} has the snapshot" "$(value guid "${ROOT}/${name}@${snap}")" \
     "$(value guid "${KLEIN}/${name}@${snap}")"
@@ -351,6 +364,34 @@ expect_equal "hold moved" "$(held "${KLEIN}/twinraidtest@${snap}")" "twinraid-ba
 expect_equal "retention on Klein" "$(own_snapshots "${KLEIN}/twinraidtest")" "${KLEIN}/twinraidtest@${snap}"
 expect_equal "foreign snapshot untouched" "$(value name "${KLEIN}/twinraidtest@manuell")" "${KLEIN}/twinraidtest@manuell"
 expect_equal "bookmark of the old base kept" "$(value name "${KLEIN}/twinraidtest#${first}")" "${KLEIN}/twinraidtest#${first}"
+
+echo "== testdata.sh report nach einem echten Sync"
+# Kopien mit den Testpfaden; Groß ist hier mainpool wie auf dem Server.
+sed -e "s|^readonly POOL=.*|readonly POOL=${KLEIN}|" \
+  -e "s|^readonly SYSLOG=.*|readonly SYSLOG=${WORK}/syslog-klein.log|" \
+  -e "s|^readonly SOURCE_GUARD_CONF=.*|readonly SOURCE_GUARD_CONF=${WORK}/source-guard.conf|" \
+  -e "s|^readonly BULK_ROOT=.*|readonly BULK_ROOT=/mnt/${KLEIN}/twinraidtest|" \
+  "${REPO_DIR}/host-scripts/testdata.sh" >"${WORK}/testdata-klein.sh"
+sed -e "s|^readonly SYSLOG=.*|readonly SYSLOG=${WORK}/syslog-gross.log|" \
+  -e "s|^readonly GUARD_SH=.*|readonly GUARD_SH=${GUARD}|" \
+  "${REPO_DIR}/host-scripts/testdata.sh" >"${WORK}/testdata-gross.sh"
+report_klein="$(bash "${WORK}/testdata-klein.sh" report source dokumente 2>&1)" && rc=0 || rc=$?
+expect_equal "report source in order" "${rc}:$(tail -1 <<<"${report_klein}")" "0:Alles in Ordnung."
+expect_contains "report source names the held snapshot" "${report_klein}" "OK         Hold: twinraid-base an ${snap}"
+report_gross="$(bash "${WORK}/testdata-gross.sh" report target dokumente 2>&1)" && rc=0 || rc=$?
+expect_equal "report target in order" "${rc}:$(tail -1 <<<"${report_gross}")" "0:Alles in Ordnung."
+expect_contains "report target checks the test data" "${report_gross}" \
+  "verify-latest ohne Abweichung, Snapshot ${snap}, Lauf 0"
+expect_contains "both sides name the same snapshot" "${report_gross}" "auf Klein muss ${snap} heißen"
+zfs set readonly=off "${ROOT}/dokumente"
+report_gross="$(bash "${WORK}/testdata-gross.sh" report target dokumente 2>&1)" && rc=0 || rc=$?
+# guard.sh check meldet dann props=mismatch, report die abweichende feste Eigenschaft.
+expect_equal "report target finds readonly=off" "${rc}:$(tail -1 <<<"${report_gross}")" "1:2 Abweichungen."
+expect_contains "fixed value readonly" "${report_gross}" "readonly=off (Quelle local)"
+expect_contains "check props=mismatch" "${report_gross}" "props=mismatch"
+zfs set readonly=on "${ROOT}/dokumente"
+expect_equal "report target in order again" \
+  "$(bash "${WORK}/testdata-gross.sh" report target dokumente 2>&1 | tail -1)" "Alles in Ordnung."
 
 echo "== Löschungen über max_deletions brauchen eine Freigabe"
 rm /mnt/"${KLEIN}"/twinraidtest/datei{7,8,9,10,11,12}.txt
@@ -472,6 +513,21 @@ full_run
 order send sending
 wait_job "done|failed"
 expect_equal "next run after the restart" "$(job state):$(job result)" "done:ok"
+
+echo "== testdata.sh bulk mit einem echten Pool"
+# Am Ende des Tests: Die Zufallsdaten gingen sonst in die nächsten Läufe ein.
+too_much="$(bash "${WORK}/testdata-klein.sh" bulk 500 2>&1)" && rc=0 || rc=$?
+expect_equal "bulk refuses too much" "${rc}" "2"
+expect_contains "bulk names the possible amount" "${too_much}" "möglich sind höchstens"
+expect_equal "nothing written" "$(ls "/mnt/${KLEIN}/twinraidtest/kopie" 2>/dev/null || true)" ""
+bulk_out="$(bash "${WORK}/testdata-klein.sh" bulk 1 2>&1)" && rc=0 || rc=$?
+expect_equal "bulk 1 GiB" "${rc}:$(stat -c %s "/mnt/${KLEIN}/twinraidtest/kopie/zufall-001.bin")" "0:1073741824"
+expect_contains "bulk reports progress" "${bulk_out}" "1 von 1 GiB geschrieben"
+zfs_written="$(zfs get -H -p -o value logicalused "${KLEIN}/twinraidtest")"
+if ((zfs_written >= 1073741824)); then pass "random data in the pool (${zfs_written})"; else fail "logicalused ${zfs_written}"; fi
+expect_equal "bulk refuses an existing folder" \
+  "$(bash "${WORK}/testdata-klein.sh" bulk 1 2>&1 >/dev/null || true)" \
+  "testdata.sh: /mnt/${KLEIN}/twinraidtest/kopie gibt es schon; bulk legt nur neu an."
 
 echo "== Feste Argumente für ssh"
 bad="$(grep -v -c -- "-F /dev/null -i ${BASE}/private/ssh-sync -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${WORK}/target-known-hosts -o GlobalKnownHostsFile=/dev/null -o HostKeyAlgorithms=ssh-ed25519 -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -p 22 -l root -- 192.0.2.11 " "${WORK}/ssh-calls.log" || true)"
