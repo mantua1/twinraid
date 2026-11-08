@@ -1581,7 +1581,7 @@ twinraid-admin show-action-log --lines 5
 
 Rechte `stat` wie vorher.
 
-**Scheitert G10, zurück auf 0.5.0.** Das betrifft besonders eine Meldung `Permission denied` im Log, einen Worker, der nicht startet, oder eine Kachel, die nach den Schritten oben noch einen Fehler zeigt.
+**Scheitert G10, zurück auf 0.5.0.** *Rückweg beschrieben, bis 1.0 nicht auf den Servern geprüft.* Das betrifft besonders eine Meldung `Permission denied` im Log, einen Worker, der nicht startet, oder eine Kachel, die nach den Schritten oben noch einen Fehler zeigt.
 
 1. **Klein:** Die alte Konfiguration zurückholen; 0.5.0 braucht die Schlüssel aus 15.1 und kennt `sync_dry_run` nicht:
 
@@ -1966,7 +1966,7 @@ Neu auf den Servern sind `source-guard.sh` Version 3 (Klein), `guard.sh` mit 2 G
 | 16.12 | Test 8b: Neustart von TwinRaid während des Sendens | Dashboard |
 | 16.13 | Test 8c (optional): Neustart von Klein während des Sendens | Klein, Groß |
 | 16.14 | Aufräumen | Klein, Dashboard |
-| 16.15 | Test 9: zurück auf 0.5.1 und wieder auf 0.5.2 | Klein, Dashboard |
+| 16.15 | Test 9 entfällt (Rückweg bis 1.0 nicht geprüft) | – |
 | 16.16 | Test M1 (optional) mit 2 GiB | Groß, Dashboard |
 | 16.17 | Test 5b (optional): Test-Share neu angelegt | Klein, Groß, Dashboard |
 | 16.18 | Test A3: Aufbewahrung auf Groß nach einem Monat | Groß |
@@ -2109,7 +2109,7 @@ Wie in 15.2 gilt: **Skripte nie direkt nach `/boot/config/twinraid/` laden,** so
 
 > **Warum diese Reihenfolge?** Anders als bei 0.5.1 zwingt kein Protokoll eine Reihenfolge: TwinRaid 0.5.2 versteht `source-guard.sh` 2 und 3 und `guard.sh` 3 in beiden Fassungen. Erst TwinRaid, dann die Skripte, und erst ganz am Ende `actions.sync`: So lässt sich jeder Schritt einzeln zurücknehmen, und der Sync ist erst freigeschaltet, wenn alle Teile da sind.
 
-**Scheitert G11, zurück auf 0.5.1.** Derselbe Weg gilt für Test 9 (16.15).
+**Scheitert G11, zurück auf 0.5.1.** *Rückweg beschrieben, bis 1.0 nicht auf den Servern geprüft.*
 
 1. **Kein Lauf und keine Übertragung offen:** Prüfung aus 16.1. Ein Neustart von TwinRaid lässt eine Übertragung zwar weiterlaufen, TwinRaid 0.5.1 kann sie aber nicht anzeigen.
 2. **Klein:** Reiter **Docker** → Symbol *TwinRaid* → **Edit** → **Repository** `ghcr.io/mantua1/twinraid:0.5.1` → **Apply**. `twinraid.yaml` bleibt; 0.5.1 kennt alle Schlüssel, auch `actions.sync`, und zeigt bei **Jetzt synchronisieren** „kommt mit v0.5.2“.
@@ -2573,17 +2573,9 @@ rm -r /mnt/mainpool/twinraidtest/kopie /mnt/mainpool/twinraidtest/kopie2
 
 Dann **Jetzt synchronisieren**. Meist fragt der Sync nach einer Freigabe, weil die Share auf weniger als die Hälfte schrumpft („Auf weniger als die Hälfte geschrumpft (neu / Basis): twinraidtest …“), bei vielen Dateien auch wegen der Löschungen. **Freigeben und senden**. Die Daten bleiben noch 7 Tage auf Klein und 30 Tage auf Groß in den Snapshots; erst dann wird der Platz frei. Löschen kann sie vorher nur root von Hand, und das ist nicht nötig.
 
-### 16.15 Test 9: Zurück auf 0.5.1 und wieder auf 0.5.2
+### 16.15 Test 9 entfällt
 
-1. **Zurück auf 0.5.1** wie unter „Scheitert G11, zurück auf 0.5.1“ in 16.2, Punkte 1 und 2. Die Skripte bleiben.
-2. **Nur Probelauf** (30 Minuten nach dem letzten Snapshot).
-3. **Wieder auf 0.5.2:** **Repository** `ghcr.io/mantua1/twinraid:latest` → **Apply**.
-
-| Prüfen | Erwartet |
-|---|---|
-| 0.5.1 mit den Skripten aus 0.5.2 | Kacheln ohne Fehler; Kachel **Unraid Klein** „Wächter: aktiv“; **Jetzt synchronisieren** grau, „kommt mit v0.5.2“ |
-| Probelauf unter 0.5.1 | „Probelauf abgeschlossen; Senden wäre möglich.“, `twinraidtest` „inkrementell“, Spiegel „vorhanden · … Snapshots“ |
-| wieder 0.5.2 | wie G11 nach Punkt 5: **Jetzt synchronisieren** aktiv; die Historie von vorher ist wieder da |
+Festlegung vom 08.11.2026: Bis zur Version 1.0 gibt es keine Servertests für den Rückweg auf die Vorversion. Der Rückweg auf 0.5.1 steht weiter in 16.2 („Scheitert G11, zurück auf 0.5.1“). *Rückweg beschrieben, bis 1.0 nicht auf den Servern geprüft.* Ab 1.0 bekommt jede Version einen Rückweg-Test.
 
 ### 16.16 Test M1 (optional) mit 2 GiB
 
@@ -2817,7 +2809,7 @@ Danach den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart
 - Von 0.4.3 auf 0.4.4 genügt das Update: `guard.sh` (Version 2), `power.conf`, die Keys und `twinraid.yaml` bleiben unverändert.
 - Von 0.4.4 auf 0.5.0 genügt für den bisherigen Betrieb ebenfalls das Update; `guard.sh` bleibt Version 2. Neu ist der Wächter auf Klein mit zwei weiteren Pfaden im Template; bis er eingerichtet ist (Abschnitt 12, ab Test W1), zeigt die Kachel Klein grau „Wächter nicht eingerichtet“.
 - Von 0.5.0 auf 0.5.1 genügt das Update **nicht**: Vorher `exclude` und `protect_on_target` aus `twinraid.yaml` entfernen, sonst startet der Container nicht. TwinRaid 0.5.1 verlangt `guard.sh` Version 3 und `source-guard.sh` Version 2. Reihenfolge und Rückweg stehen in 15.1 und 15.2. Erst TwinRaid aktualisieren, dann `guard.sh` kopieren, dann `twinraid-admin trust-host-key target`, dann `source-guard.sh` kopieren.
-- Von 0.5.1 auf 0.5.2 genügt das Update für den bisherigen Betrieb: `twinraid.yaml` bleibt, und TwinRaid 0.5.2 arbeitet mit `guard.sh` 3 und `source-guard.sh` 2 aus 0.5.1. Für den echten Sync kommen `source-guard.sh` Version 3, `guard.sh` mit 2 GiB Abstand und `testdata.sh` auf beiden Servern dazu, in der Reihenfolge aus 16.2; erst danach `actions.sync` freischalten. Der Rückweg steht in 16.2.
+- Von 0.5.1 auf 0.5.2 genügt das Update für den bisherigen Betrieb: `twinraid.yaml` bleibt, und TwinRaid 0.5.2 arbeitet mit `guard.sh` 3 und `source-guard.sh` 2 aus 0.5.1. Für den echten Sync kommen `source-guard.sh` Version 3, `guard.sh` mit 2 GiB Abstand und `testdata.sh` auf beiden Servern dazu, in der Reihenfolge aus 16.2; erst danach `actions.sync` freischalten. Der Rückweg steht in 16.2. *Rückweg beschrieben, bis 1.0 nicht auf den Servern geprüft.*
 - Das Template verwendet `ghcr.io/mantua1/twinraid:latest`. Dieser Tag zeigt immer auf das neueste Release. Wer eine Version festhalten möchte, trägt unter *Repository* zum Beispiel `ghcr.io/mantua1/twinraid:0.3` ein.
 - Jedes Image wird ausschließlich von GitHub Actions aus diesem Repository gebaut und hat einen signierten Herkunftsnachweis. Prüfen kannst du ihn auf einem PC mit der GitHub-CLI (`gh`):
 

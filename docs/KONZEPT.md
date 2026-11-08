@@ -355,7 +355,7 @@ TRSG1 <Nr> close <Prüfsumme>
 - **Protokoll 2:** Der Status hat ab v0.5.1 das Protokoll 2 (neue Felder, siehe unten); TwinRaid ab 0.5.1 nimmt nur Protokoll 2 an und meldet bei Version 1 `protocol_mismatch` mit dem Hinweis, source-guard.sh Version 2 zu kopieren. Die Aufträge bleiben `TRSG1`. Version 3 des Wächters (ab v0.5.2) ändert weder `status.json` noch die Aufträge und bleibt bei Protokoll 2; TwinRaid 0.5.1 und 0.5.2 arbeiten mit Version 2 und 3. Weil TwinRaid unbekannte Felder ablehnt, ist jedes neue Feld im Status eine Änderung des Protokolls.
 - **Protokoll 3 (ab Version 4, v0.5.3, festgelegt am 08.11.2026):** Einziger Unterschied zu Protokoll 2 ist das Pflichtfeld `limits.min_snapshot_interval_minutes` (5–1440). Die Aufträge bleiben `TRSG1`. TwinRaid 0.5.3 nimmt Protokoll 2 und 3 an: Bei Protokoll 2 gilt fest der Abstand von 30 min, und das Feld darf nicht vorkommen; bei Protokoll 3 muss es vorkommen. Jedes andere Protokoll ergibt `protocol_mismatch` mit dem Hinweis, source-guard.sh Version 4 zu kopieren. TwinRaid 0.5.2 nimmt nur Protokoll 2 an und meldet bei Version 4 `protocol_mismatch`; Sync und Probelauf sind dann gesperrt (`source_guard_inactive`), Container hält niemand an.
   - **Umstieg auf 0.5.3:** erst TwinRaid 0.5.3 (arbeitet noch mit Version 3), dann source-guard.sh Version 4 kopieren und `source-guard.sh restart`. Erst danach darf `min_snapshot_interval_minutes` in `source-guard.conf` stehen.
-  - **Rückweg auf 0.5.2:** zuerst source-guard.sh Version 3 zurück, dann TwinRaid 0.5.2. Vorher muss die Zeile `min_snapshot_interval_minutes` aus `source-guard.conf` entfernt werden: Version 3 kennt den Schlüssel nicht, startet mit ihm nicht und meldet `config_invalid`. Die Schritte stehen in `docs/EINRICHTUNG.md`, Abschnitt 17.
+  - **Rückweg auf 0.5.2:** zuerst source-guard.sh Version 3 zurück, dann TwinRaid 0.5.2. Vorher muss die Zeile `min_snapshot_interval_minutes` aus `source-guard.conf` entfernt werden: Version 3 kennt den Schlüssel nicht, startet mit ihm nicht und meldet `config_invalid`. Die Schritte stehen in `docs/EINRICHTUNG.md`, Abschnitt 17; bis 1.0 sind sie nicht auf den Servern geprüft (Kapitel 9).
 - **Neue Felder im Status** (Zeiten in Sekunden seit 1970, GUIDs als Text aus höchstens 20 Ziffern, `null` für unbekannt):
 
   ```
@@ -1288,6 +1288,8 @@ Jede Phase endet mit lauffähigem, getestetem Stand und einem Commit auf GitHub.
 
 Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung ab Phase 3, fertig in Phase 7).
 
+**Rückweg auf die Vorversion (festgelegt am 08.11.2026):** Bis zur Version 1.0 gibt es keine Servertests für den Rückweg auf die Vorversion; bei v0.5.2 entfällt Test 9, bei v0.5.3 Test 9b. Der Rückweg bleibt in `docs/EINRICHTUNG.md` beschrieben, dort mit dem Satz „Rückweg beschrieben, bis 1.0 nicht auf den Servern geprüft“. Ab 1.0 bekommt jede Version einen Rückweg-Test (10.3).
+
 - [ ] Groß: Wake-on-LAN im BIOS aktivieren („Wake on LAN“ bzw. „Power On by PCI-E“ an, „ErP/EuP“ aus) und `ethtool -s eth0 wol g` in `/boot/config/go` eintragen
 - [ ] Groß: Array startet automatisch (*Settings → Disk Settings → Enable auto start*), sonst sind VMs nach dem Wecken nicht verfügbar
 - [ ] Gaming-VM (Windows): Energieoptionen → „Beim Drücken des Netzschalters: Herunterfahren“, sonst reagiert sie nicht auf das ACPI-Signal
@@ -1299,7 +1301,7 @@ Die Schritt-für-Schritt-Anleitung steht in `docs/EINRICHTUNG.md` (erste Fassung
 - [ ] Groß (ab v0.5.0): Pool `mainpool` (ZFS) nur für die Spiegel, VMs und `system` auf einem anderen Pool; Share `twinraid-mirror` (Primärspeicher `mainpool`, Export „No“); keine Share-Konfigurationen mit den Namen der gespiegelten Shares und kein Pfad des VM-Managers dorthin (E26); Docker-Dienst aus; `zfs_arc_max` in Unraid eingetragen (*Settings → Disk Settings*)
 - [ ] Groß (ab v0.5.1): erst TwinRaid 0.5.1, dann `guard.sh` Version 3; `mirror.conf` und die Zeile für den Key „sync“ aus `source-guard.sh init-key`; mit E27 die Delegation für UID 64000 auf `mainpool/twinraid-mirror` (Test Z1b vorher); Hostkey von Groß auf Klein mit `source-guard.sh trust-target` bestätigen
 - [ ] Klein und Groß (ab v0.5.2): TwinRaid 0.5.2, dann `source-guard.sh` Version 3, dann `guard.sh` mit 2 GiB Abstand, dann `testdata.sh` auf beiden Servern; danach `actions.sync` freischalten (`docs/EINRICHTUNG.md`, Abschnitt 16)
-- [ ] Klein und Groß (ab v0.5.3): TwinRaid 0.5.3, dann `source-guard.sh` Version 4 (Protokoll 3; TwinRaid 0.5.2 nimmt es nicht an), dann `testdata.sh` auf beiden Servern; `guard.sh` bleibt; `min_snapshot_interval_minutes` nur für Tests und danach wieder entfernen; danach den Notbetrieb einmal mit der Test-Share üben (Z5, `docs/EINRICHTUNG.md`, Abschnitt 17)
+- [ ] Klein und Groß (ab v0.5.3): TwinRaid 0.5.3, dann `source-guard.sh` Version 4 (Protokoll 3; TwinRaid 0.5.2 nimmt es nicht an), dann `testdata.sh` auf beiden Servern; `guard.sh` bleibt; `min_snapshot_interval_minutes` nur für Tests und danach wieder entfernen; der Rückweg auf 0.5.2 ist beschrieben, bis 1.0 aber nicht geprüft (siehe oben); danach den Notbetrieb einmal mit der Test-Share üben (Z5, `docs/EINRICHTUNG.md`, Abschnitt 17)
 - [ ] Klein und Groß (ab v0.5.1): Freigabe des Boot-Mediums *Flash → SMB Security Settings → Export: No*. Dort liegen `guard.sh`, `authorized_keys`, `source-guard.sh`, die go-Datei und der private Key „sync“ (Prüfung durch TwinRaid: Merkliste 10.3)
 - [ ] Klein: „Host access to custom networks“ in den Docker-Einstellungen **nicht** aktivieren (siehe 5.1)
 - [ ] Klein: Container-Templates prüfen: absolute Pfade nur unter `/mnt/user/…` oder in gespiegelten Shares (4.7)
@@ -1470,6 +1472,7 @@ Bevor eine echte Share gespiegelt wird (nach v0.5.2), gilt:
 
 Punkte, die bewusst nicht in Phase 5 umgesetzt werden (festgehalten am 21.10.2026):
 
+- **Rückweg-Test je Version (ab 1.0, festgelegt am 08.11.2026):** Jede Version ab 1.0 bekommt einen Servertest für den Rückweg auf die Vorversion. Bis dahin ist der Rückweg in `docs/EINRICHTUNG.md` nur beschrieben (Kapitel 9).
 - **Lesezeichen auf Klein aufräumen:** Der Wächter löscht eigene Lesezeichen (`#twinraid-…`), die älter sind als der älteste Snapshot des Spiegels auf Groß (`oldest_created` aus `check`, 3.7), nie das neueste je Dataset. Ein solches Lesezeichen kann nie mehr Basis eines inkrementellen Stroms sein, weil Groß den passenden Snapshot nicht mehr hat. Bis dahin bleiben alle (3.6).
 - **Freigabe des Boot-Mediums prüfen:** TwinRaid weist darauf hin, wenn die Freigabe „flash“ auf Klein oder Groß exportiert ist (auf Klein über den Wächter, auf Groß über `guard.sh status`), wie bei den Hinweisen zu Unraid Connect. Bis dahin ist *Export: No* eine Voraussetzung der Einrichtung (Kapitel 9).
 
