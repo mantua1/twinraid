@@ -25,6 +25,18 @@ RELEASE_0_5_1 = {
     "source-guard.sh": "d4f05ada883386b365520296312f916fc57d0a283725c0b3c8d5d3ce0f85d647",
     "testdata.sh": "ca4b8833cfde011242f08cf67cd72d5fd7a08e14f3f3db3811076888f864a019",
 }
+# Abschnitt 16 gilt für v0.5.2; ab v0.5.3 ändern sich source-guard.sh und testdata.sh.
+RELEASE_0_5_2 = {
+    "guard.sh": "30713f387695c48611bcd3762bfca59e1928c5436db0ea8cf7eb1b68143b2e0c",
+    "source-guard.sh": "2cbccdfba70f8372799512f1b75e568abd71140c03f4d582af90b99294db0bd7",
+    "testdata.sh": "c151d3421085cf2857640377d98ed0b7520c340adc950b6bac6ba725449d39de",
+}
+HEADERS_0_5_2 = {
+    "guard.sh": "# TwinRaid: SSH-Wächter auf Unraid Groß, Version 3 (Konzept 3.5, 3.7 und 5.6).",
+    "source-guard.sh": (
+        "# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 3 (Konzept 3.6)."
+    ),
+}
 
 
 def _recv_perms() -> str:
@@ -147,16 +159,20 @@ def test_documented_hashes_are_those_of_the_release(name: str) -> None:
     assert documented == {RELEASE_0_5_1[name]}
 
 
-@pytest.mark.parametrize("name", ["guard.sh", "source-guard.sh", "testdata.sh"])
-def test_section_16_loads_the_current_scripts(name: str) -> None:
+@pytest.mark.parametrize("name", sorted(RELEASE_0_5_2))
+def test_section_16_loads_the_scripts_of_0_5_2(name: str) -> None:
     documented = re.findall(rf"([0-9a-f]{{64}})  /tmp/{re.escape(name)}", _section(16))
-    assert documented == [_sha256(name)]
+    assert documented == [RELEASE_0_5_2[name]]
 
 
-@pytest.mark.parametrize("name", ["guard.sh", "source-guard.sh"])
-def test_section_16_names_the_header_of_the_current_scripts(name: str) -> None:
-    header = (SCRIPTS / name).read_text(encoding="utf-8").splitlines()[1]
-    assert f"Die zweite Zeile lautet `{header}`" in _section(16)
+def test_guard_is_unchanged_since_0_5_2() -> None:
+    """v0.5.3 ändert guard.sh nicht (Konzept 3.5); Abschnitt 16 gilt dafür weiter."""
+    assert _sha256("guard.sh") == RELEASE_0_5_2["guard.sh"]
+
+
+@pytest.mark.parametrize("name", sorted(HEADERS_0_5_2))
+def test_section_16_names_the_header_of_the_scripts_of_0_5_2(name: str) -> None:
+    assert f"Die zweite Zeile lautet `{HEADERS_0_5_2[name]}`" in _section(16)
 
 
 def test_section_16_shows_the_memory_margin_of_guard() -> None:
