@@ -153,7 +153,9 @@ def _problem(raw: bytes) -> GuardStatusProblem:
         (b"[1]", GuardStatusProblem.SCHEMA),
         # Version 1 des Wächters (TwinRaid 0.5.0) schreibt Protokoll 1.
         (b'{"protocol":1}', GuardStatusProblem.PROTOCOL_MISMATCH),
-        (b'{"protocol":3}', GuardStatusProblem.PROTOCOL_MISMATCH),
+        # Protokoll 3 ab Version 4 (v0.5.3); 4 gibt es noch nicht.
+        (b'{"protocol":4}', GuardStatusProblem.PROTOCOL_MISMATCH),
+        (b'{"protocol":3}', GuardStatusProblem.SCHEMA),
         (b'{"protocol":true}', GuardStatusProblem.SCHEMA),
         (b'{"protocol":2}', GuardStatusProblem.SCHEMA),
     ],
@@ -256,6 +258,45 @@ def test_schema_rejects_missing_fields_and_long_lists() -> None:
     data = copy.deepcopy(STATUS)
     del data["job"]
     assert _problem(raw(data)) is GuardStatusProblem.SCHEMA
+
+
+def protocol_3(interval: Any = 10) -> dict[str, Any]:  # noqa: ANN401 - beliebiger JSON-Wert
+    """Status von Version 4 (Protokoll 3) mit dem Abstand zwischen Snapshots."""
+    data = changed("protocol", 3)
+    data["version"] = 4
+    data["limits"]["min_snapshot_interval_minutes"] = interval
+    return data
+
+
+def test_protocol_3_has_the_snapshot_interval() -> None:
+    """Ab v0.5.3 (Konzept 3.6, F17): Protokoll 2 ohne Feld (fest 30 min), 3 mit Feld."""
+    assert parse_status(raw(protocol_3(5))).limits.min_snapshot_interval_minutes == 5
+    assert parse_status(raw(protocol_3(1440))).limits.min_snapshot_interval_minutes == 1440
+    assert parse_status(raw(STATUS)).limits.min_snapshot_interval_minutes is None
+
+
+@pytest.mark.parametrize("interval", [4, 1441, None, "10", True, 10.0])
+def test_protocol_3_checks_the_snapshot_interval(interval: Any) -> None:  # noqa: ANN401
+    assert _problem(raw(protocol_3(interval))) is GuardStatusProblem.SCHEMA
+
+
+def test_snapshot_interval_must_match_the_protocol() -> None:
+    without = protocol_3()
+    del without["limits"]["min_snapshot_interval_minutes"]
+    assert _problem(raw(without)) is GuardStatusProblem.SCHEMA
+    with_field = copy.deepcopy(STATUS)
+    with_field["limits"]["min_snapshot_interval_minutes"] = 30
+    assert _problem(raw(with_field)) is GuardStatusProblem.SCHEMA
+
+
+def test_snapshot_interval_in_the_details(tmp_path: Path) -> None:
+    paths = guard_paths(tmp_path)
+    for data, expected in ((STATUS, 30), (protocol_3(7), 7)):
+        paths.status_file.write_bytes(raw(data))
+        status = evaluate(read_observation(paths), NOW).status
+        assert status.state is GuardState.ACTIVE
+        assert status.details is not None
+        assert status.details.limits.min_snapshot_interval_minutes == expected
 
 
 def test_schema_accepts_empty_parts() -> None:

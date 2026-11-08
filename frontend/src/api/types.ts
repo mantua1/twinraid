@@ -190,6 +190,7 @@ export interface GuardLimits {
   heartbeat_timeout_seconds: number;
   stop_timeout_seconds: number;
   min_run_interval_minutes: number;
+  min_snapshot_interval_minutes: number;
   max_deletions: number;
   snapshot_keep_days: number;
   snapshot_reserve_percent: number;

@@ -100,6 +100,7 @@ export const GUARD_DETAILS: GuardDetails = {
     heartbeat_timeout_seconds: 120,
     stop_timeout_seconds: 60,
     min_run_interval_minutes: 30,
+    min_snapshot_interval_minutes: 30,
     max_deletions: 1000,
     snapshot_keep_days: 7,
     snapshot_reserve_percent: 15,
