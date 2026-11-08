@@ -430,6 +430,26 @@ expect_contains "action log records the dry run" \
   "$(docker exec "${main}" twinraid-admin show-action-log 2>&1)" "sync_dry_run  dashboard: dry_run_success"
 expect_contains "audit log lists the dry run" "$(https_get -b "${JAR}" "${BASE}/api/audit")" \
   '"action":"sync_dry_run","result":"requested"'
+# Ab v0.5.3: Zwischen zwei Snapshots liegen in der Simulation 5 min (Konzept 6.4); der Sync
+# direkt nach dem Probelauf ist gesperrt, mit Uhrzeit und Hinweis auf den Testwert.
+expect_equal "sync right after the dry run is refused" \
+  "$(status_of -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/actions/sync_start")" "409"
+interval_status="$(https_get -b "${JAR}" "${BASE}/api/status")"
+expect_contains "the snapshot interval blocks the sync" "${interval_status}" '"sync_start":"source_guard_snapshot_too_soon"'
+expect_contains "status names the next snapshot" "${interval_status}" '"snapshot_allowed_at":"'
+expect_contains "notice for the test value" "${interval_status}" '"source_snapshot_interval_test"'
+# Ein Neustart des Workers beginnt die Simulation neu (ohne letzten Snapshot).
+docker exec "${main}" /command/s6-svc -r /run/service/twinraid-worker
+worker_back="no"
+for _ in $(seq 1 60); do
+  sleep 1
+  interval_status="$(https_get -b "${JAR}" "${BASE}/api/status" || true)"
+  if [[ "${interval_status}" == *'"sync_start":null'* ]]; then
+    worker_back="yes"
+    break
+  fi
+done
+expect_equal "sync is available after the worker restarted" "${worker_back}" "yes"
 # Sync mit dem simulierten Wächter (Konzept 4.3 und 6.4, ab v0.5.2): Container-Phase,
 # prepare und Senden mit 25 MiB/s, drei Shares mit je 350 MiB.
 expect_equal "sync is accepted" \
