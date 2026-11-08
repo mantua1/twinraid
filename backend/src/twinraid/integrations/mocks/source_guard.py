@@ -12,7 +12,12 @@ Mit mock-tour zeigt GUARD_SCENARIO jeden Zustand, jeden Fehler und jeden Hinweis
 Wächters mindestens einmal, im selben Takt wie der Rundlauf von Groß und VM.
 
 Ab v0.5.1 nimmt der simulierte Wächter Aufträge an wie source-guard.sh (ab v0.5.2 alle,
-integrations/mocks/guard_jobs.py), mit Ziel, Key und Hostkey von Groß.
+integrations/mocks/guard_jobs.py), mit Ziel, Key und Hostkey von Groß. Ab v0.5.3 hat er
+Version 4 (Protokoll 3) mit 5 min zwischen zwei Snapshots, dem kleinsten erlaubten Wert;
+deshalb zeigt die Kachel Klein in der Simulation immer den Hinweis „Testwert aktiv“. Dazu
+Snapshots auf Klein (10 eigene, der älteste vor 6 Tagen, Basis gehalten, Lesezeichen) und
+auf Groß (20 je Spiegel, der älteste vor 29 Tagen), nach jedem Snapshot bzw. Senden einer
+mehr (Konzept 6.4).
 """
 
 import asyncio
@@ -86,7 +91,7 @@ _ZFS = GuardZfs(
 
 def _details(started_at: datetime, **changes: object) -> GuardDetails:
     details = GuardDetails(
-        version=2,
+        version=4,
         started_at=started_at,
         allowed=(GuardContainer(name=MOCK_CONTAINER, state=GuardContainerState.RUNNING),),
         run=None,
@@ -299,6 +304,11 @@ def _plain(now: datetime, started: datetime, _t0: datetime) -> SourceGuardStatus
     return _active(now, started)
 
 
+def _interval_test(now: datetime, started: datetime, _t0: datetime) -> SourceGuardStatus:
+    limits = _LIMITS.model_copy(update={"min_snapshot_interval_minutes": 5})
+    return _active(now, started, limits=limits)
+
+
 def _hold_missing(now: datetime, started: datetime, _t0: datetime) -> SourceGuardStatus:
     dataset = _ZFS.datasets[0].model_copy(update={"base_hold_missing": True})
     return _active(now, started, zfs=_ZFS.model_copy(update={"datasets": (dataset,)}))
@@ -320,6 +330,7 @@ GUARD_SCENARIO: tuple[GuardStep, ...] = (
     _step(_plain, StatusNotice.SOURCE_CONNECT_PLUGIN, StatusNotice.SOURCE_FLASH_BACKUP),
     _step(_allows_self, StatusNotice.SOURCE_GUARD_ALLOWS_SELF),
     _step(_hold_missing, StatusNotice.SOURCE_BASE_HOLD_MISSING),
+    _step(_interval_test, StatusNotice.SOURCE_SNAPSHOT_INTERVAL_TEST),
     _step(_missing_container),
     _step(_tour_run),
     _step(_tour_last_run(GuardRunEnd.FINISH, GuardRestart.STARTED, GuardRestart.ALREADY_RUNNING)),
@@ -424,7 +435,10 @@ class MockSourceGuard:
                             present=True,
                             referenced=2 * GIB,
                             compression="on",
+                            snapshots=jobs.own_snapshots[name],
+                            oldest_snapshot_at=jobs.oldest_own,
                             base_created_at=jobs.bases.get(name),
+                            bookmark=True,
                         )
                         for name in self._datasets
                     )
@@ -438,13 +452,19 @@ class MockSourceGuard:
             last_order=self._jobs.last_order,
             target_check=self._jobs.check,
             job=self._jobs.job,
+            limits=_LIMITS.model_copy(
+                update={"min_snapshot_interval_minutes": jobs.timings.snapshot_interval_minutes}
+            ),
         )
         status = _active(now, self._started_at, **changes)
         if self._fault_since("source-guard-lost") is not None:
             status = status.model_copy(
                 update={"state": GuardState.ERROR, "error": GuardError.STATE_LOST}
             )
-        return GuardReport(status)
+        notices: tuple[StatusNotice, ...] = ()
+        if jobs.timings.snapshot_interval_minutes < _LIMITS.min_snapshot_interval_minutes:
+            notices = (StatusNotice.SOURCE_SNAPSHOT_INTERVAL_TEST,)
+        return GuardReport(status, notices)
 
     # --- Aufträge (wie RealGuardChannel) ---
 
