@@ -294,14 +294,11 @@ class SyncCoordinator:
         return self._target_blocker(status)
 
     def _run_allowed_at(self, details: GuardDetails) -> datetime | None:
-        """Ende der Pause zwischen zwei Läufen, wie die Kachel es zeigt (auf die volle Minute
-        aufgerundet); nur mit stop_containers (Konzept 4.2). None, wenn sie nicht gilt."""
-        allowed_at = details.run_allowed_at
-        if not self._config.sync.stop_containers or allowed_at is None:
+        """Ende der Pause zwischen zwei Läufen, wie die Kachel es zeigt; nur mit
+        stop_containers (Konzept 4.2). None, wenn sie nicht gilt."""
+        if not self._config.sync.stop_containers:
             return None
-        if allowed_at <= self._clock():
-            return None
-        return _round_up_to_minute(allowed_at)
+        return pause_allowed_at(details.run_allowed_at, self._clock())
 
     def _target_blocker(self, status: ResourceStatus) -> ActionBlocker | None:
         target = self._target
@@ -995,6 +992,20 @@ def _round_up_to_minute(moment: datetime) -> datetime:
     an too_soon (Konzept 3.6, „Lesen in TwinRaid“)."""
     whole = moment.replace(second=0, microsecond=0)
     return whole if whole == moment else whole + timedelta(minutes=1)
+
+
+def pause_allowed_at(run_allowed_at: datetime | None, now: datetime) -> datetime | None:
+    """Ende der Pause zwischen zwei Läufen (Konzept 3.6, „Kachel Sync“).
+
+    Wie beim Abstand zwischen Snapshots gilt die Sperre bis zur aufgerundeten vollen Minute,
+    nicht schon bis run_allowed_at selbst: Die Kachel nennt diese Minute, und der Button darf
+    nicht früher freigegeben aussehen, als er ist. None: keine Pause oder sie ist vorbei.
+    Maßgeblich bleibt der Wächter (too_soon).
+    """
+    if run_allowed_at is None:
+        return None
+    allowed_at = _round_up_to_minute(run_allowed_at)
+    return allowed_at if allowed_at > now else None
 
 
 def snapshot_allowed_at(details: GuardDetails | None, now: datetime) -> datetime | None:

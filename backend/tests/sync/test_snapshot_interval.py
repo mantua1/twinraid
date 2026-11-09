@@ -24,7 +24,7 @@ from twinraid.shared.source_guard import (
     GuardJobState,
     GuardState,
 )
-from twinraid.sync.coordinator import snapshot_allowed_at
+from twinraid.sync.coordinator import pause_allowed_at, snapshot_allowed_at
 from twinraid.worker.sync_history import read_history
 
 pytestmark = pytest.mark.anyio
@@ -84,6 +84,58 @@ def test_snapshot_allowed_at(created: str, interval: int, now: str, expected: st
 def test_no_job_no_limit() -> None:
     assert snapshot_allowed_at(ScriptedGuard().details(), _now()) is None
     assert snapshot_allowed_at(None, _now()) is None
+
+
+# --- Pause zwischen zwei Läufen: dieselbe Rundung wie beim Abstand ------------------------------
+
+
+@pytest.mark.parametrize(
+    ("allowed", "now", "expected"),
+    [
+        # Auf die volle Minute aufgerundet; eine volle Minute bleibt.
+        ("12:03:10", "12:01:00", "12:04:00"),
+        ("12:03:00", "12:01:00", "12:03:00"),
+        # Zwischen run_allowed_at und der Minute gilt die Sperre noch (Konzept 3.6).
+        ("12:03:10", "12:03:20", "12:04:00"),
+        ("12:03:10", "12:03:59", "12:04:00"),
+        # Ab der angezeigten Minute nicht mehr.
+        ("12:03:10", "12:04:00", None),
+        ("12:03:00", "12:03:00", None),
+        # Vorbei oder keine Pause.
+        ("12:03:10", "12:30:00", None),
+        (None, "12:03:20", None),
+    ],
+)
+def test_pause_allowed_at(allowed: str | None, now: str, expected: str | None) -> None:
+    day = "2026-11-09T"
+
+    def moment(value: str) -> datetime:
+        return datetime.fromisoformat(day + value + "+00:00")
+
+    result = pause_allowed_at(None if allowed is None else moment(allowed), moment(now))
+    assert result == (None if expected is None else moment(expected))
+
+
+@pytest.mark.parametrize(
+    ("now", "blocker"),
+    [
+        # Die Pause endet um 12:03:10, die Kachel nennt 12:04 (Konzept 3.6): bis dahin gesperrt.
+        (datetime(2026, 11, 9, 12, 3, 20, tzinfo=UTC), ActionBlocker.SOURCE_GUARD_TOO_SOON),
+        (datetime(2026, 11, 9, 12, 3, 59, tzinfo=UTC), ActionBlocker.SOURCE_GUARD_TOO_SOON),
+        (datetime(2026, 11, 9, 12, 4, 0, tzinfo=UTC), None),
+    ],
+)
+async def test_the_button_stays_locked_until_the_displayed_minute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, now: datetime, blocker: ActionBlocker | None
+) -> None:
+    guard = _guard(run_allowed_at=datetime(2026, 11, 9, 12, 3, 10, tzinfo=UTC))
+    worker = _worker(tmp_path, guard)
+    await _online(worker)
+    monkeypatch.setattr(worker.sync, "_clock", lambda: now)
+    availability = worker.actions.availability(worker.monitor.current())
+    assert availability[ActionName.SYNC_START] is blocker
+    # Den Probelauf betrifft die Pause nicht.
+    assert availability[ActionName.SYNC_DRY_RUN] is None
 
 
 # --- Sperre ----------------------------------------------------------------------------------
