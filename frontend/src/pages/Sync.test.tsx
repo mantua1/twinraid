@@ -2,7 +2,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
   StatusSnapshot,
@@ -28,6 +28,10 @@ import {
 } from "@/test/fakeApi";
 
 import { App } from "../App";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 const JOB_ID = "0123456789abcdef0123456789abcdef";
 const GIB = 1024 ** 3;
@@ -579,6 +583,8 @@ describe("finished sync", () => {
   });
 
   it("names the pause of the source guard at the sync button", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-13T12:00:00Z"));
     const { sync: tile } = await openDashboard({
       status: {
         ...STATUS,
@@ -589,6 +595,7 @@ describe("finished sync", () => {
         actions: actionsSnapshot({ sync_start: "source_guard_too_soon" }),
       },
     });
+    // Der Worker sperrt bis zur aufgerundeten Minute, die Anzeige nennt sie (Konzept 3.6).
     const time = new Intl.DateTimeFormat("de", { timeStyle: "short" }).format(
       new Date("2026-10-13T12:30:00Z"),
     );

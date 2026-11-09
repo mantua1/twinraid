@@ -545,7 +545,10 @@
       "datasetSnapshots_other": "{{count}} own snapshots",
       "datasetBase": "base from {{time}}",
       "datasetNoBase": "no base yet",
-      "datasetBookmark": "with bookmark"
+      "datasetBookmark": "with bookmark",
+      "snapshotInterval": "Interval between snapshots",
+      "snapshotIntervalValue": "{{minutes}} min",
+      "snapshotIntervalFixed": "{{minutes}} min (fixed)"
     },
     "active_one": "Guard: active · {{count}} container allowed",
     "active_other": "Guard: active · {{count}} containers allowed",
@@ -698,6 +701,19 @@
         "title": "Confirm the deletions and send?",
         "description": "{{target}} applies the deletions to the mirror. The previous states stay in the snapshots on {{target}} for at least 30 days.",
         "confirm": "Confirm and send"
+      },
+      "start": {
+        "title": "Start sync?",
+        "confirm": "Start sync",
+        "shares": "Mirrored to {{target}}: {{shares}}.",
+        "containers_one": "{{count}} container will probably be stopped briefly: {{names}}.",
+        "containers_other": "{{count}} containers will probably be stopped briefly: {{names}}.",
+        "noContainers": "No allowed container is running; none will be stopped.",
+        "noStop": "No containers will be stopped; the snapshot is only crash-consistent for running containers.",
+        "recheck": "The sync determines the containers again when it starts.",
+        "wake": "{{target}} is off and will be woken; it stays on afterwards.",
+        "online": "{{target}} is already running and will not be woken.",
+        "unknown": "{{target}} is currently neither off nor on (starting, shutting down or state unknown); whether it is woken is decided when the sync starts."
       }
     },
     "history": {
@@ -745,6 +761,36 @@
       "not_ready": "a share was not ready to be sent",
       "self_dataset_missing": "TwinRaid's own dataset is missing",
       "send_error": "zfs send failed on {{source}}; details in the syslog (twinraid-source-guard)"
+    },
+    "shares": "Shares: {{shares}} → mirror on {{target}}",
+    "nextSnapshot": "Next snapshot at {{time}} at the earliest.",
+    "snapshotTooSoon": "the minimum interval since the last snapshot on {{source}} has not passed yet; at {{time}} at the earliest",
+    "uncounted": {
+      "first": "not counted (first run)",
+      "bookmark": "not counted (from bookmark)"
+    },
+    "snapshots": {
+      "title": "Snapshots of {{share}}",
+      "restore": "Restore single files as described in docs/WIEDERHERSTELLUNG.md.",
+      "sourceHeading": "On {{source}}",
+      "targetHeading": "On {{target}}",
+      "count_one": "{{count}} snapshot",
+      "count_other": "{{count}} snapshots",
+      "newest": "newest: {{time}}",
+      "oldest": "oldest: {{time}}",
+      "base": "base: {{time}} (held)",
+      "noBase": "base: none",
+      "bookmark": "bookmark present",
+      "noBookmark": "no bookmark",
+      "keep": "retention {{days}} days",
+      "newestReceived": "newest received: {{time}}",
+      "newestCreated": "created: {{time}}",
+      "checkedAt": "as of the check from {{time}}",
+      "absent": "no mirror yet",
+      "foreign": "foreign dataset",
+      "locked": "locked",
+      "unknown": "unknown (no dry run or sync yet)",
+      "sourceUnknown": "unknown"
     }
   }
 }

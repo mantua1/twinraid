@@ -545,7 +545,10 @@
       "datasetSnapshots_other": "{{count}} eigene Snapshots",
       "datasetBase": "Basis vom {{time}}",
       "datasetNoBase": "noch keine Basis",
-      "datasetBookmark": "mit Lesezeichen"
+      "datasetBookmark": "mit Lesezeichen",
+      "snapshotInterval": "Abstand zwischen Snapshots",
+      "snapshotIntervalValue": "{{minutes}} min",
+      "snapshotIntervalFixed": "{{minutes}} min (fest)"
     },
     "active_one": "Wächter: aktiv · {{count}} Container freigegeben",
     "active_other": "Wächter: aktiv · {{count}} Container freigegeben",
@@ -698,6 +701,19 @@
         "title": "Löschungen freigeben und senden?",
         "description": "{{target}} übernimmt die Löschungen in den Spiegel. Die bisherigen Stände bleiben in den Snapshots auf {{target}} erhalten, mindestens 30 Tage.",
         "confirm": "Freigeben und senden"
+      },
+      "start": {
+        "title": "Sync starten?",
+        "confirm": "Sync starten",
+        "shares": "Gespiegelt werden {{shares}} nach {{target}}.",
+        "containers_one": "Voraussichtlich wird {{count}} Container kurz angehalten: {{names}}.",
+        "containers_other": "Voraussichtlich werden {{count}} Container kurz angehalten: {{names}}.",
+        "noContainers": "Kein freigegebener Container läuft; es wird keiner angehalten.",
+        "noStop": "Es werden keine Container angehalten; der Snapshot ist für laufende Container nur absturzkonsistent.",
+        "recheck": "Der Sync bestimmt die Container beim Start neu.",
+        "wake": "{{target}} ist aus und wird geweckt; danach bleibt es an.",
+        "online": "{{target}} läuft schon und wird nicht geweckt.",
+        "unknown": "{{target}} ist gerade weder aus noch an (startet, fährt herunter oder der Zustand ist unbekannt); ob es geweckt wird, steht erst beim Start fest."
       }
     },
     "history": {
@@ -745,6 +761,36 @@
       "not_ready": "ein Share war nicht bereit zum Senden",
       "self_dataset_missing": "das eigene Dataset von TwinRaid fehlt",
       "send_error": "zfs send ist auf {{source}} gescheitert; Einzelheiten im Syslog (twinraid-source-guard)"
+    },
+    "shares": "Shares: {{shares}} → Spiegel auf {{target}}",
+    "nextSnapshot": "Nächster Snapshot frühestens um {{time}}.",
+    "snapshotTooSoon": "seit dem letzten Snapshot auf {{source}} ist der Mindestabstand noch nicht vergangen; frühestens um {{time}}",
+    "uncounted": {
+      "first": "nicht gezählt (erster Lauf)",
+      "bookmark": "nicht gezählt (vom Lesezeichen)"
+    },
+    "snapshots": {
+      "title": "Snapshots von {{share}}",
+      "restore": "Einzelne Dateien holst du nach docs/WIEDERHERSTELLUNG.md zurück.",
+      "sourceHeading": "Auf {{source}}",
+      "targetHeading": "Auf {{target}}",
+      "count_one": "{{count}} Snapshot",
+      "count_other": "{{count}} Snapshots",
+      "newest": "neuester: {{time}}",
+      "oldest": "ältester: {{time}}",
+      "base": "Basis: {{time}} (gehalten)",
+      "noBase": "Basis: keine",
+      "bookmark": "Lesezeichen vorhanden",
+      "noBookmark": "kein Lesezeichen",
+      "keep": "Aufbewahrung {{days}} Tage",
+      "newestReceived": "neuester empfangen: {{time}}",
+      "newestCreated": "erstellt: {{time}}",
+      "checkedAt": "Stand: Prüfung vom {{time}}",
+      "absent": "noch kein Spiegel",
+      "foreign": "fremdes Dataset",
+      "locked": "gesperrt",
+      "unknown": "unbekannt (noch kein Probelauf oder Sync)",
+      "sourceUnknown": "unbekannt"
     }
   }
 }

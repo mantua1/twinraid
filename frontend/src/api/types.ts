@@ -369,6 +369,9 @@ export interface GuardDetails {
   target_key: boolean;
   target_known_host: boolean;
   target_check: GuardCheck | null;
+  // Job des Wächters; hier nur die Felder, die die Kachel Sync braucht (Zeitpunkt des
+  // letzten Snapshots und seine Datasets). Fehlt oder null, wenn kein Job im Status steht.
+  job?: { created_at: string; datasets: { name: string }[] } | null;
 }
 
 export interface SourceGuardStatus {

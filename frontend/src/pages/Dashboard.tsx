@@ -12,7 +12,6 @@ import { SourceGuardPanel } from "@/components/SourceGuardPanel";
 import { StatusTile } from "@/components/StatusTile";
 import { SyncTile } from "@/components/SyncTile";
 import type { DashboardData } from "@/hooks/useDashboardData";
-import { formatTime, roundUpToMinute } from "@/lib/format";
 
 const UNKNOWN: ResourceInfo = { state: "unknown", reason: null };
 const tileOf = (notice: StatusNotice) =>
@@ -33,11 +32,6 @@ export function Dashboard({ data }: { data: DashboardData }) {
   const sourceNotices = notices.filter((notice) => tileOf(notice) === "source");
   const targetNotices = notices.filter((notice) => tileOf(notice) === "target");
   const vmNotices = notices.filter((notice) => tileOf(notice) === "vm");
-  // Pause des Wächters zwischen zwei Läufen (Konzept 3.6), auf die Minute aufgerundet. Der
-  // Wächter setzt run_allowed_at nur, solange die Pause gilt; ein veralteter Status fehlt hier.
-  const runAllowedAt = status?.source_guard.details?.run_allowed_at ?? null;
-  const nextSync =
-    runAllowedAt !== null ? formatTime(i18n.resolvedLanguage, roundUpToMinute(runAllowedAt)) : null;
   // Für die Begründung „Auf <Server> laufen noch weitere VMs: <Namen> …“ (Konzept 4.2).
   const otherVms = status?.other_vms_running ?? [];
   const blockerValues = {
@@ -206,7 +200,6 @@ export function Dashboard({ data }: { data: DashboardData }) {
           className="sm:col-span-2"
           status={status}
           names={names}
-          nextSync={nextSync}
           blockerValues={blockerValues}
           onRun={data.runAction}
           onCancel={data.cancelSync}

@@ -1,4 +1,5 @@
 import { ShieldHalf } from "lucide-react";
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { GuardDataset, SourceGuardStatus } from "@/api/types";
@@ -10,6 +11,8 @@ interface SourceGuardCardProps {
   // Namen von Klein und Groß für die Texte.
   name: string;
   target: string;
+  // Weiteres unter der Liste, z. B. die Snapshots beider Seiten.
+  children?: ReactNode;
 }
 
 function DatasetLine({ dataset, language }: { dataset: GuardDataset; language?: string }) {
@@ -42,7 +45,7 @@ function DatasetLine({ dataset, language }: { dataset: GuardDataset; language?: 
 }
 
 /** Wächter auf Klein in den Einstellungen, nur lesend (Konzept 3.6, ab v0.5.0). */
-export function SourceGuardCard({ guard, name, target }: SourceGuardCardProps) {
+export function SourceGuardCard({ guard, name, target, children }: SourceGuardCardProps) {
   const { t, i18n } = useTranslation();
   const language = i18n.resolvedLanguage;
   const details = guard?.details ?? null;
@@ -81,6 +84,17 @@ export function SourceGuardCard({ guard, name, target }: SourceGuardCardProps) {
                 stop: details.limits.stop_timeout_seconds,
                 pause: details.limits.min_run_interval_minutes,
               })}
+            </dd>
+            <dt className="font-medium">{t("guard.settings.snapshotInterval")}</dt>
+            <dd data-testid="guard-snapshot-interval">
+              {/* Bis Version 3 (Protokoll 2) gilt fest 30 min, ab Version 4 der Wert aus dem Status. */}
+              {details.version >= 4
+                ? t("guard.settings.snapshotIntervalValue", {
+                    minutes: details.limits.min_snapshot_interval_minutes,
+                  })
+                : t("guard.settings.snapshotIntervalFixed", {
+                    minutes: details.limits.min_snapshot_interval_minutes,
+                  })}
             </dd>
             <dt className="font-medium">{t("guard.settings.maxDeletions")}</dt>
             <dd>{new Intl.NumberFormat(language).format(details.limits.max_deletions)}</dd>
@@ -141,6 +155,7 @@ export function SourceGuardCard({ guard, name, target }: SourceGuardCardProps) {
             <dd data-testid="guard-rejected">{details.rejected_count}</dd>
           </dl>
         )}
+        {details !== null && children}
       </CardContent>
     </Card>
   );

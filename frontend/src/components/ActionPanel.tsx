@@ -18,6 +18,7 @@ export interface PanelAction {
   confirm?: {
     title: string;
     description: string;
+    details?: string[];
     confirmLabel: string;
     destructive?: boolean;
   };
@@ -73,7 +74,10 @@ export function ActionPanel({
   // Stand beim Absenden einer angenommenen Aktion: Bis der Live-Status ihn ersetzt,
   // bleiben die Buttons gesperrt (sonst wären sie bis zu 2 s lang wieder klickbar).
   const [sentWith, setSentWith] = useState<ActionsSnapshot | null>(null);
-  const [confirming, setConfirming] = useState<PanelAction | null>(null);
+  // Nur der Name: Der Dialog zeigt den aktuellen Stand der Aktion, auch wenn sich der Status
+  // bei geöffnetem Dialog ändert.
+  const [confirmingName, setConfirmingName] = useState<ActionName | null>(null);
+  const confirming = actions.find((action) => action.name === confirmingName) ?? null;
   // Meldung zur letzten Anfrage, gültig nur für den Stand, bei dem sie entstand: Mit dem
   // nächsten Live-Status verschwindet sie (Konzept 4.2, ab v0.4.1).
   const [message, setMessage] = useState<{ text: string; with: ActionsSnapshot | null } | null>(
@@ -146,7 +150,7 @@ export function ActionPanel({
             data-action={action.name}
             onClick={() => {
               if (action.confirm) {
-                setConfirming(action);
+                setConfirmingName(action.name);
               } else {
                 run(action.name);
               }
@@ -177,13 +181,14 @@ export function ActionPanel({
         <ConfirmDialog
           title={confirming.confirm.title}
           description={confirming.confirm.description}
+          details={confirming.confirm.details}
           confirmLabel={confirming.confirm.confirmLabel}
           destructive={confirming.confirm.destructive}
           onCancel={() => {
-            setConfirming(null);
+            setConfirmingName(null);
           }}
           onConfirm={() => {
-            setConfirming(null);
+            setConfirmingName(null);
             run(confirming.name);
           }}
         />

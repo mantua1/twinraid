@@ -8,6 +8,7 @@ import {
   type ActionOutcome,
   type SyncHistoryEntry,
   type SyncReason,
+  type SyncShareReport,
 } from "@/api/types";
 import { formatBytes, formatDuration } from "@/lib/format";
 
@@ -95,4 +96,22 @@ export function useRunDetails() {
     }
     return parts.join(" · ");
   };
+}
+
+/** Weder gezählt noch ein Fehler: erster Lauf (vollständiger Strom) oder Strom vom Lesezeichen. */
+export function uncountedKind(
+  share: Pick<SyncShareReport, "mode" | "base_type" | "deleted" | "modified" | "added" | "renamed">,
+): "first" | "bookmark" | null {
+  if (
+    share.deleted !== null ||
+    share.modified !== null ||
+    share.added !== null ||
+    share.renamed !== null
+  ) {
+    return null;
+  }
+  if (share.mode === "full") {
+    return "first";
+  }
+  return share.mode === "incremental" && share.base_type === "bookmark" ? "bookmark" : null;
 }

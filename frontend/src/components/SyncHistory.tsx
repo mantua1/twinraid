@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 
 import type { SyncHistoryEntry } from "@/api/types";
 import { formatSince } from "@/lib/format";
-import { QUIET_OUTCOMES, useReasonText, useRunDetails } from "@/lib/syncTexts";
+import { QUIET_OUTCOMES, uncountedKind, useReasonText, useRunDetails } from "@/lib/syncTexts";
 import { cn } from "@/lib/utils";
 
 interface SyncHistoryProps {
@@ -46,6 +46,18 @@ export function SyncHistory({ entries, names }: SyncHistoryProps) {
                 {t(`actions.outcomes.${entry.result}`)}
                 {reason !== null && ` ${t("sync.reason", { reason })}`}
               </p>
+              {entry.shares.map((share) => {
+                const kind = uncountedKind(share);
+                return kind === null ? null : (
+                  <p
+                    key={share.name}
+                    className="text-xs text-muted-foreground"
+                    data-testid="sync-history-uncounted"
+                  >
+                    {share.name}: {t(`sync.uncounted.${kind}`)}
+                  </p>
+                );
+              })}
             </li>
           );
         })}
