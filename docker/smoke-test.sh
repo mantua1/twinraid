@@ -550,7 +550,7 @@ else
   fail "stop took ${duration}s, exit ${code}"
 fi
 
-# --- 13a. Rechte zurückgesetzt und nach Anleitung repariert (docs/EINRICHTUNG.md, Abschnitt 12) ---
+# --- 13a. Rechte zurückgesetzt und nach Anleitung repariert (docs/EINRICHTUNG.md, Abschnitt 19, „Rechte des Datenordners zurückgesetzt“) ---
 # Wie Unraid "New Permissions": alles nobody:users, Verzeichnisse 0777, Dateien 0666.
 on_data() {
   docker run --rm --network none --entrypoint sh \
