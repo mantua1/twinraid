@@ -190,7 +190,8 @@ own_snapshots() {
 # Snapshot des Spiegels als root zurückstellen, wie es nach 11 Minuten wäre.
 age_mirror() {
   local newest
-  newest="$(zfs list -H -t snapshot -o name -s createtxg -- "${MIRROR}" 2>/dev/null | tail -1)"
+  # Vor dem ersten Sync gibt es den Spiegel noch nicht.
+  newest="$(zfs list -H -t snapshot -o name -s createtxg -- "${MIRROR}" 2>/dev/null | tail -1)" || newest=""
   if [[ -n "${newest}" ]]; then
     zfs set -- "twinraid:received=$(($(date +%s) - 660))" "${newest}"
   fi
