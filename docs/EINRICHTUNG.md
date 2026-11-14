@@ -2396,7 +2396,7 @@ bash /boot/config/twinraid/testdata.sh verify-latest
 
 | Prüfen | Erwartet |
 |---|---|
-| Kachel **Sync** | „Der Zielserver lehnt den Empfang ab.“ mit „feste Eigenschaften kamen nicht an, der Spiegel ist gesperrt (props-not-applied) …“, beim Share „abgelehnt“ |
+| Kachel **Sync** | „Der Zielserver lehnt den Empfang ab.“ mit „feste Eigenschaften fehlen oder wurden geändert, der Spiegel ist gesperrt (props-not-applied) …“, beim Share „abgelehnt“ |
 | `zfs get` | `canmount noauto`, `mounted no` |
 | Syslog von Groß | `mirror twinraidtest locked` und `refused: props-not-applied` |
 | `verify-latest` | `… ist nicht eingehängt (gesperrt?); siehe docs/WIEDERHERSTELLUNG.md.` |

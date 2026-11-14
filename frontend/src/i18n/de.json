@@ -743,7 +743,7 @@
       "target_exists": "an der Stelle des Spiegels liegt ein fremdes Dataset (docs/EINRICHTUNG.md)",
       "delegation_mismatch": "die Rechte für den Empfang (zfs allow) auf {{target}} stimmen nicht",
       "props_mismatch": "ein Spiegel ist gesperrt (props-mismatch); Schritte in docs/WIEDERHERSTELLUNG.md",
-      "props_not_applied": "feste Eigenschaften kamen nicht an, der Spiegel ist gesperrt (props-not-applied); Schritte in docs/WIEDERHERSTELLUNG.md",
+      "props_not_applied": "feste Eigenschaften fehlen oder wurden geändert, der Spiegel ist gesperrt (props-not-applied); Schritte in docs/WIEDERHERSTELLUNG.md",
       "clone_active": "auf {{target}} besteht ein Klon eines Spiegels",
       "space_low": "auf {{target}} ist zu wenig Platz",
       "too_soon": "der letzte Empfang in diesen Spiegel ist keine 10 Minuten her",

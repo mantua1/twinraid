@@ -743,7 +743,7 @@
       "target_exists": "a foreign dataset sits where the mirror belongs (docs/EINRICHTUNG.md)",
       "delegation_mismatch": "the permissions for receiving (zfs allow) on {{target}} do not match",
       "props_mismatch": "a mirror is locked (props-mismatch); steps in docs/WIEDERHERSTELLUNG.md",
-      "props_not_applied": "fixed properties did not arrive, the mirror is locked (props-not-applied); steps in docs/WIEDERHERSTELLUNG.md",
+      "props_not_applied": "fixed properties are missing or were changed, the mirror is locked (props-not-applied); steps in docs/WIEDERHERSTELLUNG.md",
       "clone_active": "a clone of a mirror exists on {{target}}",
       "space_low": "not enough space on {{target}}",
       "too_soon": "the last receive into this mirror was less than 10 minutes ago",
