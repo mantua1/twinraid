@@ -2691,7 +2691,7 @@ Mit 0.5.3 zeigt TwinRaid die Snapshots beider Seiten und fragt vor jedem Sync na
 | 17.6 | Test N1: Nächster Snapshot | Dashboard |
 | 17.7 | Test S1: Anzeige gegen die Server | Klein, Groß, Dashboard |
 | 17.8 | Test S2: Dateien zurückholen | Klein, Groß |
-| 17.9 | Test S3: Abweichung erkennen | Groß |
+| 17.9 | Test S3 (optional): Abweichung erkennen | Groß |
 | 17.10 | Test Z5: Notbetrieb üben | Groß, Klein, Dashboard |
 | 17.11 | Test B1: Testmenge mit `bulk` | Klein |
 | 17.12 | Test T1, Teil 2: Testwert entfernen | Klein |
@@ -3010,7 +3010,9 @@ fi
 | c) | `Snapshot: twinraid-…`, `rsync` ohne Fehler |
 | d) | `Keine Abweichung (Lauf N)` mit dem Lauf aus dem letzten `change`: Inhalt, Besitzer, Rechte und Zeitstempel beider Dateien sind zurück |
 
-### 17.9 Test S3: Abweichung erkennen
+### 17.9 Test S3 (optional): Abweichung erkennen
+
+> **Optional:** S3 ist durch die ZFS-CI (`testdata.sh report target` mit `readonly=off` in `docker/source-guard-sync-test.sh`) und auf den Servern durch Test 5e (iii) in 16.9 abgedeckt; für die Merkliste im Konzept (10.2) entfällt er.
 
 `report target` muss einen veränderten Spiegel melden. Zwischen den beiden Kästen **keinen Sync starten**: `guard.sh` sperrte den Spiegel sonst (16.9). Im Unraid-Terminal von **Groß**:
 
@@ -3211,7 +3213,7 @@ Erwartet: `0` und `Konfiguration in Ordnung: …`. Dann den Kasten aus 17.3, Pun
 
 ### 17.14 Abschluss
 
-Die Ergebnisse von G12, W11, T1, D1, N1, S1, S2, S3, Z5 und B1, falls gemacht auch Test 0, bitte im Pull Request festhalten; bei Z5 auch, ob Unraid nach dem Löschen des Klons ein Dataset angelegt hat. Prüfe am Ende, dass der Testwert entfernt ist (17.12). Bevor eine echte Share dazukommt, gilt die Merkliste aus dem Konzept (10.2); dazu gehören Z5 und S1 bis S3.
+Die Ergebnisse von G12, W11, T1, D1, N1, S1, S2, Z5 und B1, falls gemacht auch Test 0 und S3, bitte im Pull Request festhalten; bei Z5 auch, ob Unraid nach dem Löschen des Klons ein Dataset angelegt hat. Prüfe am Ende, dass der Testwert entfernt ist (17.12). Bevor eine echte Share dazukommt, gilt die Merkliste aus dem Konzept (10.2); dazu gehören Z5, S1 und S2. S3 entfällt dort, weil die ZFS-CI und Test 5e (iii) (16.9) ihn abdecken.
 
 ---
 
