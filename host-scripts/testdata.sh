@@ -766,7 +766,7 @@ report_source() {
 report_target() {
   local name="$1" ds="${MIRROR_BASE}/$1" mount="${MIRROR_MOUNT}/$1" out rc line pair property
   local value source version="" state="" props="" count="" root="" conf="" deleg="" receive=""
-  local clones="" newest="" total=0 missing=0 lines start=-1 finished=0 refusal="" warnings=0 i
+  local clones="" newest="" total=0 missing=0 lines start=-1 finished=0 refusal="" warnings=0 i text
   local mirror_re='^mirror ([A-Za-z0-9._-]+) state=([a-z]+) props=([a-z-]+) count=([0-9]+|-|[?]) '
   local summary_re='^summary root=([a-z]+) conf=([a-z]+) deleg=([a-z-]+) receive=([a-z]+) clones=([0-9]+|[?]) '
   local -A want=()
