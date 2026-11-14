@@ -534,7 +534,7 @@ expect_equal "the file from before the failure stays" "$(cat "/mnt/${KLEIN}/${NA
 expect_contains "test data of the emergency on Klein" \
   "$(bash "${REPO_DIR}/host-scripts/testdata.sh" verify "/mnt/${KLEIN}/${NAME}/.zfs/snapshot/${notbetrieb}/testdata" 2>&1 || true)" \
   "Keine Abweichung (Lauf 2)."
-echo "info  verify in the mounted dataset on Klein: $(bash "${REPO_DIR}/host-scripts/testdata.sh" verify "/mnt/${KLEIN}/${NAME}/testdata" 2>&1 | tail -1 || true)"
+echo "info  verify in the mounted dataset on Klein: $(bash "${REPO_DIR}/host-scripts/testdata.sh" verify "/mnt/${KLEIN}/${NAME}/testdata" 2>&1 | grep -m 1 -E 'Abweichung' || true)"
 expect_equal "newer own snapshot gone on Klein" "$(value name "${KLEIN}/${NAME}@${newer}" 2>/dev/null || true)" ""
 expect_equal "own snapshots on Klein: first and base" \
   "$(own_snapshots "${KLEIN}/${NAME}" | tr '\n' ' ')" "${KLEIN}/${NAME}@${first} ${KLEIN}/${NAME}@${base} "
