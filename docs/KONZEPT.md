@@ -1460,7 +1460,7 @@ Die Rechte der API bestehen nur aus Ressource und Aktion (Casbin-Regel `obj` und
 
 Bevor eine echte Share gespiegelt wird (nach v0.5.2), gilt:
 
-- Die Machbarkeitstests Z1, Z3 und Z4, die Tests 0 bis 8, Z5 (Notbetrieb mit der Test-Share) und S1 bis S3 (Snapshots) aus `docs/EINRICHTUNG.md` sind bestanden und in den PRs festgehalten (nur „Klein“ und „Groß“).
+- Die Machbarkeitstests Z1, Z3 und Z4, die Tests 0 bis 8, Z5 (Notbetrieb mit der Test-Share) und S1 und S2 (Snapshots) aus `docs/EINRICHTUNG.md` sind bestanden und in den PRs festgehalten (nur „Klein“ und „Groß“). S3 ist durch die ZFS-CI (`testdata.sh report target` mit `readonly=off`) und auf den Servern durch Test 5e (iii) in `docs/EINRICHTUNG.md`, 16.9, abgedeckt und entfällt (festgelegt am 14.11.2026).
 - Auf Groß ist `zfs_arc_max` eingetragen (kein Hinweis `target_arc_unlimited`); die gleichzeitig laufenden VMs, der ARC und Unraid passen in den Arbeitsspeicher.
 - In `mainpool` auf Groß liegen nur `twinraid-mirror` und die Spiegel; vorübergehende Datasets (etwa aus einem Umzug) sind gelöscht. Es gibt keine Share-Konfigurationen mit den Namen der gespiegelten Shares, kein Pool hat Datasets mit diesen Namen, und der ISO-Ordner des VM-Managers zeigt nicht auf eine solche Share (E26).
 - Platz auf Groß: die Menge laut Probelauf plus Reserve; nach dem ersten Lauf ist `mainpool` höchstens zu 80 % belegt.
