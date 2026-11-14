@@ -94,7 +94,73 @@ def test_table_of_the_fixed_values() -> None:
 
 def test_recovery_never_uses_recursive_or_forced_commands() -> None:
     assert not re.search(r"zfs (destroy|rollback) (-\w*[rRf]|.* -[rRf])", RECOVERY)
-    assert "zfs receive" not in RECOVERY
+
+
+def _recovery_section(title: str) -> str:
+    start = RECOVERY.index(f"\n## {title}\n")
+    end = RECOVERY.find("\n## ", start + 1)
+    return RECOVERY[start : end if end != -1 else len(RECOVERY)]
+
+
+def test_receive_with_force_only_on_the_way_back_to_klein() -> None:
+    """Einzige Stelle mit zfs receive -F (CLAUDE.md, Regel 7): von Hand, über klein nach Klein."""
+    lines = [
+        line
+        for block in _blocks(RECOVERY)
+        for line in block.splitlines()
+        if "zfs receive" in line or " -F" in line
+    ]
+    assert lines == [
+        '  zfs send -L -c -e -i "mainpool/twinraid-mirror/$N@$B" "mainpool/$N@$R"'
+        ' | klein zfs receive -F "mainpool/$N" && echo "Rückweg gesendet"'
+    ]
+    assert lines[0] in _recovery_section("Rückweg nach Klein")
+    # Die Basis wird unmittelbar vorher auf beiden Seiten verglichen.
+    block = next(b for b in _blocks(RECOVERY) if "zfs receive -F" in b)
+    assert '[ "$GB" = "$GK" ]' in block
+
+
+def test_klein_is_only_reached_through_one_line() -> None:
+    """recovery-test.sh ersetzt genau diese Stelle durch eine lokale Pipe (Konzept 5.6)."""
+    assert RECOVERY.count("ssh root@<IP von Klein>") == 1
+    assert 'klein() { ssh root@<IP von Klein> "$@"; }\n' in _blocks(RECOVERY)[0]
+    tested = "".join(
+        _recovery_section(title)
+        for title in (
+            "Letzten Stand finden",
+            "Notbetrieb starten",
+            "Rückweg nach Klein",
+            "Aufräumen auf Groß",
+        )
+    )
+    for block in _blocks(tested):
+        assert not re.search(r"<[A-Za-zÄÖÜäöü]", block), block
+
+
+def test_clone_gets_the_properties_of_the_concept() -> None:
+    """Konzept 4.6: Klon mit ausdrücklich gesetzten Eigenschaften."""
+    concept = (REPO_ROOT / "docs" / "KONZEPT.md").read_text(encoding="utf-8")
+    match = re.search(r"mit ausdrücklich gesetzten Eigenschaften \(([^)]*)\)", concept)
+    assert match is not None
+    expected = re.findall(r"`([a-z]+=[a-z0-9]+)`", match[1])
+    pattern = r"^zfs clone (.*) \"mainpool/twinraid-mirror/\$N@\$B\" \"mainpool/\$N\"$"
+    clone = re.search(pattern, RECOVERY, flags=re.M)
+    assert clone is not None
+    assert re.findall(r"-o (\S+)", clone[1]) == expected
+
+
+def test_locked_mirror_keeps_its_anchors() -> None:
+    """EINRICHTUNG und die Oberfläche verweisen auf „Spiegel gesperrt“ und seine Unterabschnitte."""
+    headings = re.findall(r"^#{2,3} (.+)$", RECOVERY, flags=re.M)
+    start = headings.index("Spiegel gesperrt")
+    assert headings[start : start + 5] == [
+        "Spiegel gesperrt",
+        "Woran du es erkennst",
+        "Vorbereitung",
+        "Nach `received-properties` oder `props-mismatch`",
+        "Nach `props-not-applied`",
+    ]
+    assert len(headings) == len(set(headings))
 
 
 def test_change_numbers_match_the_script() -> None:
