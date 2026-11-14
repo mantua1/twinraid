@@ -542,6 +542,8 @@ expect_equal "base keeps its hold" "$(held "${KLEIN}/${NAME}@${base}")" "twinrai
 expect_equal "base keeps its GUID" "$(value guid "${KLEIN}/${NAME}@${base}")" "${base_guid}"
 expect_equal "bookmarks stay" "$(zfs list -H -t bookmark -o name -d 1 "${KLEIN}/${NAME}" | tr '\n' ' ')" \
   "${KLEIN}/${NAME}#${first} ${KLEIN}/${NAME}#${base} "
+expect_equal "bookmark of the base in the clone" "$(value guid "mainpool/${NAME}#${base}")" "${base_guid}"
+expect_equal "the mirror has no bookmark" "$(zfs list -H -t bookmark -o name -d 1 "${MIRROR}" | wc -l)" 0
 expect_equal "the received snapshot is no own snapshot" \
   "$(source_of twinraid:created-by "${KLEIN}/${NAME}@${notbetrieb}")" "-"
 expect_equal "mirror unchanged after the way back" "$(mirror_snapshots)" "${mirror_before}"
@@ -552,6 +554,7 @@ expect_contains "clone removed" "${OUT}" "Klon mainpool/${NAME} gelöscht"
 expect_contains "no dataset in the place of the clone" "${OUT}" "kein Dataset mainpool/${NAME}"
 expect_contains "no share configuration" "${OUT}" "keine Share-Konfiguration"
 expect_equal "clone gone" "$(zfs list -H -o name "mainpool/${NAME}" 2>/dev/null || true)" ""
+expect_equal "bookmark of the clone gone" "$(zfs list -H -t bookmark -o name -r mainpool | grep -c "^mainpool/${NAME}#" || true)" 0
 expect_equal "mirror and its snapshots unchanged" "$(mirror_snapshots)" "${mirror_before}"
 expect_equal "no clones of the mirror" "$(zfs list -H -t snapshot -o clones -d 1 "${MIRROR}" | sort -u)" "-"
 expect_contains "check: clones=0" "$(SSH_ORIGINAL_COMMAND=check /bin/bash "${GUARD}" sync)" "clones=0"

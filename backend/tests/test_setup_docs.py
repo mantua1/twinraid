@@ -25,7 +25,8 @@ RELEASE_0_5_1 = {
     "source-guard.sh": "d4f05ada883386b365520296312f916fc57d0a283725c0b3c8d5d3ce0f85d647",
     "testdata.sh": "ca4b8833cfde011242f08cf67cd72d5fd7a08e14f3f3db3811076888f864a019",
 }
-# Abschnitt 16 gilt für v0.5.2; ab v0.5.3 ändern sich source-guard.sh und testdata.sh.
+# Abschnitt 16 gilt für v0.5.2; ab v0.5.3 ändern sich source-guard.sh und testdata.sh. Den Stand
+# von v0.5.2 lädt auch der Rückweg in 17.13.
 RELEASE_0_5_2 = {
     "guard.sh": "30713f387695c48611bcd3762bfca59e1928c5436db0ea8cf7eb1b68143b2e0c",
     "source-guard.sh": "2cbccdfba70f8372799512f1b75e568abd71140c03f4d582af90b99294db0bd7",
@@ -37,6 +38,11 @@ HEADERS_0_5_2 = {
         "# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 3 (Konzept 3.6)."
     ),
 }
+
+# Ab Abschnitt 17 erkennen Kästen den Server ohne Hostnamen, an der Ablage der Host-Skripte.
+ON_KLEIN = "[ -f /boot/config/twinraid/source-guard.sh ] && [ ! -f /boot/config/twinraid/guard.sh ]"
+ON_GROSS = "[ -f /boot/config/twinraid/guard.sh ] && [ ! -f /boot/config/twinraid/source-guard.sh ]"
+NOT_GROSS = "Das ist nicht Groß. Diesen Kasten im Unraid-Terminal von Groß einfügen."
 
 
 def _recv_perms() -> str:
@@ -111,7 +117,7 @@ def test_receive_with_force_only_on_the_way_back_to_klein() -> None:
         if "zfs receive" in line or " -F" in line
     ]
     assert lines == [
-        '  zfs send -L -c -e -i "mainpool/twinraid-mirror/$N@$B" "mainpool/$N@$R"'
+        '  zfs send -L -c -e -i "mainpool/$N#$B" "mainpool/$N@$R"'
         ' | klein zfs receive -F "mainpool/$N" && echo "Rückweg gesendet"'
     ]
     assert lines[0] in _recovery_section("Rückweg nach Klein")
@@ -195,8 +201,22 @@ def _section(number: int) -> str:
 
 
 def _before_sync() -> str:
-    """Abschnitte 1 bis 15 und 17 bis 20 ohne den Rückweg auf 0.5.0: Stand v0.5.1."""
-    return SETUP.replace(_rollback_section(), "").replace(_section(16), "")
+    """Abschnitte 1 bis 15 und 18 bis 21 ohne den Rückweg auf 0.5.0: Stand v0.5.1."""
+    return (
+        SETUP.replace(_rollback_section(), "").replace(_section(16), "").replace(_section(17), "")
+    )
+
+
+def _rollback_0_5_2() -> str:
+    """17.13: zurück auf 0.5.2, mit source-guard.sh aus v0.5.2."""
+    section = _section(17)
+    start = section.index("### 17.13 ")
+    return section[start : section.index("\n### ", start + 1)]
+
+
+def _section_17_update() -> str:
+    """Abschnitt 17 ohne den Rückweg auf 0.5.2: Stand v0.5.3."""
+    return _section(17).replace(_rollback_0_5_2(), "")
 
 
 def _sha256(name: str) -> str:
@@ -214,7 +234,14 @@ def _blocks(text: str = SETUP) -> list[str]:
 def test_scripts_are_taken_from_the_release_of_each_section() -> None:
     version = re.search(r'^__version__ = "(.+)"$', _init(), flags=re.M)
     assert version is not None
-    assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _section(16))) == {f"v{version[1]}"}
+    # Abschnitt 16 bleibt bei v0.5.2, nur testdata.sh kommt aus v0.5.3 (bulk, F15).
+    section_16 = re.findall(r"mantua1/twinraid/(v[0-9.]+)/host-scripts/(\S+)", _section(16))
+    assert {tag for tag, name in section_16 if name != "testdata.sh"} == {"v0.5.2"}
+    assert {tag for tag, name in section_16 if name == "testdata.sh"} == {f"v{version[1]}"}
+    assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _section_17_update())) == {
+        f"v{version[1]}"
+    }
+    assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _rollback_0_5_2())) == {"v0.5.2"}
     assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _before_sync())) == {"v0.5.1"}
     assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _rollback_section())) == {"v0.5.0"}
 
@@ -228,7 +255,93 @@ def test_documented_hashes_are_those_of_the_release(name: str) -> None:
 @pytest.mark.parametrize("name", sorted(RELEASE_0_5_2))
 def test_section_16_loads_the_scripts_of_0_5_2(name: str) -> None:
     documented = re.findall(rf"([0-9a-f]{{64}})  /tmp/{re.escape(name)}", _section(16))
-    assert documented == [RELEASE_0_5_2[name]]
+    # testdata.sh kommt in 16.2 schon aus v0.5.3, mit report und bulk (F15).
+    expected = _sha256(name) if name == "testdata.sh" else RELEASE_0_5_2[name]
+    assert documented == [expected]
+
+
+@pytest.mark.parametrize("name", ["source-guard.sh", "testdata.sh"])
+def test_section_17_loads_the_scripts_of_this_version(name: str) -> None:
+    """Herunterladen und Kopieren prüfen beide dieselbe SHA-256, die der Datei im Repo."""
+    documented = re.findall(rf"([0-9a-f]{{64}})  /tmp/{re.escape(name)}", _section_17_update())
+    assert documented == [_sha256(name)] * 2
+
+
+def test_section_17_rolls_back_to_the_guard_of_0_5_2() -> None:
+    documented = re.findall(r"([0-9a-f]{64})  /tmp/source-guard\.sh", _rollback_0_5_2())
+    assert documented == [RELEASE_0_5_2["source-guard.sh"]] * 2
+    assert "Rückweg beschrieben, bis 1.0 nicht auf den Servern geprüft." in _rollback_0_5_2()
+    # Zuerst die Zeile entfernen und prüfen, dann Version 3 holen (Konzept 3.6, Protokoll 3).
+    rollback = _rollback_0_5_2()
+    remove = rollback.index("sed -i '/^min_snapshot_interval_minutes /d'")
+    assert remove < rollback.index("check-config") < rollback.index("wget -O /tmp/source-guard.sh")
+
+
+def test_section_17_names_the_header_of_the_guard() -> None:
+    header = (SCRIPTS / "source-guard.sh").read_text(encoding="utf-8").splitlines()[1]
+    assert "Version 4" in header
+    assert f"Die zweite Zeile lautet `{header}`" in _section(17)
+
+
+def test_test_value_of_the_interval_matches_the_guard() -> None:
+    """T1: der kleinste erlaubte Wert minus eins wird abgelehnt, der kleinste gilt (F17)."""
+    guard = (SCRIPTS / "source-guard.sh").read_text(encoding="utf-8")
+    match = re.search(
+        r"min_snapshot_interval_minutes\)\n\s+int_in \"\$\{value\}\" (\d+) (\d+)", guard
+    )
+    assert match is not None
+    low = int(match[1])
+    section = _section(17)
+    assert f"echo 'min_snapshot_interval_minutes {low - 1}' >>" in section
+    assert (
+        f"s/^min_snapshot_interval_minutes {low - 1}$/min_snapshot_interval_minutes {low}/"
+        in section
+    )
+    assert "`Konfiguration ungültig: bad_value (Zeile N).`" in section
+    assert f"Abstand zwischen Snapshots {low} min (Standard 30)." in section
+
+
+def test_every_restart_of_the_guard_in_section_17_checks_run_and_job() -> None:
+    """restart bräche eine Übertragung ab; der Kasten startet nur ohne offenen Lauf und Job."""
+    restarts = [b for b in _blocks(_section(17)) if "source-guard.sh restart" in b]
+    assert len(restarts) == 1
+    assert "grep -q '\"run\":null'" in restarts[0]
+    assert '"state":"(closed|done|failed)"' in restarts[0]
+    assert len(re.findall(r"Kasten aus 17\.3, Punkt 2 \(Neustart mit Prüfung\)", _section(17))) >= 3
+
+
+_CHANGES: tuple[str, ...] = (
+    "restart",
+    "sed -i",
+    ">>",
+    "rm ",
+    "cp ",
+    "zfs set",
+    "zfs destroy",
+    "wget -O",
+    "reset-run-interval",
+    "testdata.sh change",
+    "testdata.sh bulk",
+    "rsync ",
+)
+
+
+def test_blocks_in_section_17_that_change_something_check_the_server() -> None:
+    """Ein Kasten im falschen Terminal ändert nichts (Klein und Groß ohne Hostnamen erkannt)."""
+    checked = 0
+    for block in _blocks(_section(17)):
+        if not any(change in block for change in _CHANGES):
+            continue
+        first = block.splitlines()[0]
+        if first.startswith("docker exec twinraid-dev "):
+            continue  # Test 0 am PC
+        if first.startswith("wget -O /tmp/testdata.sh") or (
+            "testdata.sh" in first and "sha256sum -c --status" in first
+        ):
+            continue  # testdata.sh gehört auf beide Server
+        assert first in (f"if {ON_KLEIN}; then", f"if {ON_GROSS}; then", f"if {ON_KLEIN} &&"), first
+        checked += 1
+    assert checked >= 15
 
 
 def test_guard_is_unchanged_since_0_5_2() -> None:
@@ -278,15 +391,23 @@ def test_backup_of_the_configuration_is_never_overwritten(name: str, version: st
 
 def test_every_change_of_the_test_data_stands_alone_with_a_warning() -> None:
     """change zweimal verdoppelt die Zählungen; der Befehl steht deshalb allein in seinem Kasten."""
+    plain = "bash /boot/config/twinraid/testdata.sh change\n"
+    # Z5 (17.10) ändert die Testdaten im Klon auf Groß; der Kasten prüft vorher den Server.
+    on_gross = (
+        f"if {ON_GROSS}; then\n"
+        "  bash /boot/config/twinraid/testdata.sh change\n"
+        "else\n"
+        f'  echo "Nichts geändert: {NOT_GROSS}"\n'
+        "fi\n"
+    )
     with_change = [block for block in _blocks() if "testdata.sh change" in block]
-    assert len(with_change) == 3
-    assert all(block == "bash /boot/config/twinraid/testdata.sh change\n" for block in with_change)
+    assert with_change == [plain, plain, plain, on_gross]
     warnings = re.findall(
         r"> \*\*Diesen Kasten allein und nur einmal einfügen\.\*\*[^\n]*\n\n *```bash\n"
-        r" *bash /boot/config/twinraid/testdata\.sh change\n",
+        r"(?: *if \[[^\n]*\n)? *bash /boot/config/twinraid/testdata\.sh change\n",
         SETUP,
     )
-    assert len(warnings) == 3
+    assert len(warnings) == 4
 
 
 def test_poweroff_is_only_sent_while_a_receive_runs() -> None:
@@ -314,18 +435,22 @@ def test_wait_for_the_run_in_test_6c_ends_by_itself() -> None:
     assert '|| echo "kein Lauf geöffnet, nichts neu gestartet"' in with_restart[0]
 
 
-def test_test_data_are_single_files_whose_sum_is_shown_first() -> None:
-    """Keine ganze Share kopieren; die Summe der ausgewählten Dateien vorher zeigen."""
+def test_large_test_data_come_from_bulk() -> None:
+    """16.11 und 16.13 legen Zufallsdaten mit bulk an, keine eigenen Dateien (F6, F15)."""
     section = _section(16)
-    assert "cp -a" not in section
-    copies = [block for block in _blocks() if "/mnt/mainpool/twinraidtest/kopie" in block]
-    copies = [block for block in copies if block.startswith("mkdir ")]
-    assert len(copies) == 2
-    files = "/mnt/user/isos/<Datei1> /mnt/user/isos/<Datei2>"
-    assert all(f"cp -p {files} /mnt/mainpool/twinraidtest/kopie" in block for block in copies)
-    sum_block = f"du -ch {files}\n"
-    assert sum_block in _blocks()
-    assert section.index(sum_block) < section.index(copies[0])
+    assert "cp -p /mnt/user/isos" not in section
+    assert "du -ch" not in section
+    bulk = [block for block in _blocks(section) if "testdata.sh bulk" in block]
+    assert bulk == [
+        "bash /boot/config/twinraid/testdata.sh bulk <GiB>\n",
+        "bash /boot/config/twinraid/testdata.sh bulk <GiB> /mnt/mainpool/twinraidtest/kopie2\n",
+    ]
+    for block in bulk:
+        before = section[: section.index(f"```bash\n{block}")]
+        assert "> **Diesen Kasten allein und nur einmal einfügen.**" in before[-700:]
+    assert f"1 bis {_constant('BULK_MAX_GIB')}" in section
+    assert f"{_constant('BULK_FREE_PERCENT')} % von `mainpool`" in section
+    assert "7 Tage auf Klein** und **30 Tage auf Groß**" in section
     # Die Rate von 2,5 GbE ist nur ein Beispiel, keine Eigenschaft der Server.
     for match in re.finditer(r"298 MiB/s", section):
         assert "Beispiel" in section[max(0, match.start() - 120) : match.start()]
@@ -339,15 +464,30 @@ def test_mirror_on_the_target_is_only_verified_in_a_snapshot() -> None:
     assert "auch im Spiegel auf Groß" not in SETUP
 
 
+def test_backup_before_0_5_3_is_only_made_on_klein() -> None:
+    start = SETUP.index("### 17.2 ")
+    section = SETUP[start : SETUP.index("\n### ", start + 1)]
+    block = (
+        f"if {ON_KLEIN}; then\n"
+        "  cd /mnt/user/appdata/twinraid/config\n"
+        "  [ -e twinraid.yaml.vor-0.5.3 ] || cp -p twinraid.yaml twinraid.yaml.vor-0.5.3\n"
+        "  ls -l twinraid.yaml*\n"
+    )
+    assert block in _blocks(section)[0]
+    assert "> **Diesen Kasten allein einfügen.**" in section[: section.index(block)]
+
+
 def test_zfs_destroy_and_rollback_in_the_guide_are_never_recursive() -> None:
     assert not re.search(r"zfs (destroy|rollback) (-\w*[rRf]|.* -[rRf])", SETUP)
 
 
-def test_section_16_only_names_test_data_and_relative_sizes() -> None:
+@pytest.mark.parametrize("number", [16, 17])
+def test_sections_with_sync_only_name_test_data(number: int) -> None:
     """Im Repo nur Testnamen (CLAUDE.md, „Namen der echten Server“)."""
-    section = _section(16)
+    section = _section(number)
     datasets = set(re.findall(r"mainpool/([A-Za-z0-9._-]+)", section))
     assert datasets <= {"twinraidtest", "twinraid-mirror"}
+    assert not re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", section)
 
 
 @pytest.mark.parametrize("name", sorted(ROLLBACK))
@@ -363,7 +503,14 @@ def test_scripts_are_never_loaded_straight_into_boot() -> None:
     for name in set(downloads):
         count = downloads.count(name)
         escaped = re.escape(name)
-        assert len(re.findall(rf"sha256sum /tmp/{escaped}\n", SETUP)) == count
+        # Bis Abschnitt 16 zeigt sha256sum den Wert zum Vergleich, ab 17 prüft sha256sum -c.
+        shown = len(re.findall(rf"sha256sum /tmp/{escaped}\n", SETUP))
+        checked = len(re.findall(rf"  /tmp/{escaped}\" \| sha256sum -c\n", SETUP))
+        assert shown + checked == count
+        # Kopiert wird ab 17 nur, wenn die SHA-256 unmittelbar vorher stimmt.
+        assert len(re.findall(rf"  /tmp/{escaped}\" \| sha256sum -c --status; then\n", SETUP)) == (
+            checked
+        )
         assert SETUP.count(f"cp /tmp/{name} /boot/config/twinraid/{name}.neu\n") == count
         assert (
             SETUP.count(f"mv /boot/config/twinraid/{name}.neu /boot/config/twinraid/{name}\n")

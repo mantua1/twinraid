@@ -375,13 +375,16 @@ Die erste Zahl ist die Anzahl geänderter Einträge seit der Basis, darunter die
 
 **6. Stand nach Klein senden.**
 
-> **Diesen Kasten allein einfügen, und nur, wenn Schritt 5 in Ordnung war.** Er setzt `mainpool/<Share>` auf Klein mit `zfs receive -F` auf den Stand aus dem Notbetrieb. Er prüft die Basis unmittelbar vorher noch einmal und sendet sonst nichts.
+Gesendet wird von einem **Lesezeichen der Basis im Klon** (`mainpool/<Share>#<Basis>`). Ein Strom direkt vom Snapshot des Spiegels wäre für ZFS ein Strom eines Klons, weil die Basis in einem anderen Dataset liegt; den nimmt Klein nur als neues Dataset an (`destination has snapshots … must destroy them`). Das Lesezeichen gehört zum Klon und hat dieselbe GUID wie die Basis; der Spiegel ändert sich dabei nicht, und das Lesezeichen verschwindet beim Aufräumen mit dem Klon.
+
+> **Diesen Kasten allein einfügen, und nur, wenn Schritt 5 in Ordnung war.** Er legt im Klon das Lesezeichen der Basis an, falls es fehlt, und setzt `mainpool/<Share>` auf Klein mit `zfs receive -F` auf den Stand aus dem Notbetrieb. Er prüft die Basis unmittelbar vorher noch einmal und sendet sonst nichts.
 
 ```bash
-GB=$(zfs get -H -o value guid "mainpool/twinraid-mirror/$N@$B" 2>/dev/null || true)
+zfs list -H -t bookmark -o name "mainpool/$N#$B" >/dev/null 2>&1 || zfs bookmark "mainpool/twinraid-mirror/$N@$B" "mainpool/$N#$B" || true
+GB=$(zfs get -H -o value guid "mainpool/$N#$B" 2>/dev/null || true)
 GK=$(klein zfs get -H -o value guid "mainpool/$N@$B" 2>/dev/null || true)
 if [ -n "$R" ] && [ -n "$GB" ] && [ "$GB" = "$GK" ]; then
-  zfs send -L -c -e -i "mainpool/twinraid-mirror/$N@$B" "mainpool/$N@$R" | klein zfs receive -F "mainpool/$N" && echo "Rückweg gesendet"
+  zfs send -L -c -e -i "mainpool/$N#$B" "mainpool/$N@$R" | klein zfs receive -F "mainpool/$N" && echo "Rückweg gesendet"
 else
   echo "Basis fehlt auf Klein oder hat eine andere GUID; nichts gesendet"
 fi
@@ -414,13 +417,13 @@ Nach dem Rückweg kommen die Klone weg; die Spiegel bleiben unverändert. Danach
 
 **2. Klon löschen**, im Unraid-Terminal von Groß, nach dem Kasten aus [Variablen und Verbindung zu Klein](#variablen-und-verbindung-zu-klein):
 
-> **Diesen Kasten allein einfügen.** Er löscht `mainpool/<Share>` mit seinen Snapshots einzeln und ohne `-r`, aber nur, wenn es ein Klon eines Spiegels ist. Den Spiegel `mainpool/twinraid-mirror/<Share>` berührt er nie.
+> **Diesen Kasten allein einfügen.** Er löscht `mainpool/<Share>` mit seinen Snapshots und Lesezeichen einzeln und ohne `-r`, aber nur, wenn es ein Klon eines Spiegels ist. Den Spiegel `mainpool/twinraid-mirror/<Share>` berührt er nie.
 
 ```bash
 O=$(zfs get -H -o value origin "mainpool/$N" 2>/dev/null || true)
 case "$O" in
   "mainpool/twinraid-mirror/$N@"*)
-    for s in $(zfs list -H -t snapshot -o name -d 1 "mainpool/$N"); do zfs destroy "$s"; done
+    for s in $(zfs list -H -t snapshot,bookmark -o name -d 1 "mainpool/$N"); do zfs destroy "$s"; done
     zfs destroy "mainpool/$N" && echo "Klon mainpool/$N gelöscht"
     ;;
   *) echo "mainpool/$N ist kein Klon eines Spiegels; nichts gelöscht" ;;
