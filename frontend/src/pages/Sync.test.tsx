@@ -249,7 +249,7 @@ describe("result", () => {
   it("shows outcomes without a reason", async () => {
     const { sync } = await openDashboard({ status: withSync({ last: result("too_soon") }) });
     expect(within(sync).getByTestId("sync-last")).toHaveTextContent(
-      "Zu kurz nach dem letzten Snapshot; der Wächter legt höchstens alle 30 Minuten einen an.",
+      "Zu kurz nach dem letzten Snapshot; der Wächter lässt einen neuen erst nach dem eingestellten Abstand zu.",
     );
     expect(within(sync).queryByTestId("sync-reason")).toBeNull();
   });

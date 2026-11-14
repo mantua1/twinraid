@@ -356,7 +356,7 @@
       "source_guard_inactive": "Der Wächter war nicht aktiv.",
       "source_guard_lost": "Der Wächter hat nicht rechtzeitig geantwortet oder ist neu gestartet.",
       "source_guard_refused": "Der Wächter hat abgelehnt.",
-      "too_soon": "Zu kurz nach dem letzten Snapshot; der Wächter legt höchstens alle 30 Minuten einen an.",
+      "too_soon": "Zu kurz nach dem letzten Snapshot; der Wächter lässt einen neuen erst nach dem eingestellten Abstand zu.",
       "snapshot_low_space": "Zu wenig Platz auf mainpool für einen neuen Snapshot (Reserve laut source-guard.conf).",
       "snapshot_limit": "Zu viele eigene Snapshots (höchstens 50 je Dataset); ältere laufen nach snapshot_keep_days ab.",
       "prepare_failed": "Die Prüfung auf dem Quellserver ist fehlgeschlagen; Einzelheiten im Syslog (twinraid-source-guard).",

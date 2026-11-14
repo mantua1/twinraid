@@ -1794,7 +1794,7 @@ Erwartet: `Source guard: active, version 2`, die Zeile `twinraidtest` mit `yes` 
 | `twinraid-admin show-action-log` | `sync_dry_run` mit dem Ergebnis `dry_run_success` |
 | `twinraid-admin sync-check` | `mirror.conf`-Spalte `yes`, `Target: last check …: ok`, `delegation ok`, `twinraidtest: absent` |
 
-Zwischen zwei Probeläufen liegen mindestens **30 Minuten**, weil der Wächter höchstens alle 30 Minuten einen Snapshot anlegt. Früher meldet die Kachel „Zu kurz nach dem letzten Snapshot …“. Das gilt auch für die Tests unten.
+Zwischen zwei Probeläufen liegen mindestens **30 Minuten**, weil der Wächter in Version 2 höchstens alle 30 Minuten einen Snapshot anlegt (ab Version 4 einstellbar, 17.4). Früher meldet die Kachel „Zu kurz nach dem letzten Snapshot …“. Das gilt auch für die Tests unten.
 
 ### 15.7 Test 2b: Was `guard.sh` ablehnt
 
@@ -1975,7 +1975,7 @@ Neu auf den Servern sind `source-guard.sh` Version 3 (Klein), `guard.sh` mit 2 G
 | 16.18 | Test A3: Aufbewahrung auf Groß nach einem Monat | Groß |
 | 16.19 | Abschluss | |
 
-> **Zeitbedarf:** Der Wächter legt höchstens alle 30 Minuten einen Snapshot an, und jeder Probelauf und jeder Sync braucht einen. `reset-run-interval` hebt nur die Pause nach einem Lauf mit angehaltenen Containern auf, nicht diesen Abstand. Früher meldet die Kachel „Zu kurz nach dem letzten Snapshot …“. Die Tests brauchen etwa 15 Läufe, also mindestens acht Stunden; verteile sie auf zwei bis drei Tage. A2 läuft über zwei Tage, A3 über einen Monat.
+> **Zeitbedarf:** Der Wächter legt in Version 3 höchstens alle 30 Minuten einen Snapshot an (ab Version 4 einstellbar, 17.4), und jeder Probelauf und jeder Sync braucht einen. `reset-run-interval` hebt nur die Pause nach einem Lauf mit angehaltenen Containern auf, nicht diesen Abstand. Früher meldet die Kachel „Zu kurz nach dem letzten Snapshot …“. Die Tests brauchen etwa 15 Läufe, also mindestens acht Stunden; verteile sie auf zwei bis drei Tage. A2 läuft über zwei Tage, A3 über einen Monat.
 
 In den Protokollen im PR nur „Klein“ und „Groß“ schreiben, nur die Testnamen `twinraidtest` und `twinraid-testcontainer`, keine IP-Adressen, Fingerabdrücke, Namen eigener VMs, Container oder Shares und keine Größen. Durchsatz und Genauigkeit der Restzeit bitte nur in Prozent angeben (16.12).
 
@@ -3261,7 +3261,7 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 | Probelauf: „Die Rechte für den Empfang (zfs allow) … stimmen nicht“ | `zfs allow mainpool/twinraid-mirror` weicht von 15.3 ab | Delegation wie in 15.3 herstellen; mit `check` prüfen (`deleg=ok`). `id-in-use` heißt: UID oder GID 64000 steht in `/etc/passwd` oder `/etc/group` |
 | Probelauf: „… liegt an der Stelle eines Spiegels ein fremdes Dataset …“ | Unter `mainpool/twinraid-mirror/<Name>` liegt ein Dataset, das `guard.sh` nicht empfangen hat | Ansehen und, wenn es nichts Wichtiges enthält, ohne `-r` löschen: `zfs destroy mainpool/twinraid-mirror/<Name>` (15.8) |
 | Probelauf: „Ein Spiegel … ist gesperrt (props-mismatch) …“ | `guard.sh` hat einen Spiegel gesperrt | [WIEDERHERSTELLUNG.md](WIEDERHERSTELLUNG.md), Abschnitt „Spiegel gesperrt“ |
-| Probelauf: „Zu kurz nach dem letzten Snapshot …“ | Der Wächter legt höchstens alle 30 Minuten einen Snapshot an | 30 Minuten warten |
+| Probelauf: „Zu kurz nach dem letzten Snapshot …“ | Der Wächter lässt einen neuen Snapshot erst nach dem eingestellten Abstand zu (`min_snapshot_interval_minutes`, Standard 30 Minuten; bis Version 3 fest 30 Minuten) | Den Abstand abwarten; ab 0.5.3 nennt die Kachel **Sync** die Uhrzeit („Nächster Snapshot frühestens um …“) |
 | Button **Jetzt synchronisieren** grau: „der Wächter … hält die Pause zwischen zwei Läufen ein; frühestens um …“ | Nach jedem Lauf mit angehaltenen Containern gilt eine Pause von 30 Minuten | Bis zur genannten Uhrzeit warten; für Tests hebt root auf Klein sie mit `… reset-run-interval` auf |
 | Button **Jetzt synchronisieren** grau: „auf … besteht laut letzter Prüfung ein Klon eines Spiegels“ | Von einem Spiegel auf Groß gibt es einen Klon, etwa aus einem Notbetrieb; solange er besteht, nimmt `guard.sh` nichts an | Auf Groß ansehen: `zfs list -H -o name,origin -r mainpool \| grep twinraid-mirror`. Einen Klon nur löschen, wenn er nicht mehr gebraucht wird; danach ein Probelauf, damit TwinRaid den neuen Stand kennt |
 | Sync: „Die Löschungen wurden abgelehnt; nichts wurde gesendet.“ | Im Dialog wurde **Ablehnen** gewählt | Gewollt? Sonst nach 30 Minuten erneut synchronisieren und **Freigeben und senden** wählen (16.7) |
