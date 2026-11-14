@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 interface ConfirmDialogProps {
   title: string;
   description: string;
+  // Weitere Sätze unter der Beschreibung, jeweils ein Absatz.
+  details?: string[];
   confirmLabel: string;
   destructive?: boolean;
   onConfirm: () => void;
@@ -19,6 +21,7 @@ interface ConfirmDialogProps {
 export function ConfirmDialog({
   title,
   description,
+  details = [],
   confirmLabel,
   destructive = false,
   onConfirm,
@@ -56,6 +59,11 @@ export function ConfirmDialog({
       <p id={descriptionId} className="mt-3 text-sm text-muted-foreground">
         {description}
       </p>
+      {details.map((line) => (
+        <p key={line} className="mt-2 text-sm text-muted-foreground" data-testid="dialog-detail">
+          {line}
+        </p>
+      ))}
       <div className="mt-6 flex flex-wrap justify-end gap-2">
         <Button variant="outline" onClick={onCancel}>
           {t("actions.dialog.cancel")}

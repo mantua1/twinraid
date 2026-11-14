@@ -6,6 +6,7 @@ import type { AppInfo, StatusNotice, StatusSnapshot, TargetZfs, TlsInfo } from "
 import { ErrorNotice } from "@/components/ErrorNotice";
 import { NoticeList } from "@/components/NoticeList";
 import { SourceGuardCard } from "@/components/SourceGuardCard";
+import { SyncSnapshots } from "@/components/SyncSnapshots";
 import { SyncSettingsCard } from "@/components/SyncSettingsCard";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -242,7 +243,9 @@ export function SettingsPage({ info, tls, status, onBack }: SettingsPageProps) {
           guard={status?.source_guard ?? null}
           name={names.source}
           target={names.target}
-        />
+        >
+          {status !== null && <SyncSnapshots status={status} names={names} />}
+        </SourceGuardCard>
       )}
       {names !== null && status !== null && (
         <SyncSettingsCard

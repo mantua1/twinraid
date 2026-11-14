@@ -21,9 +21,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, Protocol, Self
 
-from pydantic import ConfigDict, Field, StringConstraints, ValidationError
+from pydantic import ConfigDict, Field, StringConstraints, ValidationError, model_validator
 
 from twinraid.shared.base import StrictModel
 from twinraid.shared.source_guard import (
@@ -77,8 +77,11 @@ FRESH_SECONDS = 30
 # erst, wenn die Bedingung so lange ohne Unterbrechung besteht (Konzept 3.6).
 HOLD_NOTICE_SECONDS = 60
 MAX_STATUS_BYTES = 64 * 1024
-# Protokoll 2 ab source-guard.sh Version 2 (TwinRaid v0.5.1, Konzept 3.6).
-PROTOCOL = 2
+# Protokoll 2 ab source-guard.sh Version 2 (TwinRaid v0.5.1), Protokoll 3 ab Version 4
+# (v0.5.3) mit dem Abstand zwischen Snapshots in limits (Konzept 3.6).
+PROTOCOLS = (2, 3)
+# Abstand zwischen zwei Snapshots: Standard in source-guard.conf, bei Protokoll 2 fest.
+DEFAULT_SNAPSHOT_INTERVAL_MINUTES = 30
 
 # Zeichenregeln wie im Wächter.
 ContainerName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")]
@@ -124,6 +127,8 @@ class _Limits(_FileModel):
     heartbeat_timeout_seconds: Annotated[int, Field(ge=30, le=600)]
     stop_timeout_seconds: Annotated[int, Field(ge=10, le=600)]
     min_run_interval_minutes: Annotated[int, Field(ge=10, le=1440)]
+    # Nur bei Protokoll 3 und dort Pflicht (GuardFile prüft das).
+    min_snapshot_interval_minutes: Annotated[int, Field(ge=5, le=1440)] | None = None
     max_deletions: Annotated[int, Field(ge=0, le=10_000_000)]
     snapshot_keep_days: Annotated[int, Field(ge=1, le=365)]
     snapshot_reserve_percent: Annotated[int, Field(ge=5, le=50)]
@@ -266,7 +271,7 @@ class _Job(_FileModel):
 class GuardFile(_FileModel):
     """state/status.json, wie write_status in source-guard.sh es schreibt."""
 
-    protocol: Literal[2]
+    protocol: Literal[2, 3]
     version: Annotated[int, Field(ge=2, le=999)]
     heartbeat_at: Timestamp
     started_at: Timestamp
@@ -288,6 +293,17 @@ class GuardFile(_FileModel):
     zfs: _Zfs
     job: _Job | None
     seq_exhausted: bool
+
+    @model_validator(mode="after")
+    def _interval_matches_protocol(self) -> Self:
+        """Protokoll 3 hat den Abstand zwischen Snapshots, Protokoll 2 nicht."""
+        present = "min_snapshot_interval_minutes" in self.limits.model_fields_set
+        if present != (self.protocol == 3) or (
+            present and self.limits.min_snapshot_interval_minutes is None
+        ):
+            msg = "min_snapshot_interval_minutes does not match the protocol"
+            raise ValueError(msg)
+        return self
 
 
 # --- Einbindungen ------------------------------------------------------------------------
@@ -445,7 +461,7 @@ def parse_status(raw: bytes) -> GuardFile:
         raise InvalidStatusError(GuardStatusProblem.SCHEMA)
     protocol = data.get("protocol")
     # bool ist in Python ein int; true zählt nicht als Protokoll 1.
-    if type(protocol) is int and protocol != PROTOCOL:
+    if type(protocol) is int and protocol not in PROTOCOLS:
         raise InvalidStatusError(GuardStatusProblem.PROTOCOL_MISMATCH)
     try:
         return GuardFile.model_validate_json(raw)
@@ -559,7 +575,12 @@ def _details(file: GuardFile) -> GuardDetails:
             ),
             self_dataset=file.zfs.self_dataset,
         ),
-        limits=GuardLimits(**file.limits.model_dump()),
+        limits=GuardLimits(
+            **file.limits.model_dump(exclude={"min_snapshot_interval_minutes"}),
+            min_snapshot_interval_minutes=(
+                file.limits.min_snapshot_interval_minutes or DEFAULT_SNAPSHOT_INTERVAL_MINUTES
+            ),
+        ),
         target_configured=file.target.configured,
         target_port=file.target.port,
         rejected_count=file.rejected.count,
@@ -729,6 +750,10 @@ def _notices(file: GuardFile, own_id: str | None) -> tuple[StatusNotice, ...]:
         notices.append(StatusNotice.SOURCE_FLASH_BACKUP)
     if own_id is not None and any(item.id == own_id for item in file.allowed):
         notices.append(StatusNotice.SOURCE_GUARD_ALLOWS_SELF)
+    interval = file.limits.min_snapshot_interval_minutes
+    if interval is not None and interval < DEFAULT_SNAPSHOT_INTERVAL_MINUTES:
+        # Ein Testwert soll nicht liegen bleiben (Konzept 3.6, F17).
+        notices.append(StatusNotice.SOURCE_SNAPSHOT_INTERVAL_TEST)
     return tuple(notices)
 
 

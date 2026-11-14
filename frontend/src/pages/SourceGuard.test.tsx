@@ -2,7 +2,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { act } from "react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { GuardDetails, SourceGuardStatus, StatusSnapshot } from "@/api/types";
 import {
@@ -291,8 +291,14 @@ describe("tile Klein", () => {
   });
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe("tile Sync", () => {
-  it("names the earliest next sync, rounded up to the minute", async () => {
+  it("names the earliest next sync at the rounded minute, as the worker locks the button", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-13T12:00:00Z"));
     const { sync } = await openDashboard({
       status: withDetails({ run_allowed_at: "2026-10-13T12:29:10Z" }),
     });
@@ -311,6 +317,24 @@ describe("tile Sync", () => {
 });
 
 describe("settings", () => {
+  it.each([
+    [2, 30, "30 min (fest)"],
+    [3, 30, "30 min (fest)"],
+    [4, 5, "5 min"],
+  ])("shows the snapshot interval of guard version %i", async (version, minutes, text) => {
+    const { user } = await openDashboard({
+      status: withDetails({
+        version,
+        limits: { ...GUARD_DETAILS.limits, min_snapshot_interval_minutes: minutes },
+      }),
+    });
+    await user.click(screen.getByRole("button", { name: "Einstellungen" }));
+    const card = await screen.findByTestId("settings-source-guard");
+    expect(within(card).getByTestId("guard-snapshot-interval")).toHaveTextContent(text);
+    // Die Snapshots beider Seiten stehen auch hier (Konzept 3.6, „Einstellungen“).
+    expect(within(card).getByTestId("sync-snapshots")).toBeInTheDocument();
+  });
+
   it("lists the guard read-only", async () => {
     const { user } = await openDashboard({
       status: withDetails({

@@ -175,6 +175,15 @@ describe("sync texts", () => {
     );
   });
 
+  it("name no fixed interval when a snapshot comes too soon", () => {
+    // Der Abstand ist seit v0.5.3 einstellbar (min_snapshot_interval_minutes, Konzept 3.6).
+    const english = flatten(en);
+    expect(german.get("actions.outcomes.too_soon")).toContain("nach dem eingestellten Abstand");
+    expect(english.get("actions.outcomes.too_soon")).toContain("after the configured interval");
+    expect(german.get("actions.outcomes.too_soon")).not.toMatch(/\d/);
+    expect(english.get("actions.outcomes.too_soon")).not.toMatch(/\d/);
+  });
+
   it("tell the user which guard to copy after a protocol change", () => {
     expect(german.get("guard.statusProblems.protocol_mismatch")).toContain(
       "source-guard.sh Version 2",

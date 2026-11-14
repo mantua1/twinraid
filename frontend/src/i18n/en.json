@@ -68,7 +68,8 @@
       "source_flash_backup": "Unraid Connect Flash Backup is active on {{target}}.",
       "source_guard_allows_self": "The guard's allow list on {{target}} contains TwinRaid's container. Check source-guard.conf: TwinRaid is never stopped.",
       "target_arc_unlimited": "No limit for the ZFS cache is set on {{target}}. Set it in Unraid under Settings → Disk Settings.",
-      "source_base_hold_missing": "The new base of {{datasets}} on {{target}} is not held; the next successful sync fixes that."
+      "source_base_hold_missing": "The new base of {{datasets}} on {{target}} is not held; the next successful sync fixes that.",
+      "source_snapshot_interval_test": "Test value active: interval between snapshots {{minutes}} min (default 30)."
     }
   },
   "dashboard": {
@@ -319,7 +320,8 @@
       "levels_mismatch": "sync.shares in twinraid.yaml does not match the dataset lines in source-guard.conf on {{source}}",
       "self_dataset_missing": "appdata is mirrored, but the own dataset mainpool/appdata/twinraid is missing (test Z4 in docs/EINRICHTUNG.md)",
       "source_guard_too_soon": "the source guard on {{source}} keeps the pause between two runs",
-      "target_clone_active": "according to the last check, a clone of a mirror exists on {{target}}"
+      "target_clone_active": "according to the last check, a clone of a mirror exists on {{target}}",
+      "source_guard_snapshot_too_soon": "the minimum interval since the last snapshot on {{source}} has not passed yet"
     },
     "outcomes": {
       "success": "successful",
@@ -354,7 +356,7 @@
       "source_guard_inactive": "The guard was not active.",
       "source_guard_lost": "The guard did not answer in time or has restarted.",
       "source_guard_refused": "The guard refused.",
-      "too_soon": "Too soon after the last snapshot; the guard creates at most one every 30 minutes.",
+      "too_soon": "Too soon after the last snapshot; the guard allows a new one only after the configured interval.",
       "snapshot_low_space": "Not enough space on mainpool for a new snapshot (reserve from source-guard.conf).",
       "snapshot_limit": "Too many own snapshots (at most 50 per dataset); older ones expire after snapshot_keep_days.",
       "prepare_failed": "The check on the source server failed; details in the syslog (twinraid-source-guard).",
@@ -543,7 +545,10 @@
       "datasetSnapshots_other": "{{count}} own snapshots",
       "datasetBase": "base from {{time}}",
       "datasetNoBase": "no base yet",
-      "datasetBookmark": "with bookmark"
+      "datasetBookmark": "with bookmark",
+      "snapshotInterval": "Interval between snapshots",
+      "snapshotIntervalValue": "{{minutes}} min",
+      "snapshotIntervalFixed": "{{minutes}} min (fixed)"
     },
     "active_one": "Guard: active · {{count}} container allowed",
     "active_other": "Guard: active · {{count}} containers allowed",
@@ -696,6 +701,19 @@
         "title": "Confirm the deletions and send?",
         "description": "{{target}} applies the deletions to the mirror. The previous states stay in the snapshots on {{target}} for at least 30 days.",
         "confirm": "Confirm and send"
+      },
+      "start": {
+        "title": "Start sync?",
+        "confirm": "Start sync",
+        "shares": "Mirrored to {{target}}: {{shares}}.",
+        "containers_one": "{{count}} container will probably be stopped briefly: {{names}}.",
+        "containers_other": "{{count}} containers will probably be stopped briefly: {{names}}.",
+        "noContainers": "No allowed container is running; none will be stopped.",
+        "noStop": "No containers will be stopped; the snapshot is only crash-consistent for running containers.",
+        "recheck": "The sync determines the containers again when it starts.",
+        "wake": "{{target}} is off and will be woken; it stays on afterwards.",
+        "online": "{{target}} is already running and will not be woken.",
+        "unknown": "{{target}} is currently neither off nor on (starting, shutting down or state unknown); whether it is woken is decided when the sync starts."
       }
     },
     "history": {
@@ -725,7 +743,7 @@
       "target_exists": "a foreign dataset sits where the mirror belongs (docs/EINRICHTUNG.md)",
       "delegation_mismatch": "the permissions for receiving (zfs allow) on {{target}} do not match",
       "props_mismatch": "a mirror is locked (props-mismatch); steps in docs/WIEDERHERSTELLUNG.md",
-      "props_not_applied": "fixed properties did not arrive, the mirror is locked (props-not-applied); steps in docs/WIEDERHERSTELLUNG.md",
+      "props_not_applied": "fixed properties are missing or were changed, the mirror is locked (props-not-applied); steps in docs/WIEDERHERSTELLUNG.md",
       "clone_active": "a clone of a mirror exists on {{target}}",
       "space_low": "not enough space on {{target}}",
       "too_soon": "the last receive into this mirror was less than 10 minutes ago",
@@ -743,6 +761,36 @@
       "not_ready": "a share was not ready to be sent",
       "self_dataset_missing": "TwinRaid's own dataset is missing",
       "send_error": "zfs send failed on {{source}}; details in the syslog (twinraid-source-guard)"
+    },
+    "shares": "Shares: {{shares}} → mirror on {{target}}",
+    "nextSnapshot": "Next snapshot at {{time}} at the earliest.",
+    "snapshotTooSoon": "the minimum interval since the last snapshot on {{source}} has not passed yet; at {{time}} at the earliest",
+    "uncounted": {
+      "first": "not counted (first run)",
+      "bookmark": "not counted (from bookmark)"
+    },
+    "snapshots": {
+      "title": "Snapshots of {{share}}",
+      "restore": "Restore single files as described in docs/WIEDERHERSTELLUNG.md.",
+      "sourceHeading": "On {{source}}",
+      "targetHeading": "On {{target}}",
+      "count_one": "{{count}} snapshot",
+      "count_other": "{{count}} snapshots",
+      "newest": "newest: {{time}}",
+      "oldest": "oldest: {{time}}",
+      "base": "base: {{time}} (held)",
+      "noBase": "base: none",
+      "bookmark": "bookmark present",
+      "noBookmark": "no bookmark",
+      "keep": "retention {{days}} days",
+      "newestReceived": "newest received: {{time}}",
+      "newestCreated": "created: {{time}}",
+      "checkedAt": "as of the check from {{time}}",
+      "absent": "no mirror yet",
+      "foreign": "foreign dataset",
+      "locked": "locked",
+      "unknown": "unknown (no dry run or sync yet)",
+      "sourceUnknown": "unknown"
     }
   }
 }

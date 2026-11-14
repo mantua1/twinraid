@@ -193,6 +193,7 @@ export function SourceGuardPanel({ guard, notices, source }: SourceGuardPanelPro
         datasets={(guard.details?.zfs.datasets ?? [])
           .filter((dataset) => dataset.base_hold_missing)
           .map((dataset) => dataset.name)}
+        minutes={guard.details?.limits.min_snapshot_interval_minutes}
       />
       {guard.details !== null && <DetailLines details={guard.details} />}
     </div>
