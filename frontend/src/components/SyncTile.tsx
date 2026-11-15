@@ -4,18 +4,18 @@ import type { ActionName, StatusSnapshot, SyncReport, SyncShareReport } from "@/
 import { ActionPanel, type BlockerValues, type PanelAction } from "@/components/ActionPanel";
 import { SyncHistory } from "@/components/SyncHistory";
 import { SyncRunning } from "@/components/SyncRunning";
+import { SyncSnapshots } from "@/components/SyncSnapshots";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ActionRequestResult } from "@/hooks/useDashboardData";
-import { formatBytes, formatSince } from "@/lib/format";
-import { QUIET_OUTCOMES, useReasonText, useRunDetails } from "@/lib/syncTexts";
+import { useNow } from "@/hooks/useNow";
+import { formatBytes, formatSince, formatTime, roundUpToMinute } from "@/lib/format";
+import { QUIET_OUTCOMES, uncountedKind, useReasonText, useRunDetails } from "@/lib/syncTexts";
 import { cn } from "@/lib/utils";
 
 interface SyncTileProps {
   status: StatusSnapshot | null;
   // Namen von Klein und Groß für die Texte.
   names: { source: string; target: string };
-  // „Nächster Sync frühestens um …“ aus der Pause des Wächters (Konzept 3.6).
-  nextSync: string | null;
   blockerValues: BlockerValues;
   className?: string;
   onRun: (name: ActionName) => Promise<ActionRequestResult>;
@@ -48,6 +48,7 @@ function ShareRow({
           : t("sync.report.incremental")
         : null;
   const mirror = share.mirror;
+  const uncounted = uncountedKind(share);
   return (
     <tr className="border-t align-top" data-testid="sync-share">
       <td className="py-1.5 pr-3">
@@ -59,10 +60,22 @@ function ShareRow({
           </span>
         )}
       </td>
-      <td className="py-1.5 pr-3 text-right tabular-nums">{count(language, share.deleted)}</td>
-      <td className="py-1.5 pr-3 text-right tabular-nums">{count(language, share.modified)}</td>
-      <td className="py-1.5 pr-3 text-right tabular-nums">{count(language, share.added)}</td>
-      <td className="py-1.5 pr-3 text-right tabular-nums">{count(language, share.renamed)}</td>
+      {uncounted !== null ? (
+        <td
+          colSpan={4}
+          className="py-1.5 pr-3 text-center text-muted-foreground"
+          data-testid="sync-uncounted"
+        >
+          {t(`sync.uncounted.${uncounted}`)}
+        </td>
+      ) : (
+        <>
+          <td className="py-1.5 pr-3 text-right tabular-nums">{count(language, share.deleted)}</td>
+          <td className="py-1.5 pr-3 text-right tabular-nums">{count(language, share.modified)}</td>
+          <td className="py-1.5 pr-3 text-right tabular-nums">{count(language, share.added)}</td>
+          <td className="py-1.5 pr-3 text-right tabular-nums">{count(language, share.renamed)}</td>
+        </>
+      )}
       <td className="py-1.5 pr-3 text-right whitespace-nowrap tabular-nums">
         {share.size === null ? "–" : formatBytes(language, share.size)}
       </td>
@@ -176,7 +189,6 @@ function Report({ report, names }: { report: SyncReport; names: SyncTileProps["n
 export function SyncTile({
   status,
   names,
-  nextSync,
   blockerValues,
   className,
   onRun,
@@ -198,22 +210,86 @@ export function SyncTile({
       ? sync.history[0]
       : null;
 
+  const details = status?.source_guard.details ?? null;
+  const language = i18n.resolvedLanguage;
+  // Beide Zeiten laufen ohne den nächsten Status ab: Die Zeile verschwindet mit der Uhrzeit.
+  // Der Worker sperrt beide bis zur aufgerundeten vollen Minute (Konzept 3.6): den Abstand
+  // zwischen Snapshots meldet er schon so (snapshot_allowed_at), die Pause (run_allowed_at
+  // des Wächters) runden wir hier genauso. Sie gilt nur, wenn der Sync Container anhält
+  // (preview.containers ist sonst null).
+  const pauseEnd =
+    sync?.preview.containers != null && details?.run_allowed_at != null
+      ? roundUpToMinute(details.run_allowed_at)
+      : null;
+  const snapshotEnd = sync?.snapshot_allowed_at != null ? new Date(sync.snapshot_allowed_at) : null;
+  const now = useNow(pauseEnd !== null || snapshotEnd !== null);
+  const nextSync = pauseEnd !== null && pauseEnd > now ? formatTime(language, pauseEnd) : null;
+  const nextSnapshot =
+    snapshotEnd !== null && snapshotEnd > now ? formatTime(language, snapshotEnd) : null;
+  const snapshotHint =
+    nextSnapshot === null
+      ? {}
+      : {
+          source_guard_snapshot_too_soon: t("sync.snapshotTooSoon", {
+            source: names.source,
+            time: nextSnapshot,
+          }),
+        };
+
+  // Sätze des Dialogs vor dem Sync (Konzept 4.1); er zeigt immer den aktuellen Stand.
+  function startDetails(): string[] {
+    const lines: string[] = [];
+    const containers = sync?.preview.containers ?? null;
+    if (containers === null) {
+      lines.push(t("sync.dialog.start.noStop"));
+    } else if (containers.length === 0) {
+      lines.push(t("sync.dialog.start.noContainers"));
+    } else {
+      lines.push(
+        t("sync.dialog.start.containers", {
+          count: containers.length,
+          names: containers.join(", "),
+        }),
+      );
+      lines.push(t("sync.dialog.start.recheck"));
+    }
+    const targetState = status?.target.state;
+    if (targetState === "offline" && sync?.preview.wake === true) {
+      lines.push(t("sync.dialog.start.wake", names));
+    } else if (targetState === "online") {
+      lines.push(t("sync.dialog.start.online", names));
+    } else {
+      lines.push(t("sync.dialog.start.unknown", names));
+    }
+    return lines;
+  }
+
   const actions: PanelAction[] = [
     {
       name: "sync_dry_run",
       label: t("actions.buttons.sync_dry_run"),
       variant: "default",
-      blockerHints: { target_offline: t("sync.targetOfflineNoWake", names) },
+      blockerHints: { target_offline: t("sync.targetOfflineNoWake", names), ...snapshotHint },
     },
     {
       name: "sync_start",
       label: t("actions.buttons.sync_start"),
       blockerHints: {
         target_offline: t("sync.targetOfflineNoWake", names),
+        ...snapshotHint,
         // Die Pause des Wächters mit der Uhrzeit (Konzept 3.6, „Kachel Sync“).
         ...(nextSync !== null && {
           source_guard_too_soon: t("sync.tooSoon", { source: names.source, time: nextSync }),
         }),
+      },
+      confirm: {
+        title: t("sync.dialog.start.title"),
+        description: t("sync.dialog.start.shares", {
+          shares: (sync?.levels.configured ?? []).join(", "),
+          target: names.target,
+        }),
+        details: startDetails(),
+        confirmLabel: t("sync.dialog.start.confirm"),
       },
     },
   ];
@@ -227,6 +303,12 @@ export function SyncTile({
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        <p className="text-sm" data-testid="sync-shares">
+          {t("sync.shares", {
+            shares: (sync?.levels.configured ?? []).join(", "),
+            target: names.target,
+          })}
+        </p>
         {running !== null ? (
           <SyncRunning
             key={running.job_id}
@@ -263,6 +345,11 @@ export function SyncTile({
             {t("guard.nextSync", { time: nextSync })}
           </p>
         )}
+        {nextSnapshot !== null && (
+          <p className="text-sm" data-testid="next-snapshot">
+            {t("sync.nextSnapshot", { time: nextSnapshot })}
+          </p>
+        )}
         <p className="text-xs text-muted-foreground" data-testid="sync-schedule">
           {t("sync.schedule")}
         </p>
@@ -272,6 +359,7 @@ export function SyncTile({
           onRun={onRun}
           blockerValues={blockerValues}
         />
+        {status !== null && <SyncSnapshots status={status} names={names} />}
         {sync?.report != null && <Report report={sync.report} names={names} />}
         {sync !== null && <SyncHistory entries={sync.history} names={names} />}
       </CardContent>

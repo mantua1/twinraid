@@ -180,10 +180,25 @@ wait_field() {
   return 1
 }
 
-# Vor jedem Lauf: Pause des Wächters aufheben (nur root auf Klein kann das) und den
-# Mindestabstand von 10 min auf Groß zurückstellen, wie es nach 11 Minuten wäre.
+# Abstand zwischen zwei Snapshots (ab v0.5.3): Der Wächter im Test rechnet ohne Minuten
+# (SNAPSHOT_MINUTE 0), TwinRaid aus job.created_at in echten Minuten. Den Zeitpunkt des
+# letzten Snapshots im Job als root zurückstellen, wie es nach 31 Minuten wäre; der Wächter
+# liest den Job beim Neustart.
+age_snapshot() {
+  local job="${BASE}/private/job" created
+  [[ -f "${job}" ]] || return 0
+  created="$(awk '$1 == "created" {print $2}' "${job}")"
+  [[ "${created}" =~ ^[0-9]+$ ]] || return 0
+  sed -i "s/^created ${created}\$/created $((created - 1860))/" "${job}"
+  /bin/bash "${SOURCE_GUARD}" restart >/dev/null
+}
+
+# Vor jedem Lauf: Pause des Wächters aufheben (nur root auf Klein kann das), den
+# Mindestabstand von 10 min auf Groß zurückstellen, wie es nach 11 Minuten wäre, und den
+# Abstand zwischen Snapshots wie nach 31 Minuten.
 next_run() {
   local newest
+  age_snapshot
   /bin/bash "${SOURCE_GUARD}" reset-run-interval >/dev/null
   newest="$(zfs list -H -t snapshot -d 1 -o name -s createtxg -- "${MIRROR}" 2>/dev/null | tail -1)"
   if [[ -n "${newest}" ]]; then
@@ -265,7 +280,7 @@ sed -e "s|^readonly CONF=.*|readonly CONF=${WORK}/source-guard.conf|" \
   -e "s|^readonly KNOWN_HOSTS=.*|readonly KNOWN_HOSTS=${WORK}/target-known-hosts|" \
   -e "s|^readonly POOL=.*|readonly POOL=${KLEIN}|" \
   -e "s|^readonly SELF_DATASET=.*|readonly SELF_DATASET=${KLEIN}/appdata/twinraid|" \
-  -e "s|^readonly SNAPSHOT_GAP=.*|readonly SNAPSHOT_GAP=0|" \
+  -e "s|^readonly SNAPSHOT_MINUTE=.*|readonly SNAPSHOT_MINUTE=0|" \
   "${REPO_DIR}/host-scripts/source-guard.sh" >"${SOURCE_GUARD}"
 expect_equal "source guard: only the test values differ" \
   "$(diff "${REPO_DIR}/host-scripts/source-guard.sh" "${SOURCE_GUARD}" | grep -c '^>' || true)" 10

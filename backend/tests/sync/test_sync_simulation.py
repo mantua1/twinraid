@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -30,8 +31,11 @@ FAST_LAB = LabTimings(
 )
 
 
-async def _worker(tmp_path: Path) -> TestWorker:
-    worker = make_worker(tmp_path, lab_timings=FAST_LAB)
+async def _worker(tmp_path: Path, ahead: timedelta = timedelta()) -> TestWorker:
+    """Mit ahead geht die Uhr des Workers vor, wie nach dem Abstand zwischen Snapshots."""
+    worker = make_worker(
+        tmp_path, lab_timings=FAST_LAB, sync_clock=lambda: datetime.now(UTC) + ahead
+    )
     await worker.lab.wake()
     for _ in range(200):
         status = await worker.monitor.check_once()
@@ -85,10 +89,15 @@ async def test_sync_in_the_simulation(tmp_path: Path) -> None:
     job = details.job
     assert job is not None
     assert {dataset.base_created_at for dataset in details.zfs.datasets} == {job.created_at}
-    # Die Pause gilt nur für den Sync, nicht für den Probelauf (Konzept 4.2).
+    # Die Pause (2 min) gilt nur für den Sync; der Abstand zwischen Snapshots (5 min, ab
+    # v0.5.3) für beide und endet später, also nennt der Worker ihn (Konzept 4.2).
     availability = worker.actions.availability(worker.monitor.current())
-    assert availability[ActionName.SYNC_START] is ActionBlocker.SOURCE_GUARD_TOO_SOON
-    assert availability[ActionName.SYNC_DRY_RUN] is None
+    assert availability[ActionName.SYNC_START] is ActionBlocker.SOURCE_GUARD_SNAPSHOT_TOO_SOON
+    assert availability[ActionName.SYNC_DRY_RUN] is ActionBlocker.SOURCE_GUARD_SNAPSHOT_TOO_SOON
+    allowed = worker.sync.snapshot().snapshot_allowed_at
+    assert allowed is not None
+    assert timedelta(minutes=5) <= allowed - job.created_at < timedelta(minutes=6)
+    assert details.run_allowed_at < allowed
 
 
 async def test_send_error_hits_the_last_share(tmp_path: Path) -> None:
@@ -148,7 +157,8 @@ async def test_slow_transfer_shows_progress_and_can_be_cancelled(tmp_path: Path)
 
 
 async def test_clone_on_the_target_blocks_the_next_sync(tmp_path: Path) -> None:
-    worker = await _worker(tmp_path)
+    # Die Uhr des Workers geht 6 min vor: Der Abstand zwischen Snapshots sperrt nicht mehr.
+    worker = await _worker(tmp_path, timedelta(minutes=6))
     set_flag(fault_flag(tmp_path, "target-clone"), True)
     assert await worker.actions.request(ActionName.SYNC_DRY_RUN) is None
     await _until(lambda: worker.sync.snapshot().running is None)

@@ -382,7 +382,8 @@ def test_snapshot_needs_existing_datasets(host: Host, conf: str, result: str) ->
 
 
 def test_snapshot_needs_the_gap(make: Callable[..., Host]) -> None:
-    host = started(make(SNAPSHOT_GAP="600"))
+    # Standard 30 Minuten; im Test ist eine Minute 20 s lang (nur in der Kopie des Skripts).
+    host = started(make(SNAPSHOT_MINUTE="20"))
     assert host.send("snapshot")["result"] == "created"
     assert host.send("close")["result"] == "closed"
     assert host.send("snapshot")["result"] == "too_soon"
@@ -390,6 +391,53 @@ def test_snapshot_needs_the_gap(make: Callable[..., Host]) -> None:
     host.stop_run(host.processes[-1])
     host.start_run()
     assert host.send("snapshot")["result"] == "too_soon"
+
+
+def test_snapshot_interval_from_the_config(make: Callable[..., Host]) -> None:
+    """Ab Version 4 (F17): min_snapshot_interval_minutes, im Status unter limits."""
+    host = make(SNAPSHOT_MINUTE="1")
+    host.configure(DEFAULT_CONF + "min_snapshot_interval_minutes 5\n")
+    started(host)
+    assert host.status()["limits"]["min_snapshot_interval_minutes"] == 5
+    assert host.send("snapshot")["result"] == "created"
+    first = time.monotonic()
+    assert host.send("close")["result"] == "closed"
+    assert host.send("snapshot")["result"] == "too_soon"
+    # reset-run-interval hebt nur die Pause zwischen Läufen auf, nie diesen Abstand.
+    assert host.command("reset-run-interval").returncode == 0
+    assert host.send("snapshot")["result"] == "too_soon"
+    time.sleep(max(0.0, 5.3 - (time.monotonic() - first)))
+    assert host.send("snapshot")["result"] == "created"
+    second = time.monotonic()
+    assert host.send("close")["result"] == "closed"
+    # Ein neuer Wert gilt nach dem Neustart, gerechnet ab dem gespeicherten letzten Snapshot.
+    host.configure(DEFAULT_CONF + "min_snapshot_interval_minutes 30\n")
+    host.stop_run(host.processes[-1])
+    host.start_run()
+    status = host.wait_status(lambda s: s["limits"]["min_snapshot_interval_minutes"] == 30)
+    assert status["protocol"] == 3
+    time.sleep(max(0.0, 5.3 - (time.monotonic() - second)))
+    assert host.send("snapshot")["result"] == "too_soon"
+
+
+def test_snapshot_interval_keeps_the_snapshot_limit(make: Callable[..., Host]) -> None:
+    """Auch mit dem kleinsten Abstand bleibt es bei höchstens 50 eigenen Snapshots."""
+    host = make(SNAPSHOT_MINUTE="0")
+    host.configure(DEFAULT_CONF + "min_snapshot_interval_minutes 5\n")
+    # Frische Snapshots, sonst räumt die Aufbewahrung beim Start auf; mit der Basis sind es 50.
+    now = int(time.time())
+    host.update_zfs(
+        lambda z: z["snapshots"].update(
+            {
+                f"{DS}@twinraid-202609{i // 24 + 1:02d}T{i % 24:02d}0000Z": snapshot(
+                    str(900 + i), created=now - 600 + i, txg=901 + i
+                )
+                for i in range(49)
+            }
+        )
+    )
+    started(host)
+    assert host.send("snapshot")["result"] == "snapshot_limit"
 
 
 def test_snapshot_needs_the_space_reserve(host: Host) -> None:
@@ -973,10 +1021,12 @@ def test_send_incremental_and_full(host: Host) -> None:
         ["send", "-L", "-c", "-e", "-v", "-P", "--", other],
     ]
     args = ssh_args(host)
+    # Ab Version 4 zum Schluss ein zweites check (F2).
     assert host.calls("ssh") == [
         [*args, "check"],
         [*args, "receive twinraidtest"],
         [*args, "receive dokumente"],
+        [*args, "check"],
     ]
     # Neue Basis: Hold und Lesezeichen am neuen Snapshot, der alte Hold ist frei.
     assert zfs["snapshots"][new]["holds"] == ["twinraid-base"]
@@ -1040,6 +1090,70 @@ def test_failed_hold_keeps_the_old_base_until_the_next_send(running: Host) -> No
     assert zfs["snapshots"][first_new]["holds"] == []
     assert zfs["snapshots"][f"{DS}@{BASE}"]["holds"] == []
     assert ["release", "--", "twinraid-base", f"{DS}@{BASE}"] in running.calls("zfs")
+
+
+def check_mirror(host: Host) -> tuple[int, int]:
+    check = host.status()["target"]["check"]
+    return check["at"], check["mirrors"][0]["count"]
+
+
+@pytest.mark.parametrize(
+    ("receive", "result"),
+    [
+        ({"rc": 0}, "ok"),
+        ({"rc": 3, "stderr": "twinraid-guard: refused space-low\n"}, "target_refused"),
+        ({"rc": 3, "stderr": "twinraid-guard: refused target-modified\n"}, "target_modified"),
+    ],
+)
+def test_check_after_sending(host: Host, receive: dict[str, Any], result: str) -> None:
+    """Ab Version 4 (F2): Nach dem Senden steht ein neues check im Status."""
+    after = check_answer({"twinraidtest": mirror().replace("count=3", "count=4")})
+    host.answer_ssh(check=check_answer(), check_after_receive=after, receive={"default": receive})
+    started(host)
+    prepared(host)
+    assert check_mirror(host)[1] == 3
+    job = sent(host)
+    assert (job["state"], job["result"]) == ("done" if result == "ok" else "failed", result)
+    assert [call[-1] for call in host.calls("ssh")] == ["check", "receive twinraidtest", "check"]
+    status = host.wait_status(lambda s: s["target"]["check"]["mirrors"][0]["count"] == 4)
+    assert status["target"]["check"]["result"] == "ok"
+
+
+@pytest.mark.parametrize(
+    "receive",
+    [
+        {"rc": 255, "stderr": f"ssh: connect to host {TARGET} port 22: Connection refused\r\n"},
+        {"rc": 2, "stderr": "twinraid-guard: denied\n"},
+    ],
+)
+def test_no_check_after_an_ssh_failure(host: Host, receive: dict[str, Any]) -> None:
+    host.answer_ssh(check=check_answer(), receive={"default": receive})
+    started(host)
+    prepared(host)
+    before = check_mirror(host)
+    job = sent(host)
+    assert job["result"] == "send_failed"
+    assert [call[-1] for call in host.calls("ssh")] == ["check", "receive twinraidtest"]
+    assert check_mirror(host) == before
+
+
+def test_failed_check_after_sending_keeps_the_old_one(host: Host) -> None:
+    host.answer_ssh(
+        check=check_answer(),
+        check_after_receive={"rc": 255, "stderr": "ssh: connect: Connection refused"},
+    )
+    started(host)
+    prepared(host)
+    before = check_mirror(host)
+    job = sent(host)
+    assert (job["state"], job["result"]) == ("done", "ok")
+    assert [call[-1] for call in host.calls("ssh")][-1] == "check"
+    time.sleep(1.2)
+    status = host.status()
+    assert (status["target"]["check"]["at"], status["target"]["check"]["mirrors"][0]["count"]) == (
+        before
+    )
+    assert status["target"]["check"]["result"] == "ok"
 
 
 def test_send_shows_progress(host: Host) -> None:

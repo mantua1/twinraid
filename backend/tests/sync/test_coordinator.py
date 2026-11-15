@@ -241,7 +241,7 @@ async def test_dry_run_with_the_simulated_guard(tmp_path: Path) -> None:
     assert (share.deleted, share.modified, share.added, share.renamed) == (12, 34, 56, 2)
     assert share.mode == "incremental"
     assert share.mirror is not None
-    assert (share.mirror.state, share.mirror.count) == ("mirror", 5)
+    assert (share.mirror.state, share.mirror.count) == ("mirror", 20)
     assert report.send_ready is True
     assert report.awaiting_confirm is False
     assert status.levels.target == ("appdata", "dokumente", "medien")

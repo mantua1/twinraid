@@ -62,6 +62,8 @@ FAULTS = (
     "target-clone",
     "sync-send-error",
     "sync-slow",
+    # Ab v0.5.3: alle Spiegel absent, vollständiger Strom ohne Zählungen.
+    "sync-first-run",
     # Start der VM (guard.sh 3) und Grenze des ZFS-Caches auf Groß
     "vm-device-busy",
     "vm-memory-low",

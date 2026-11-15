@@ -100,6 +100,7 @@ export const GUARD_DETAILS: GuardDetails = {
     heartbeat_timeout_seconds: 120,
     stop_timeout_seconds: 60,
     min_run_interval_minutes: 30,
+    min_snapshot_interval_minutes: 30,
     max_deletions: 1000,
     snapshot_keep_days: 7,
     snapshot_reserve_percent: 15,
@@ -136,6 +137,8 @@ export const SYNC_IDLE: SyncStatus = {
     target_checked_at: null,
   },
   history: [],
+  preview: { containers: ["twinraid-testcontainer"], wake: false },
+  snapshot_allowed_at: null,
 };
 
 /** Laufender Lauf; ohne Angaben ein Probelauf im Schritt preparing. */

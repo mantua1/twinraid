@@ -479,6 +479,9 @@ def _ssh(argv: list[str]) -> int:
     request = argv[28]
     if request == "check":
         answer = answers.get("check", {"rc": 255, "stderr": "ssh: connect: Connection refused"})
+        # Nach einem Empfang (ab Version 4 fragt der Wächter check nach dem Senden erneut).
+        if "check_after_receive" in answers and (_state_dir() / "received.jsonl").exists():
+            answer = answers["check_after_receive"]
         time.sleep(float(answer.get("sleep", 0)))
         sys.stdout.write(answer.get("stdout", ""))
         sys.stderr.write(answer.get("stderr", ""))

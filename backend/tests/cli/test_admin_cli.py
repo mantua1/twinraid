@@ -689,6 +689,55 @@ def test_show_sync_log(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
     ]
 
 
+def test_show_sync_log_names_what_is_not_counted(
+    env: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ab v0.5.3: vollständiger Strom und Strom vom Lesezeichen ohne Zählungen (Konzept 4.1)."""
+    history = SyncHistory(env / "data" / "worker" / "sync-history.jsonl")
+    at = datetime(2026, 11, 8, 12, tzinfo=UTC)
+    empty = {"deleted": None, "modified": None, "added": None, "renamed": None}
+    shares = (
+        SyncHistoryShare(
+            name="erst", mode="full", size=1024**2, sent=1024**2, result=None, **empty
+        ),
+        SyncHistoryShare(
+            name="lesez",
+            mode="incremental",
+            base_type="bookmark",
+            size=1024**2,
+            sent=None,
+            result=None,
+            **empty,
+        ),
+        # Eine Zeile aus v0.5.2 ohne base_type zeigt weiter „?“.
+        SyncHistoryShare(
+            name="alt", mode="incremental", size=None, sent=None, result=None, **empty
+        ),
+    )
+    history.append(
+        SyncHistoryEntry(
+            id="0000000a",
+            kind=SyncKind.SYNC,
+            trigger=Trigger.DASHBOARD,
+            started_at=at,
+            finished_at=at,
+            result=ActionOutcome.SUCCESS,
+            reason=None,
+            woke_target=False,
+            containers_stopped=0,
+            adopted=False,
+            shares=shares,
+        )
+    )
+    assert admin_cli.main(["show-sync-log"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1:] == [
+        "    erst  full  not counted (first run)  size 1.0 MiB  sent 1.0 MiB  -",
+        "    lesez  incremental  not counted (from bookmark)  size 1.0 MiB  sent ?  -",
+        "    alt  incremental  deleted ?  modified ?  added ?  renamed ?  size ?  sent ?  -",
+    ]
+
+
 def test_mock_tour_and_faults(env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     socket_dir = env / "run"
     socket_dir.mkdir()

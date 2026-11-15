@@ -251,7 +251,7 @@ expect_equal "request: regular empty file of root, 0600" "$(stat -c '%F %U %a' "
 expect_equal "state/: root, 0755" "$(stat -c '%U %a' "${BASE}/state")" "root 755"
 expect_equal "private/: root, 0700" "$(stat -c '%U %a' "${BASE}/private")" "root 700"
 expect_equal "status.json: 0644" "$(stat -c '%a' "${STATUS}")" 644
-expect_equal "protocol 2" "$(status_field protocol)" 2
+expect_equal "protocol 3" "$(status_field protocol)" 3
 expect_equal "zfs unavailable on the runner, guard still active" "$(status_field zfs.state)" unavailable
 
 echo "== Container und Konfiguration"

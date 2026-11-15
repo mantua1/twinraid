@@ -83,7 +83,8 @@ async def test_get_status_before_the_first_check(server: WorkerServer) -> None:
     assert isinstance(response.result, dict)
     actions = response.result.pop("actions")
     assert response.result.pop("other_vms_running") is None
-    assert response.result.pop("notices") == []
+    # Die Simulation hat 5 min zwischen Snapshots, einen Testwert (Konzept 6.4).
+    assert response.result.pop("notices") == ["source_snapshot_interval_test"]
     assert response.result.pop("watch_retry") is None
     # Der simulierte Wächter ist aktiv (Konzept 6.4).
     guard = response.result.pop("source_guard")

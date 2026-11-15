@@ -451,6 +451,8 @@ class GuardLimits(StrictModel):
     heartbeat_timeout_seconds: int
     stop_timeout_seconds: int
     min_run_interval_minutes: int
+    # Ab Protokoll 3 aus source-guard.conf, bei Protokoll 2 fest 30 (Konzept 3.6).
+    min_snapshot_interval_minutes: int
     max_deletions: int
     snapshot_keep_days: int
     snapshot_reserve_percent: int

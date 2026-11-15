@@ -1,5 +1,5 @@
 #!/bin/bash
-# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 3 (Konzept 3.6).
+# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 4 (Konzept 3.6).
 #
 # Ablage auf Klein: /boot/config/twinraid/source-guard.sh, Konfiguration daneben in
 # source-guard.conf (Vorlage: host-scripts/source-guard.conf.example). Gestartet wird
@@ -12,8 +12,9 @@
 # eingebunden). Was erlaubt ist, entscheidet der Wächter nach seiner eigenen
 # Konfiguration. Container hält er nur an, wenn sie in "allow" stehen, nie TwinRaid
 # selbst, und startet nur die wieder, die er selbst angehalten hat. Zwischen zwei Läufen
-# liegt eine Pause (min_run_interval_minutes); alle Fristen laufen nach der Laufzeit des
-# Systems, nicht nach der Uhrzeit.
+# liegt eine Pause (min_run_interval_minutes), zwischen zwei Snapshots ein Abstand
+# (min_snapshot_interval_minutes); alle Fristen laufen nach der Laufzeit des Systems, nicht
+# nach der Uhrzeit.
 #
 #   source-guard.sh start | stop | restart | status | check-config | reset-run-interval
 #   source-guard.sh selftest <Container> | selftest-deadman <Container>
@@ -28,6 +29,10 @@
 # Version 3 (TwinRaid v0.5.2) bleibt bei Protokoll 2: stop setzt die Herzschlag-Frist neu,
 # reset-run-interval meldet Erfolg erst nach dem neuen Status, und der alte Hold der Basis
 # wird nur frei, wenn die neue Basis ihren Hold hat.
+# Version 4 (TwinRaid v0.5.3) hat Protokoll 3: Nach dem Senden fragt der Kindprozess
+# guard.sh sync check erneut, und der Abstand zwischen zwei Snapshots ist einstellbar
+# (min_snapshot_interval_minutes, 5–1440, Standard 30); er steht in limits im Status.
+# TwinRaid 0.5.2 nimmt Protokoll 3 nicht an: erst TwinRaid 0.5.3, dann Version 4.
 #
 # Ins Syslog (Kennung twinraid-source-guard) kommen nur feste Texte, Codes, Zahlen
 # und geprüfte Container-Namen, nie der Inhalt der Auftragsdatei.
@@ -36,8 +41,8 @@ export LC_ALL=C
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 
-readonly VERSION=3
-readonly PROTOCOL=2
+readonly VERSION=4
+readonly PROTOCOL=3
 readonly CONF=/boot/config/twinraid/source-guard.conf
 readonly BASE_DIR=/run/twinraid-source-guard
 # Andere Schreibweise desselben Ordners: auf Unraid ist /var/run ein Link auf /run.
@@ -84,13 +89,14 @@ readonly LOG_INTERVAL=60
 readonly RESTART_DELAY=5
 readonly RESTART_LIMIT=10
 readonly RESTART_WINDOW=600
-# Snapshots und Job (ab Version 2), Zeiten in Sekunden nach Laufzeit: Mindestabstand zweier
-# Snapshots, Fristen für prepare, für das Warten danach und für eine Übertragung,
-# Aufbewahrung einmal täglich, Zeitlimit für guard.sh check.
+# Snapshots und Job (ab Version 2), Zeiten in Sekunden nach Laufzeit: Einheit des
+# Mindestabstands zweier Snapshots (min_snapshot_interval_minutes, ab Version 4; im Test
+# kürzt nur eine Kopie des Skripts diesen Wert), Fristen für prepare, für das Warten danach
+# und für eine Übertragung, Aufbewahrung einmal täglich, Zeitlimit für guard.sh check.
 readonly SNAPSHOT_PREFIX=twinraid-
 readonly CREATED_BY=twinraid:created-by
 readonly HOLD_TAG=twinraid-base
-readonly SNAPSHOT_GAP=1800
+readonly SNAPSHOT_MINUTE=60
 readonly SNAPSHOT_LIMIT=50
 readonly PREPARE_LIMIT=1800
 readonly CONFIRM_LIMIT=1800
@@ -235,6 +241,7 @@ MAX_STOP_MINUTES=20
 HEARTBEAT_TIMEOUT=120
 STOP_TIMEOUT=60
 MIN_RUN_INTERVAL=30
+MIN_SNAPSHOT_INTERVAL=30
 MAX_DELETIONS=1000
 TARGET_HOST=""
 TARGET_PORT=22
@@ -383,6 +390,10 @@ load_config() {
       min_run_interval_minutes)
         int_in "${value}" 10 1440 || config_fail bad_value "${number}" || return 1
         MIN_RUN_INTERVAL="${INT}"
+        ;;
+      min_snapshot_interval_minutes)
+        int_in "${value}" 5 1440 || config_fail bad_value "${number}" || return 1
+        MIN_SNAPSHOT_INTERVAL="${INT}"
         ;;
       max_deletions)
         int_in "${value}" 0 10000000 || config_fail bad_value "${number}" || return 1
@@ -1680,6 +1691,8 @@ readonly CHECK_SUMMARY_RE='^summary root=(ok|missing) conf=(ok|missing|invalid) 
 CHECK_AT=0
 CHECK_RESULT=""
 CHECK_LINES=()
+# Codes von ssh_failure und key_missing: Groß hat nicht geantwortet.
+readonly SSH_CODES=(key_missing host_untrusted host_key_mismatch auth_failed unreachable denied ssh_failed)
 
 # Prüft die Antwort von check; Rückgabe 1 bei einer Zeile außerhalb des Formats.
 check_lines_valid() {
@@ -2276,11 +2289,26 @@ child_send() {
   done
   if ((failed)); then
     JOB_STATE=failed
+    check_after_send
     return 0
   fi
   JOB_STATE="done"
   JOB_RESULT=ok
   retention_klein
+  check_after_send
+}
+
+# Ab Version 4 (Konzept 3.6): check nach dem Senden, damit der Status die Spiegel auf Groß
+# mit dem gerade empfangenen Snapshot zeigt. Nicht nach einem Fehler von SSH, denn Groß
+# antwortet dann ohnehin nicht. Scheitert check, bleibt das aus prepare stehen, und der Job
+# behält sein Ergebnis.
+check_after_send() {
+  if [[ "${JOB_RESULT}" == send_failed ]] && in_list "${JOB_REASON}" "${SSH_CODES[@]}"; then
+    return 0
+  fi
+  if guard_check; then
+    save_check "${PRIVATE_DIR}/child/check"
+  fi
 }
 
 # Aufbewahrung auf Klein (Konzept 3.6, E25b): eigene Snapshots älter als snapshot_keep_days
@@ -2359,7 +2387,8 @@ order_snapshot() {
     fi
   done
   now
-  if ((LAST_SNAPSHOT_UP > 0 && LAST_SNAPSHOT_UP <= UP && UP - LAST_SNAPSHOT_UP < SNAPSHOT_GAP)); then
+  if ((LAST_SNAPSHOT_UP > 0 && LAST_SNAPSHOT_UP <= UP &&
+    UP - LAST_SNAPSHOT_UP < MIN_SNAPSHOT_INTERVAL * SNAPSHOT_MINUTE)); then
     RESULT=too_soon
     return 0
   fi
@@ -2788,6 +2817,7 @@ write_status() {
   json+=',"limits":{"max_stop_minutes":'"${MAX_STOP_MINUTES}"
   json+=',"heartbeat_timeout_seconds":'"${HEARTBEAT_TIMEOUT}"
   json+=',"stop_timeout_seconds":'"${STOP_TIMEOUT}"',"min_run_interval_minutes":'"${MIN_RUN_INTERVAL}"
+  json+=',"min_snapshot_interval_minutes":'"${MIN_SNAPSHOT_INTERVAL}"
   json+=',"max_deletions":'"${MAX_DELETIONS}"
   json+=',"snapshot_keep_days":'"${SNAPSHOT_KEEP_DAYS}"
   json+=',"snapshot_reserve_percent":'"${SNAPSHOT_RESERVE_PERCENT}"'}'

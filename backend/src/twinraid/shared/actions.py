@@ -77,6 +77,9 @@ class ActionBlocker(StrEnum):
     # besteht auf Groß ein Klon eines Spiegels.
     SOURCE_GUARD_TOO_SOON = "source_guard_too_soon"
     TARGET_CLONE_ACTIVE = "target_clone_active"
+    # Ab v0.5.3, Sync und Probelauf: seit dem letzten Snapshot ist der Abstand aus dem Status
+    # des Wächters noch nicht vergangen (Konzept 3.6, „Lesen in TwinRaid“).
+    SOURCE_GUARD_SNAPSHOT_TOO_SOON = "source_guard_snapshot_too_soon"
 
 
 class ActionStep(StrEnum):

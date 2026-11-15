@@ -132,6 +132,33 @@ jobs:
       # Prüfen, Senden, Freigabe, Lesezeichen, Ablehnungen, Abbruch (Konzept 3.6, ab v0.5.1).
       - run: sudo SOURCE_GUARD_SYNC_TEST_HOST=disposable docker/source-guard-sync-test.sh
 
+  # Notbetrieb und Rückweg nach docs/WIEDERHERSTELLUNG.md mit Pools in Dateien (Konzept 4.6
+  # und 5.6, ab v0.5.3). Enthält zfs receive -F (CLAUDE.md, Regel 7): nur hier, nur mit
+  # RECOVERY_TEST_HOST=disposable, nie im Image.
+  recovery:
+    name: Recovery guide (file pools)
+    runs-on: ubuntu-24.04
+    needs: [scripts]
+    timeout-minutes: 20
+    env:
+      ZFS_VERSION: 2.2.2-0ubuntu9.5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install ZFS (pinned)
+        run: |
+          sudo apt-get update -qq
+          if ! sudo apt-get install -y --no-install-recommends "zfsutils-linux=${ZFS_VERSION}"; then
+            echo "zfsutils-linux ${ZFS_VERSION} is not available; candidate:" >&2
+            apt-cache policy zfsutils-linux >&2
+            exit 1
+          fi
+          sudo modprobe zfs
+          # Wie im Job zfs-check: Der Empfang als UID 64000 braucht /dev/zfs für alle.
+          sudo chmod 0666 /dev/zfs
+      - run: sudo RECOVERY_TEST_HOST=disposable docker/recovery-test.sh
+
   container:
     name: Container (build and start test)
     runs-on: ubuntu-24.04
@@ -203,7 +230,7 @@ jobs:
   publish:
     name: Publish image (ghcr.io)
     runs-on: ubuntu-24.04
-    needs: [container, source-guard, zfs-check, sync-e2e]
+    needs: [container, source-guard, zfs-check, recovery, sync-e2e]
     if: >-
       github.event_name == 'push'
       && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))

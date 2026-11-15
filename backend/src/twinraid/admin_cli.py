@@ -53,6 +53,7 @@ from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.mode import RunMode, RunModeError, resolve_run_mode
 from twinraid.shared.passwords import PasswordPolicyError, PasswordStore
 from twinraid.shared.status import StatusSnapshot
+from twinraid.shared.sync import SyncHistoryShare
 from twinraid.shared.tls import TlsError, activate, certificate_info, read_runtime
 from twinraid.sync.check_report import sync_check_lines
 from twinraid.web.audit import AuditAction, AuditLog, AuditResult
@@ -553,6 +554,21 @@ def _count(value: int | None) -> str:
     return "?" if value is None else str(value)
 
 
+def _counts(share: SyncHistoryShare) -> str:
+    """Zählungen aus zfs diff; ein vollständiger Strom und einer vom Lesezeichen werden nicht
+    gezählt (Konzept 4.1, ab v0.5.3). Ältere Zeilen ohne base_type zeigen weiter „?“."""
+    counts = (share.deleted, share.modified, share.added, share.renamed)
+    if all(value is None for value in counts):
+        if share.mode == "full":
+            return "not counted (first run)"
+        if share.mode == "incremental" and share.base_type == "bookmark":
+            return "not counted (from bookmark)"
+    return (
+        f"deleted {_count(share.deleted)}  modified {_count(share.modified)}"
+        f"  added {_count(share.added)}  renamed {_count(share.renamed)}"
+    )
+
+
 def cmd_show_sync_log(context: Context, args: argparse.Namespace) -> int:
     """Die letzten Läufe der Sync-Historie (Konzept 5.3, ab v0.5.2)."""
     context.require_owner()
@@ -576,10 +592,8 @@ def cmd_show_sync_log(context: Context, args: argparse.Namespace) -> int:
         for share in entry.shares:
             result = share.result.value if share.result is not None else "-"
             say(
-                f"    {share.name}  {share.mode or '-'}  deleted {_count(share.deleted)}"
-                f"  modified {_count(share.modified)}  added {_count(share.added)}"
-                f"  renamed {_count(share.renamed)}  size {_mib(share.size)}"
-                f"  sent {_mib(share.sent)}  {result}"
+                f"    {share.name}  {share.mode or '-'}  {_counts(share)}"
+                f"  size {_mib(share.size)}  sent {_mib(share.sent)}  {result}"
             )
     return 0
 

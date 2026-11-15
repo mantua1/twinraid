@@ -1,6 +1,8 @@
 """Worker für Tests: Handler, Aktionen und Probelauf, verbunden wie in worker/main.py."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 
@@ -61,6 +63,7 @@ def make_worker(
     action_timings: ActionTimings | None = None,
     lab_timings: LabTimings | None = None,
     sync_timings: SyncTimings = FAST_SYNC,
+    sync_clock: Callable[[], datetime] | None = None,
 ) -> TestWorker:
     config = config or load_config(EXAMPLE_CONFIG)
     lab = MockLab(directory, lab_timings)
@@ -77,6 +80,7 @@ def make_worker(
         action_log,
         SyncHistory(directory / "sync-history.jsonl"),
         timings=sync_timings,
+        clock=sync_clock or (lambda: datetime.now(UTC)),
     )
     job_state = jobs or sync
     actions = ActionCoordinator(

@@ -73,7 +73,14 @@ def test_default_is_active(tmp_path: Path) -> None:
     ]
     assert details.run is None
     assert details.run_allowed_at is None
-    assert report.notices == ()
+    # Ab v0.5.3: 5 min zwischen zwei Snapshots, also immer der Hinweis auf den Testwert.
+    assert details.limits.min_snapshot_interval_minutes == 5
+    assert report.notices == (StatusNotice.SOURCE_SNAPSHOT_INTERVAL_TEST,)
+    # Snapshots auf Klein: 10 eigene, der älteste vor 6 Tagen, Basis gehalten, Lesezeichen.
+    (dataset,) = details.zfs.datasets
+    assert (dataset.snapshots, dataset.bookmark) == (10, True)
+    assert dataset.oldest_snapshot_at == (NOW - timedelta(days=6)).replace(microsecond=0)
+    assert dataset.base_created_at == NOW - timedelta(days=1)
 
 
 def test_fault_inactive_since_switching_it_on(tmp_path: Path) -> None:
@@ -186,6 +193,7 @@ def test_tour_shows_every_state(tmp_path: Path) -> None:
         StatusNotice.SOURCE_FLASH_BACKUP,
         StatusNotice.SOURCE_BASE_HOLD_MISSING,
         StatusNotice.SOURCE_GUARD_ALLOWS_SELF,
+        StatusNotice.SOURCE_SNAPSHOT_INTERVAL_TEST,
     }
     assert {"on", "lz4", "off", None} <= compressions
     assert seen_run
@@ -244,7 +252,8 @@ async def _prepared(guard: MockSourceGuard, ticks: list[float]) -> GuardJob:
 async def test_datasets_follow_the_shares(tmp_path: Path) -> None:
     details = _details(_job_guard(tmp_path, [NOW], [0.0]))
     assert [item.name for item in details.zfs.datasets] == list(SHARES)
-    assert details.version == 2
+    # Version 4 des Wächters (Protokoll 3, ab v0.5.3).
+    assert details.version == 4
     assert (details.target_configured, details.target_key, details.target_known_host) == (
         True,
         True,
@@ -305,8 +314,11 @@ async def test_dry_run_orders(tmp_path: Path) -> None:
         15,
     )
     assert [(m.name, m.state, m.count) for m in check.mirrors] == [
-        (name, "mirror", 5) for name in SHARES
+        (name, "mirror", 20) for name in SHARES
     ]
+    assert {m.oldest_created for m in check.mirrors} == {
+        NOW.replace(microsecond=0) - timedelta(days=29)
+    }
     assert await guard.order(GuardOrder.CLOSE) is GuardOrderResult.CLOSED
     job = _details(guard).job
     assert job is not None
@@ -527,9 +539,9 @@ async def test_send_faults(tmp_path: Path, fault: str) -> None:
         GuardDatasetResult.OK,
         GuardDatasetResult.SEND_FAILED,
     ]
-    # Nur die gesendete Share bekommt eine neue Basis.
+    # Nur die gesendete Share bekommt eine neue Basis; die andere behält die alte.
     bases = [dataset.base_created_at for dataset in _details(guard).zfs.datasets]
-    assert bases == [job.created_at, None]
+    assert bases == [job.created_at, NOW - timedelta(days=1)]
 
 
 @pytest.mark.anyio
@@ -548,3 +560,81 @@ async def test_post_writes_without_waiting(tmp_path: Path) -> None:
     await guard.order(GuardOrder.BEGIN)
     await guard.post(GuardOrder.FINISH)
     assert _details(guard).run is None
+
+
+# --- Ab v0.5.3: Abstand zwischen Snapshots, Zahlen beider Seiten, sync-first-run -------------
+
+
+@pytest.mark.anyio
+async def test_snapshot_interval_of_five_minutes(tmp_path: Path) -> None:
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    assert await guard.order(GuardOrder.SNAPSHOT) is GuardOrderResult.CREATED
+    assert await guard.order(GuardOrder.CLOSE) is GuardOrderResult.CLOSED
+    now[0] = NOW + timedelta(minutes=4, seconds=59)
+    assert await guard.order(GuardOrder.SNAPSHOT) is GuardOrderResult.TOO_SOON
+    now[0] = NOW + timedelta(minutes=5)
+    assert await guard.order(GuardOrder.SNAPSHOT) is GuardOrderResult.CREATED
+
+
+@pytest.mark.anyio
+async def test_snapshots_on_both_sides_after_a_sync(tmp_path: Path) -> None:
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    job = await _prepared(guard, ticks)
+    # Jeder Snapshot zählt auf Klein einen mehr; Groß ändert sich erst mit dem Senden.
+    assert {item.snapshots for item in _details(guard).zfs.datasets} == {11}
+    before = _details(guard).target_check
+    assert before is not None
+    assert {m.count for m in before.mirrors} == {20}
+    assert await guard.order(GuardOrder.SEND) is GuardOrderResult.SENDING
+    now[0] = NOW + timedelta(seconds=40)
+    ticks[0] += 40
+    details = _details(guard)
+    assert details.job is not None
+    assert details.job.state is GuardJobState.DONE
+    # Wie Version 4 des Wächters: frisches check nach dem Senden, ein Snapshot mehr.
+    check = details.target_check
+    assert check is not None
+    assert check.at == now[0]
+    assert [(m.count, m.newest_created) for m in check.mirrors] == [(21, job.created_at)] * 2
+    assert {item.base_created_at for item in details.zfs.datasets} == {job.created_at}
+
+
+@pytest.mark.anyio
+async def test_fault_first_run(tmp_path: Path) -> None:
+    """sync-first-run: alle Spiegel absent, vollständiger Strom ohne Zählungen (Konzept 6.4)."""
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    set_flag(fault_flag(tmp_path, "sync-first-run"), True)
+    job = await _prepared(guard, ticks)
+    assert (job.state, job.send_ready, job.blockers) == (GuardJobState.PREPARED, True, ())
+    for item in job.datasets:
+        assert (item.mode, item.base_type, item.size) == ("full", None, 350 * MIB)
+        assert (item.deleted, item.modified, item.added, item.renamed) == (None,) * 4
+    check = _details(guard).target_check
+    assert check is not None
+    assert [(m.state, m.count) for m in check.mirrors] == [("absent", None)] * 2
+    assert await guard.order(GuardOrder.SEND) is GuardOrderResult.SENDING
+    ticks[0] += 40
+    check = _details(guard).target_check
+    assert check is not None
+    assert [(m.state, m.count, m.oldest_created) for m in check.mirrors] == [
+        ("mirror", 1, job.created_at)
+    ] * 2
+
+
+def test_tour_shows_the_interval_notice(tmp_path: Path) -> None:
+    """Der Rundlauf zeigt den Hinweis genau einmal, mit einem Abstand von 5 min."""
+    set_flag(tour_flag(tmp_path), True)
+    ticks = [0.0]
+    guard = _guard(tmp_path, [NOW], ticks)
+    found = []
+    for step in range(len(GUARD_SCENARIO)):
+        ticks[0] = step * STEP_SECONDS
+        report = guard.report()
+        if StatusNotice.SOURCE_SNAPSHOT_INTERVAL_TEST in report.notices:
+            details = report.status.details
+            assert details is not None
+            found.append(details.limits.min_snapshot_interval_minutes)
+    assert found == [5]

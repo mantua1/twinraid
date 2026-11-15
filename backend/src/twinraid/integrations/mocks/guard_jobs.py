@@ -3,10 +3,14 @@
 Feste Zeiten und Zahlen: snapshot antwortet nach 1 s, prepare dauert 6 s, jedes stop 2 s,
 gesendet wird mit 25 MiB/s. Bericht je Share: inkrementell vom Snapshot, 12 gelöscht,
 34 geändert, 56 neu, 2 umbenannt, referenced 2 GiB (Basis 2,1 GiB), Größe 350 MiB; Spiegel
-mit 5 Snapshots; auf Groß 1000 GiB von 2000 GiB frei, Reserve 15 %. Die Pause zwischen zwei
-Läufen beträgt in der Simulation 2 min. Fehler mit twinraid-admin mock-fault:
-sync-deletions, sync-empty-source, sync-target-refused, target-exists, target-clone,
-sync-send-error (die letzte Share scheitert beim Senden) und sync-slow (1 MiB/s).
+mit 20 Snapshots, der älteste vor 29 Tagen; auf Groß 1000 GiB von 2000 GiB frei, Reserve
+15 %. Die Pause zwischen zwei Läufen beträgt in der Simulation 2 min, der Abstand zwischen
+zwei Snapshots 5 min (ab v0.5.3). Auf Klein 10 eigene Snapshots, der älteste vor 6 Tagen;
+jeder Snapshot zählt dort einen mehr, jedes Senden auf Groß, und danach ist check frisch
+wie mit Version 4 des Wächters. Fehler mit twinraid-admin mock-fault: sync-deletions,
+sync-empty-source, sync-target-refused, target-exists, target-clone, sync-send-error (die
+letzte Share scheitert beim Senden), sync-slow (1 MiB/s) und sync-first-run (alle Spiegel
+absent, vollständiger Strom ohne Zählungen).
 """
 
 import time
@@ -55,7 +59,11 @@ SEND_DEADLINE = timedelta(hours=12)
 # Lauf: Herzschlag 120 s, Höchstzeit 20 min (Standard von source-guard.conf).
 HEARTBEAT = timedelta(seconds=120)
 MAX_RUN = timedelta(minutes=20)
-MIRROR_SNAPSHOTS = 5
+# Snapshots beider Seiten (glatt erfunden, Konzept 6.4).
+MIRROR_SNAPSHOTS = 20
+MIRROR_OLDEST = timedelta(days=29)
+OWN_SNAPSHOTS = 10
+OWN_OLDEST = timedelta(days=6)
 SHARE_SIZE = 350 * MIB
 
 
@@ -68,6 +76,8 @@ class MockJobTimings:
     send_rate: float = 25 * MIB
     slow_send_rate: float = 1 * MIB
     run_interval: timedelta = timedelta(minutes=2)
+    # Abstand zwischen zwei Snapshots, wie min_snapshot_interval_minutes (ab v0.5.3).
+    snapshot_interval_minutes: int = 5
 
 
 def _empty(name: str) -> GuardJobDataset:
@@ -114,8 +124,14 @@ class MockJobs:
         self.run_allowed_at: datetime | None = None
         # Laufen die freigegebenen Container gerade?
         self.containers: dict[str, bool] = dict.fromkeys(containers, True)
-        # Gehaltene Basis je Dataset nach einem erfolgreichen Senden.
-        self.bases: dict[str, datetime] = {}
+        # Gehaltene Basis je Dataset, zuerst von gestern, danach vom letzten Senden.
+        now = clock()
+        self.bases: dict[str, datetime] = dict.fromkeys(datasets, now - timedelta(days=1))
+        # Eigene Snapshots auf Klein und Snapshots der Spiegel auf Groß (Anzahl, älteste).
+        self.own_snapshots: dict[str, int] = dict.fromkeys(datasets, OWN_SNAPSHOTS)
+        self.oldest_own = now.replace(microsecond=0) - OWN_OLDEST
+        self.mirror_snapshots: dict[str, int] = dict.fromkeys(datasets, MIRROR_SNAPSHOTS)
+        self._mirror_oldest = now.replace(microsecond=0) - MIRROR_OLDEST
         self._prepare_until: float | None = None
         self._send_started: float | None = None
         self._send_rate = self.timings.send_rate
@@ -207,6 +223,11 @@ class MockJobs:
             case GuardOrder.SNAPSHOT:
                 if open_job:
                     return GuardOrderResult.JOB_OPEN
+                interval = timedelta(minutes=self.timings.snapshot_interval_minutes)
+                if job is not None and now - job.created_at < interval:
+                    return GuardOrderResult.TOO_SOON
+                for name in self._datasets:
+                    self.own_snapshots[name] += 1
                 stamp = now.strftime("%Y%m%dT%H%M%SZ")
                 self.job = GuardJob(
                     id=self.last_seq,
@@ -355,6 +376,7 @@ class MockJobs:
             )
         if all(item.result is GuardDatasetResult.OK for item in datasets):
             self._send_started = None
+            self._check_after_send(job, now)
             return job.model_copy(
                 update={
                     "state": GuardJobState.DONE,
@@ -375,7 +397,48 @@ class MockJobs:
             )
         return job.model_copy(update={"datasets": tuple(datasets)})
 
+    def _mirror(self, name: str, now: datetime) -> GuardCheckMirror:
+        newest = self.bases.get(name, now - timedelta(days=1))
+        return GuardCheckMirror(
+            name=name,
+            state="mirror",
+            props="ok",
+            count=self.mirror_snapshots[name],
+            newest_created=newest,
+            newest_received=newest + timedelta(minutes=12),
+            oldest_created=self._mirror_oldest,
+        )
+
+    def _check_after_send(self, job: GuardJob, now: datetime) -> None:
+        """Wie source-guard.sh ab Version 4: nach dem Senden ein frisches check, mit einem
+        Snapshot mehr je Spiegel (ein bisher fehlender Spiegel hat dann einen)."""
+        check = self.check
+        for item in job.datasets:
+            self.bases[item.name] = job.created_at
+        if check is None:  # pragma: no cover - gesendet wird nur nach prepare
+            return
+        stamp = now.replace(microsecond=0)
+        mirrors = []
+        for mirror in check.mirrors:
+            absent = mirror.state == "absent"
+            count = 1 if absent else self.mirror_snapshots.get(mirror.name, 0) + 1
+            self.mirror_snapshots[mirror.name] = count
+            mirrors.append(
+                mirror.model_copy(
+                    update={
+                        "state": "mirror",
+                        "props": "ok",
+                        "count": count,
+                        "newest_created": job.created_at,
+                        "newest_received": stamp,
+                        "oldest_created": job.created_at if absent else mirror.oldest_created,
+                    }
+                )
+            )
+        self.check = check.model_copy(update={"at": stamp, "mirrors": tuple(mirrors)})
+
     def _prepared(self, job: GuardJob, now: datetime) -> tuple[GuardJob, GuardCheck]:
+        first_run = self._fault("sync-first-run")
         foreign = self._fault("target-exists")
         clones = 1 if self._fault("target-clone") else 0
         available = LOW_AVAILABLE if self._fault("sync-target-refused") else POOL_AVAILABLE
@@ -410,6 +473,25 @@ class MockJobs:
                 )
                 continue
             total += SHARE_SIZE
+            if first_run:
+                # Spiegel absent: vollständiger Strom ohne Basis und ohne Zählungen.
+                datasets.append(
+                    item.model_copy(
+                        update={"mode": "full", "referenced": referenced, "size": SHARE_SIZE}
+                    )
+                )
+                mirrors.append(
+                    GuardCheckMirror(
+                        name=item.name,
+                        state="absent",
+                        props=None,
+                        count=None,
+                        newest_created=None,
+                        newest_received=None,
+                        oldest_created=None,
+                    )
+                )
+                continue
             deletions += deleted
             shrunk = shrunk or referenced * 100 < base_referenced * 50
             datasets.append(
@@ -427,18 +509,7 @@ class MockJobs:
                     }
                 )
             )
-            newest = self.bases.get(item.name, now - timedelta(days=1))
-            mirrors.append(
-                GuardCheckMirror(
-                    name=item.name,
-                    state="mirror",
-                    props="ok",
-                    count=MIRROR_SNAPSHOTS,
-                    newest_created=newest,
-                    newest_received=newest + timedelta(minutes=12),
-                    oldest_created=now - timedelta(days=29),
-                )
-            )
+            mirrors.append(self._mirror(item.name, now))
         # Reihenfolge wie in source-guard.sh: Groß, dann je Dataset, zuletzt der Platz.
         blockers: list[GuardBlocker] = []
         if clones:

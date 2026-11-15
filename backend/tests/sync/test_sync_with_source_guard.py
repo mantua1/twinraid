@@ -4,13 +4,17 @@ Der Wächter läuft wie in tests/test_source_guard_jobs.py als Kopie mit nachgeb
 zfs und ssh; TwinRaid spricht ihn über RealGuardChannel an, also über dieselbe
 Auftragsdatei und status.json wie auf Klein. Geprüft werden die Folge der Aufträge, die
 Zeile mit Container, die Wartezeit von stop, ping im Takt, Freigabe, Fortschritt und
-Abbrechen.
+Abbrechen; ab v0.5.3 das check nach dem Senden und der Abstand zwischen Snapshots.
+
+Die Kopie des Wächters rechnet mit kurzen Minuten (SNAPSHOT_MINUTE 0, MINUTE 1 s), TwinRaid
+mit dem Abstand aus limits in echten Minuten. Wo ein Test mehrere Läufe nacheinander braucht,
+stellt er deshalb die Uhr des Workers vor (Later).
 """
 
 import asyncio
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +24,7 @@ from tests.conftest import EXAMPLE_CONFIG
 from tests.support.guard_status import mountinfo
 from tests.support.source_guard_host import Host, container_id, kill_leftovers, make_host
 from tests.support.worker import TestWorker, make_worker
-from tests.test_source_guard_jobs import CONF, check_answer, setup, started
+from tests.test_source_guard_jobs import CONF, check_answer, mirror, setup, started
 from twinraid.config import TwinRaidConfig, load_config
 from twinraid.integrations.guard_orders import OrderTimings, RealGuardChannel
 from twinraid.integrations.mocks.lab import LabTimings
@@ -61,6 +65,16 @@ class HostPaths(GuardPaths):
         return self.host_base / "state"
 
 
+class Later:
+    """Uhr des Workers mit einstellbarem Vorlauf (siehe oben)."""
+
+    def __init__(self) -> None:
+        self.ahead = timedelta()
+
+    def __call__(self) -> datetime:
+        return datetime.now(UTC) + self.ahead
+
+
 class HostGuard:
     """Status für Verfügbarkeit und Kachel, frisch gelesen wie RealSourceGuard."""
 
@@ -97,7 +111,10 @@ def host(tmp_path: Path) -> Iterator[Host]:
 
 
 async def _worker(
-    host: Host, config: TwinRaidConfig | None = None, directory: str = "worker"
+    host: Host,
+    config: TwinRaidConfig | None = None,
+    directory: str = "worker",
+    clock: Later | None = None,
 ) -> TestWorker:
     paths = _paths(host)
     channel = RealGuardChannel(paths, OrderTimings(poll_seconds=0.05))
@@ -109,6 +126,7 @@ async def _worker(
         channel=channel,
         lab_timings=FAST_LAB,
         sync_timings=TIMINGS,
+        sync_clock=clock,
     )
     await worker.lab.wake()
     for _ in range(300):
@@ -240,14 +258,58 @@ async def test_stop_waits_for_a_slow_container(host: Host, tmp_path: Path) -> No
 
 
 async def test_pause_blocks_the_next_sync(host: Host, tmp_path: Path) -> None:
-    (tmp_path / "klein" / "worker").mkdir()
-    started(host)
-    worker = await _worker(host)
+    # Pause von 30 Minuten zu je 2 min im Wächter, also 60 min: Sie endet später als der
+    # Abstand zwischen Snapshots (30 min) und gilt auch noch, wenn dieser vorbei ist.
+    (tmp_path / "slow").mkdir()
+    slow = make_host(tmp_path / "slow", MINUTE="120")
+    setup(slow)
+    (tmp_path / "slow" / "worker").mkdir()
+    started(slow)
+    clock = Later()
+    worker = await _worker(slow, clock=clock)
     assert await worker.actions.request(ActionName.SYNC_START) is None
     await _until(lambda: worker.sync.snapshot().running is None)
-    await _until(lambda: host.status()["run_allowed_at"] is not None, 10)
+    await _until(lambda: slow.status()["run_allowed_at"] is not None, 10)
+    availability = worker.actions.availability(worker.monitor.current())
+    # Gelten beide, zählt die spätere Uhrzeit: hier die Pause (Konzept 4.3).
+    assert availability[ActionName.SYNC_START] is ActionBlocker.SOURCE_GUARD_TOO_SOON
+    assert availability[ActionName.SYNC_DRY_RUN] is ActionBlocker.SOURCE_GUARD_SNAPSHOT_TOO_SOON
+    clock.ahead = timedelta(minutes=31)
     availability = worker.actions.availability(worker.monitor.current())
     assert availability[ActionName.SYNC_START] is ActionBlocker.SOURCE_GUARD_TOO_SOON
+    # Den Probelauf betrifft die Pause nicht.
+    assert availability[ActionName.SYNC_DRY_RUN] is None
+
+
+async def test_check_and_interval_after_a_sync(host: Host, tmp_path: Path) -> None:
+    """Ab v0.5.3: frisches check nach dem Senden (F2); danach wartet ein Probelauf den Abstand
+    zwischen Snapshots ab (F3), im Status als snapshot_allowed_at."""
+    (tmp_path / "klein" / "worker").mkdir()
+    after = check_answer({"twinraidtest": mirror().replace("count=3", "count=4")})
+    host.answer_ssh(check=check_answer(), check_after_receive=after, receive={"default": {"rc": 0}})
+    started(host)
+    clock = Later()
+    worker = await _worker(host, _config(stop_containers=False), clock=clock)
+    assert await _run(worker, ActionName.SYNC_START) is ActionOutcome.SUCCESS
+
+    def mirror_count() -> int | None:
+        details = worker.handler.snapshot().source_guard.details
+        check = details.target_check if details is not None else None
+        return check.mirrors[0].count if check is not None else None
+
+    await _until(lambda: mirror_count() == 4, 10)
+    created = datetime.fromtimestamp(host.status()["job"]["created_at"], UTC)
+    status = worker.sync.snapshot()
+    assert status.snapshot_allowed_at is not None
+    assert status.snapshot_allowed_at.second == 0
+    assert timedelta(minutes=30) <= status.snapshot_allowed_at - created < timedelta(minutes=31)
+    availability = worker.actions.availability(worker.monitor.current())
+    assert availability[ActionName.SYNC_DRY_RUN] is ActionBlocker.SOURCE_GUARD_SNAPSHOT_TOO_SOON
+    assert availability[ActionName.SYNC_START] is ActionBlocker.SOURCE_GUARD_SNAPSHOT_TOO_SOON
+    # Ab der angezeigten Uhrzeit nimmt der Wächter den nächsten Snapshot an.
+    clock.ahead = status.snapshot_allowed_at - datetime.now(UTC)
+    assert worker.sync.snapshot().snapshot_allowed_at is None
+    assert await _run(worker, ActionName.SYNC_DRY_RUN) is ActionOutcome.DRY_RUN_SUCCESS
 
 
 async def test_worker_restart_adopts_the_transfer(host: Host, tmp_path: Path) -> None:
@@ -314,7 +376,8 @@ async def test_hold_notice_stays_until_a_successful_sync(host: Host, tmp_path: P
     host.update_zfs(lambda z: z.update(fail=["hold"]))
     started(host)
     (tmp_path / "klein" / "worker").mkdir()
-    worker = await _worker(host, config)
+    clock = Later()
+    worker = await _worker(host, config, clock=clock)
     # Der Hold an der neuen Basis scheitert; gesendet ist trotzdem.
     assert await _run(worker, ActionName.SYNC_START) is ActionOutcome.SUCCESS
     await _until(lambda: _candidates(paths) == frozenset({"twinraidtest"}), 10)
@@ -324,7 +387,7 @@ async def test_hold_notice_stays_until_a_successful_sync(host: Host, tmp_path: P
 
     # Neustart von TwinRaid: neuer Worker, der Hinweis kommt wieder aus dem Status.
     (tmp_path / "klein" / "worker2").mkdir()
-    again = await _worker(host, config, "worker2")
+    again = await _worker(host, config, "worker2", clock=clock)
     await again.sync.run()
     assert _candidates(paths) == frozenset({"twinraidtest"})
 
@@ -332,12 +395,14 @@ async def test_hold_notice_stays_until_a_successful_sync(host: Host, tmp_path: P
     _mirror_at_newest(host)
     host.update_zfs(lambda z: z.update(fail=[]))
     await asyncio.sleep(1.1)  # zwei Snapshots in derselben Sekunde hätten denselben Namen
+    clock.ahead = timedelta(minutes=31)  # Abstand zwischen Snapshots für TwinRaid vorbei
     assert await _run(again, ActionName.SYNC_DRY_RUN) is ActionOutcome.DRY_RUN_SUCCESS
     assert host.status()["job"]["result"] == "closed"
     assert _candidates(paths) == frozenset({"twinraidtest"})
 
     # Erst ein erfolgreicher Sync setzt den Hold neu.
     await asyncio.sleep(1.1)
+    clock.ahead = timedelta(minutes=62)
     assert await _run(again, ActionName.SYNC_START) is ActionOutcome.SUCCESS
     await _until(lambda: _candidates(paths) == frozenset(), 10)
     await again.close()

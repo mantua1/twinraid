@@ -9,10 +9,12 @@ interface NoticeListProps {
   target: string;
   // Datasets für source_base_hold_missing (ab v0.5.2).
   datasets?: readonly string[];
+  // Abstand zwischen Snapshots für source_snapshot_interval_test (ab v0.5.3).
+  minutes?: number;
 }
 
 /** Feste Hinweise zu einer Kachel (Konzept 3.5 und 4.1); sie sperren keine Aktion. */
-export function NoticeList({ notices, target, datasets = [] }: NoticeListProps) {
+export function NoticeList({ notices, target, datasets = [], minutes }: NoticeListProps) {
   const { t } = useTranslation();
   if (notices.length === 0) {
     return null;
@@ -27,7 +29,9 @@ export function NoticeList({ notices, target, datasets = [] }: NoticeListProps) 
           className="flex items-start gap-2 rounded-lg border border-amber-600/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200"
         >
           <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <span>{t(`status.notices.${notice}`, { target, datasets: datasets.join(", ") })}</span>
+          <span>
+            {t(`status.notices.${notice}`, { target, datasets: datasets.join(", "), minutes })}
+          </span>
         </li>
       ))}
     </ul>

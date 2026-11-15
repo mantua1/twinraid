@@ -290,10 +290,16 @@ async def test_action_log_and_history(tmp_path: Path) -> None:
 
 
 async def test_dry_runs_are_in_the_history(tmp_path: Path) -> None:
-    worker = _worker(tmp_path, _guard())
+    guard = _guard()
+    worker = _worker(tmp_path, guard)
     await _online(worker)
     assert await worker.actions.request(ActionName.SYNC_DRY_RUN) is None
     await _done(worker)
+    # Wie nach 31 Minuten: Der Abstand zwischen Snapshots ist vorbei (ab v0.5.3).
+    assert guard.job is not None
+    guard.job = guard.job.model_copy(
+        update={"created_at": guard.job.created_at - timedelta(minutes=31)}
+    )
     await _sync(worker)
     history = worker.sync.snapshot().history
     # Neueste zuerst.

@@ -47,7 +47,7 @@ _TEST_TIMES = {
     "RESTART_DELAY": "0.2",
     "RESTART_LIMIT": "3",
     # Ab Version 2; die Fristen des Jobs kürzt ein Test bei Bedarf selbst.
-    "SNAPSHOT_GAP": "0",
+    "SNAPSHOT_MINUTE": "0",
     "CHECK_TIMEOUT": "5",
 }
 _TOOLS = (

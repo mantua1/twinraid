@@ -212,6 +212,7 @@ def test_fault_names_are_fixed(tmp_path: Path) -> None:
         "target-clone",
         "sync-send-error",
         "sync-slow",
+        "sync-first-run",
         "vm-device-busy",
         "vm-memory-low",
         "arc-unlimited",

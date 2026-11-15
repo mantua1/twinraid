@@ -2,17 +2,28 @@
 
 Nur lesend: Die Werte stammen aus get_status des Workers. Die drei Ebenen, der Wächter,
 das eigene Dataset von TwinRaid, die Spiegel auf Groß aus dem letzten check und die
-Grenze des ZFS-Caches auf Groß.
+Grenze des ZFS-Caches auf Groß; ab v0.5.3 die Snapshots beider Seiten wie in der Kachel
+Sync, der Abstand zwischen Snapshots und ein Hinweis auf einen Testwert (Konzept 4.1).
 """
 
 from datetime import UTC, datetime
 
-from twinraid.shared.source_guard import GuardCheck, GuardDetails, GuardState
+from twinraid.shared.source_guard import (
+    GuardCheck,
+    GuardCheckMirror,
+    GuardDataset,
+    GuardDetails,
+    GuardState,
+)
 from twinraid.shared.status import StatusSnapshot
 
 GIB = 1024**3
 # Breite der ersten Spalte in der Tabelle der Ebenen.
 _NAME_WIDTH = 24
+# Standard des Abstands zwischen Snapshots; darunter ist es ein Testwert (Konzept 3.6, F17).
+_DEFAULT_INTERVAL = 30
+# Ab Version 4 des Wächters (Protokoll 3) steht der Abstand in source-guard.conf.
+_INTERVAL_VERSION = 4
 
 
 def _gib(value: int | None) -> str:
@@ -110,6 +121,73 @@ def _arc(status: StatusSnapshot) -> str:
     return f"ZFS cache on the target: zfs_arc_max {limit}, c_max {_gib(zfs.c_max)}"
 
 
+def _interval(status: StatusSnapshot) -> list[str]:
+    """Abstand zwischen Snapshots und frühester nächster Snapshot (Konzept 3.6)."""
+    details = status.source_guard.details
+    if details is None:
+        return []
+    minutes = details.limits.min_snapshot_interval_minutes
+    if details.version < _INTERVAL_VERSION:
+        lines = [f"Interval between snapshots: {minutes} min (fixed)"]
+    else:
+        lines = [f"Interval between snapshots: {minutes} min"]
+    if details.version >= _INTERVAL_VERSION and minutes < _DEFAULT_INTERVAL:
+        lines.append(
+            f"  Note: test value active: interval between snapshots {minutes} min "
+            f"(default {_DEFAULT_INTERVAL}); remove min_snapshot_interval_minutes from "
+            "source-guard.conf after the tests."
+        )
+    allowed_at = status.sync.snapshot_allowed_at
+    if allowed_at is not None:
+        lines.append(f"  Next snapshot not before {_when(allowed_at)}")
+    return lines
+
+
+def _source_snapshots(item: GuardDataset, details: GuardDetails) -> str:
+    """Klein: eigene Snapshots aus dem ZFS-Teil und dem Job (Konzept 4.1, Kachel Sync)."""
+    job = details.job
+    newest = _when(job.created_at) if job is not None else "-"
+    base = f"held {_when(item.base_created_at)}" if item.base_created_at is not None else "none"
+    return (
+        f"    Klein: {_count(item.snapshots)} own, newest {newest}, "
+        f"oldest {_when(item.oldest_snapshot_at)}, base {base}, bookmark {_mark(item.bookmark)}, "
+        f"kept {details.limits.snapshot_keep_days} days"
+    )
+
+
+def _target_snapshots(mirror: GuardCheckMirror | None, check: GuardCheck | None) -> str:
+    """Groß: aus dem letzten check (Konzept 3.7); ohne check unbekannt."""
+    if check is None or mirror is None:
+        return "    Groß: unknown (no dry run or sync yet)"
+    if mirror.state == "absent":
+        return f"    Groß: no mirror yet (check {_when(check.at)})"
+    if mirror.state == "foreign":
+        return f"    Groß: foreign dataset (check {_when(check.at)})"
+    locked = ", locked" if mirror.props == "mismatch" else ""
+    keep = check.summary.keep_days if check.summary is not None else None
+    return (
+        f"    Groß: {_count(mirror.count)} snapshots{locked}, "
+        f"newest received {_when(mirror.newest_received)}, "
+        f"created {_when(mirror.newest_created)}, oldest {_when(mirror.oldest_created)}, "
+        f"kept {_count(keep)} days (check {_when(check.at)})"
+    )
+
+
+def _snapshots(status: StatusSnapshot) -> list[str]:
+    """Zweite Tabelle (ab v0.5.3): die Snapshots beider Seiten je Share."""
+    details = status.source_guard.details
+    if details is None:
+        return ["Snapshots: unknown (no fresh status of the source guard)"]
+    check = details.target_check
+    mirrors = {mirror.name: mirror for mirror in check.mirrors} if check is not None else {}
+    lines = ["Snapshots per share:"]
+    for item in details.zfs.datasets:
+        lines.append(f"  {item.name}")
+        lines.append(_source_snapshots(item, details))
+        lines.append(_target_snapshots(mirrors.get(item.name), check))
+    return lines
+
+
 def sync_check_lines(status: StatusSnapshot) -> list[str]:
     details = status.source_guard.details
     lines = [
@@ -119,6 +197,8 @@ def sync_check_lines(status: StatusSnapshot) -> list[str]:
         *_levels(status),
         *_check(details.target_check if details is not None else None),
         _arc(status),
+        *_interval(status),
+        *_snapshots(status),
     ]
     last = status.sync.last
     if last is not None:
