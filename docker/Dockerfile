@@ -23,7 +23,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # --- Stufe 2: Python-Umgebung bauen ------------------------------------------
-FROM python:3.14-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS backend
+FROM python:3.14-slim-trixie@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS backend
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -36,7 +36,7 @@ COPY backend/src ./src
 RUN uv sync --locked --no-dev --no-editable
 
 # --- Stufe 3: s6-overlay prüfen und entpacken --------------------------------
-FROM python:3.14-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170 AS s6
+FROM python:3.14-slim-trixie@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS s6
 ARG S6_OVERLAY_VERSION
 RUN apt-get update \
     && apt-get install -y --no-install-recommends xz-utils \
@@ -50,7 +50,7 @@ RUN mkdir /s6root \
     && tar -C /s6root -Jxpf /tmp/s6-overlay-x86_64.tar.xz
 
 # --- Stufe 4: Laufzeit-Image -------------------------------------------------
-FROM python:3.14-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
+FROM python:3.14-slim-trixie@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f
 
 # Feste Angaben; Version und Commit setzt die CI beim Bauen (Konzept 5.8).
 # source verknüpft das Paket auf ghcr.io mit dem Repository.
