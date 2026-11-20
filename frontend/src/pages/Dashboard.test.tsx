@@ -327,6 +327,21 @@ describe("actions", () => {
     expect(within(target).getByRole("button", { name: "Herunterfahren" })).toBeEnabled();
   });
 
+  it("shows config_writable in the tile of the source", async () => {
+    // Konzept 6.1, „Rechte der Konfiguration“ (ab v0.5.4): die Datei liegt auf Klein.
+    const status: StatusSnapshot = { ...STATUS_VM_RUNNING, notices: ["config_writable"] };
+    const { target, vm } = await openDashboard({ status });
+    const source = screen.getByTestId("tile-source");
+    const notices = await within(source).findAllByTestId("status-notice");
+    expect(notices.map((notice) => notice.dataset.notice)).toEqual(["config_writable"]);
+    expect(notices[0]).toHaveTextContent(
+      "twinraid.yaml oder der Ordner config auf Unraid Klein ist für andere beschreibbar oder gehört nicht root.",
+    );
+    expect(notices[0]).toHaveTextContent("chmod 644 für die Datei");
+    expect(within(target).queryByTestId("status-notice")).toBeNull();
+    expect(within(vm).queryByTestId("status-notice")).toBeNull();
+  });
+
   it("shows no notices without any", async () => {
     const { target, vm } = await openDashboard({ status: STATUS_VM_RUNNING });
     expect(within(target).queryByTestId("status-notice")).toBeNull();

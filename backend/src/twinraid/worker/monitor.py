@@ -3,6 +3,7 @@
 Prüft alle 10 Sekunden und merkt sich das Ergebnis. get_status liefert
 sofort den zuletzt geprüften Stand, ohne selbst Server anzusprechen. Meldet
 die Sitzung vm-watch eine Änderung, prüft der Monitor sofort (Konzept 3.5).
+Bei jeder Prüfung sieht er auch nach den Rechten der Konfiguration (Konzept 6.1, ab v0.5.4).
 """
 
 import asyncio
@@ -10,9 +11,17 @@ import contextlib
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 
+from twinraid.config.permissions import config_unprotected
 from twinraid.integrations.status import StatusProvider
-from twinraid.shared.status import NOT_CHECKED, UNKNOWN, ResourceInfo, ResourceStatus
+from twinraid.shared.status import (
+    NOT_CHECKED,
+    UNKNOWN,
+    ResourceInfo,
+    ResourceStatus,
+    StatusNotice,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +44,15 @@ class StatusMonitor:
         interval: float = CHECK_INTERVAL_SECONDS,
         clock: Callable[[], datetime] = _utc_now,
         changes: asyncio.Event | None = None,
+        config_path: Path | None = None,
+        unprotected: Callable[[Path], bool] = config_unprotected,
     ) -> None:
         self._provider = provider
         self._interval = interval
         self._clock = clock
         self._changes = changes
+        self._config_path = config_path
+        self._unprotected = unprotected
         self._current = NOT_CHECKED
 
     def current(self) -> ResourceStatus:
@@ -53,9 +66,19 @@ class StatusMonitor:
             status = ResourceStatus(
                 source=UNKNOWN, target=UNKNOWN, vm=UNKNOWN, checked_at=self._clock()
             )
+        status = self._with_config_notice(status)
         self._log_changes(self._current, status)
         self._current = status
         return status
+
+    def _with_config_notice(self, status: ResourceStatus) -> ResourceStatus:
+        """Hinweis config_writable, wenn twinraid.yaml oder /config ungeschützt ist (6.1)."""
+        notice = StatusNotice.CONFIG_WRITABLE
+        if self._config_path is None or notice in status.notices:
+            return status
+        if not self._unprotected(self._config_path):
+            return status
+        return status.model_copy(update={"notices": (*status.notices, notice)})
 
     async def run(self) -> None:
         while True:

@@ -153,3 +153,69 @@ async def test_notice_changes_are_logged(caplog: pytest.LogCaptureFixture) -> No
             await monitor.check_once()
     lines = [r.getMessage() for r in caplog.records if "notices" in r.getMessage()]
     assert lines == ["status notices: target_connect_plugin", "status notices: none"]
+
+
+# --- Rechte der Konfiguration (Konzept 6.1, ab v0.5.4) ---
+
+
+async def test_monitor_adds_config_writable(tmp_path: Path) -> None:
+    seen: list[Path] = []
+
+    def unprotected(path: Path) -> bool:
+        seen.append(path)
+        return True
+
+    config = tmp_path / "twinraid.yaml"
+    monitor = StatusMonitor(
+        SequenceProvider(_status(ONLINE)),
+        clock=lambda: NOW,
+        config_path=config,
+        unprotected=unprotected,
+    )
+    status = await monitor.check_once()
+    assert status.notices == (StatusNotice.CONFIG_WRITABLE,)
+    assert seen == [config]
+
+
+async def test_monitor_without_config_notice_when_protected(tmp_path: Path) -> None:
+    monitor = StatusMonitor(
+        SequenceProvider(_status(ONLINE)),
+        clock=lambda: NOW,
+        config_path=tmp_path / "twinraid.yaml",
+        unprotected=lambda _path: False,
+    )
+    assert (await monitor.check_once()).notices == ()
+
+
+async def test_monitor_checks_the_config_again_each_time(tmp_path: Path) -> None:
+    # Ein chmod wirkt ohne Neustart: bei der nächsten Prüfung ist der Hinweis weg.
+    answers = [True, False]
+    monitor = StatusMonitor(
+        SequenceProvider(_status(ONLINE), _status(ONLINE)),
+        clock=lambda: NOW,
+        config_path=tmp_path / "twinraid.yaml",
+        unprotected=lambda _path: answers.pop(0),
+    )
+    assert StatusNotice.CONFIG_WRITABLE in (await monitor.check_once()).notices
+    assert StatusNotice.CONFIG_WRITABLE not in (await monitor.check_once()).notices
+
+
+async def test_monitor_adds_the_config_notice_once_and_after_a_failed_check(
+    tmp_path: Path,
+) -> None:
+    # Der Rundlauf der Simulation bringt den Hinweis selbst mit; er erscheint nicht doppelt.
+    tour = ResourceStatus(
+        source=ONLINE,
+        target=ONLINE,
+        vm=ONLINE,
+        checked_at=NOW,
+        notices=(StatusNotice.CONFIG_WRITABLE,),
+    )
+    monitor = StatusMonitor(
+        SequenceProvider(tour, RuntimeError("kaputt")),
+        clock=lambda: NOW,
+        config_path=tmp_path / "twinraid.yaml",
+        unprotected=lambda _path: True,
+    )
+    assert (await monitor.check_once()).notices == (StatusNotice.CONFIG_WRITABLE,)
+    assert (await monitor.check_once()).notices == (StatusNotice.CONFIG_WRITABLE,)

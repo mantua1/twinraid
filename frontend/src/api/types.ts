@@ -42,6 +42,8 @@ export const STATUS_NOTICES = [
   // Kachel Klein, ab v0.5.2: gehaltene Basis fehlt oder ist veraltet (Konzept 3.6).
   "source_base_hold_missing",
   "source_snapshot_interval_test",
+  // Kachel Klein, ab v0.5.4: twinraid.yaml oder /config ungeschützt (Konzept 6.1).
+  "config_writable",
 ] as const;
 export type StatusNotice = (typeof STATUS_NOTICES)[number];
 
