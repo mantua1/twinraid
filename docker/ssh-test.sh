@@ -254,6 +254,9 @@ for old, new in replacements.items():
 open(destination, "w", encoding="utf-8").write(text)
 PY
 chmod 0644 "${config}"
+# Wie auf Unraid gehört die Konfiguration root; sonst meldet der Status zu Recht den Hinweis
+# config_writable (Konzept 6.1, ab v0.5.4). chown mit dem Image selbst, ohne weiteres Image.
+docker run --rm --entrypoint chown -v "${WORKDIR}:/w" "${IMAGE}" 0:0 /w/twinraid.yaml
 docker run -d --name "${APP}" --network "${NET}" "${HARDENING[@]}" -e TWINRAID_MODE=real \
   -v "${config}:/config/twinraid.yaml:ro" --mount type=volume,dst=/data "${IMAGE}" >/dev/null
 for _ in $(seq 1 40); do
