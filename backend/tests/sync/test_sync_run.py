@@ -18,6 +18,7 @@ from twinraid.shared.actions import ActionBlocker, ActionName, ActionOutcome
 from twinraid.shared.mode import RunMode
 from twinraid.shared.source_guard import (
     GuardBlocker,
+    GuardCheckResult,
     GuardConfirmReason,
     GuardContainer,
     GuardContainerState,
@@ -31,7 +32,7 @@ from twinraid.shared.source_guard import (
     GuardRestart,
 )
 from twinraid.shared.status import ResourceState
-from twinraid.shared.sync import SyncKind, SyncStep
+from twinraid.shared.sync import SyncKind, SyncReport, SyncStep
 from twinraid.sync.coordinator import SyncTimings
 from twinraid.worker.actions import ActionTimings
 from twinraid.worker.sync_history import read_history
@@ -868,3 +869,89 @@ async def test_cancel_while_finishing(tmp_path: Path) -> None:
     # Der Job aus dem Snapshot wird geschlossen.
     assert _main_orders(guard)[-1] is GuardOrder.CLOSE
     assert {item.state for item in guard.allowed} == {RUNNING}
+
+
+# --- Spiegel in der Ergebnistabelle (Konzept 4.3, ab v0.5.4) ---
+
+
+def _with_check_after_send(count: int, seconds: int = 60, **values: Any) -> ScriptedGuard:  # noqa: ANN401
+    """Ein Wächter, der nach dem Senden ein neues check meldet: `seconds` nach dem aus prepare,
+    mit `count` Snapshots je Spiegel; `values` ersetzt weitere Felder des check."""
+    guard = _guard()
+    assert guard.prepared is not None
+    before = guard.prepared.check
+    assert before is not None
+    mirrors = tuple(mirror.model_copy(update={"count": count}) for mirror in before.mirrors)
+    update: dict[str, Any] = {"at": before.at + timedelta(seconds=seconds), "mirrors": mirrors}
+    update.update(values)
+    guard.sent = Sent(check=before.model_copy(update=update))
+    return guard
+
+
+def _report(worker: TestWorker) -> SyncReport:
+    report = worker.sync.snapshot().report
+    assert report is not None
+    return report
+
+
+def _mirror_counts(report: SyncReport) -> list[int | None]:
+    return [share.mirror.count if share.mirror else None for share in report.shares]
+
+
+async def _synced(tmp_path: Path, guard: ScriptedGuard) -> SyncReport:
+    worker = _worker(tmp_path, guard)
+    await _online(worker)
+    await _sync(worker)
+    return _report(worker)
+
+
+async def test_report_takes_the_mirrors_from_the_check_after_sending(tmp_path: Path) -> None:
+    guard = _with_check_after_send(4)
+    report = await _synced(tmp_path, guard)
+    assert report.mirrors_after_send is True
+    assert _mirror_counts(report) == [4, 4, 4]
+    assert {share.result for share in report.shares} == {GuardDatasetResult.OK}
+    # Platz, Sperrgründe und Freigabe bleiben aus prepare.
+    assert report.check is not None
+    assert guard.check is not None
+    assert report.check.at < guard.check.at
+
+
+async def test_report_takes_a_new_check_from_the_same_second(tmp_path: Path) -> None:
+    # Die Zeit des check hat nur ganze Sekunden; ein anderes check derselben Sekunde gilt.
+    report = await _synced(tmp_path, _with_check_after_send(4, seconds=0))
+    assert report.mirrors_after_send is True
+    assert _mirror_counts(report) == [4, 4, 4]
+
+
+async def test_report_keeps_the_mirrors_from_prepare_without_a_new_check(tmp_path: Path) -> None:
+    # Wächter Version 3 oder ein gescheitertes check nach dem Senden: es bleibt das aus prepare.
+    report = await _synced(tmp_path, _guard())
+    assert report.mirrors_after_send is False
+    assert _mirror_counts(report) == [3, 3, 3]
+
+
+async def test_report_ignores_an_older_check(tmp_path: Path) -> None:
+    report = await _synced(tmp_path, _with_check_after_send(4, seconds=-60))
+    assert report.mirrors_after_send is False
+    assert _mirror_counts(report) == [3, 3, 3]
+
+
+async def test_report_ignores_a_failed_check_after_sending(tmp_path: Path) -> None:
+    guard = _with_check_after_send(4, result=GuardCheckResult.UNREACHABLE, summary=None, mirrors=())
+    report = await _synced(tmp_path, guard)
+    assert report.mirrors_after_send is False
+    assert _mirror_counts(report) == [3, 3, 3]
+
+
+async def test_report_after_a_refused_send_uses_the_new_check(tmp_path: Path) -> None:
+    # Auch nach target_refused fragt Version 4 erneut (Konzept 3.6).
+    guard = _with_check_after_send(3)
+    guard.sent = Sent(
+        result=GuardJobResult.TARGET_REFUSED,
+        reason=GuardJobReason.SPACE_LOW,
+        check=guard.sent.check if guard.sent else None,
+    )
+    report = await _synced(tmp_path, guard)
+    assert report.mirrors_after_send is True
+    assert {share.result for share in report.shares} == {GuardDatasetResult.SEND_FAILED}

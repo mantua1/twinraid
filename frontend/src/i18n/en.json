@@ -584,6 +584,8 @@
       "renamed": "renamed",
       "size": "Size",
       "mirror": "Mirror on {{target}}",
+      "mirrorAfterSend": "Mirror on {{target}} after sending",
+      "mirrorBeforeSend": "Mirror on {{target}} before sending",
       "full": "full (first run)",
       "incremental": "incremental",
       "incrementalBookmark": "incremental from bookmark",

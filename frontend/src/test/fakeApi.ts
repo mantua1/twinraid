@@ -214,6 +214,7 @@ export const REPORT: SyncReport = {
   blockers: [],
   check: CHECK,
   shares: [SHARE_REPORT],
+  mirrors_after_send: false,
 };
 
 export const STATUS: StatusSnapshot = {

@@ -298,6 +298,11 @@ async def test_check_and_interval_after_a_sync(host: Host, tmp_path: Path) -> No
         return check.mirrors[0].count if check is not None else None
 
     await _until(lambda: mirror_count() == 4, 10)
+    # Ab v0.5.4: Die Ergebnistabelle zeigt die Spiegel aus dem check nach dem Senden.
+    report = worker.sync.snapshot().report
+    assert report is not None
+    assert report.mirrors_after_send is True
+    assert [share.mirror.count if share.mirror else None for share in report.shares] == [4]
     created = datetime.fromtimestamp(host.status()["job"]["created_at"], UTC)
     status = worker.sync.snapshot()
     assert status.snapshot_allowed_at is not None

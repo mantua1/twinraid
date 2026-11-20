@@ -584,6 +584,8 @@
       "renamed": "umbenannt",
       "size": "Größe",
       "mirror": "Spiegel auf {{target}}",
+      "mirrorAfterSend": "Spiegel auf {{target}} nach dem Senden",
+      "mirrorBeforeSend": "Spiegel auf {{target}} vor dem Senden",
       "full": "vollständig (erster Lauf)",
       "incremental": "inkrementell",
       "incrementalBookmark": "inkrementell vom Lesezeichen",

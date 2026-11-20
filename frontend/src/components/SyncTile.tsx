@@ -108,6 +108,16 @@ function ShareRow({
   );
 }
 
+/** Überschrift der Spalte Spiegel: beim Sync mit „nach“ bzw. „vor dem Senden“ (ab v0.5.4). */
+function mirrorHeader(
+  report: SyncReport,
+): "sync.report.mirror" | "sync.report.mirrorAfterSend" | "sync.report.mirrorBeforeSend" {
+  if (report.kind !== "sync") {
+    return "sync.report.mirror";
+  }
+  return report.mirrors_after_send ? "sync.report.mirrorAfterSend" : "sync.report.mirrorBeforeSend";
+}
+
 /** Bericht des letzten Laufs je Share (Konzept 4.3, D5). */
 function Report({ report, names }: { report: SyncReport; names: SyncTileProps["names"] }) {
   const { t, i18n } = useTranslation();
@@ -134,7 +144,7 @@ function Report({ report, names }: { report: SyncReport; names: SyncTileProps["n
               <th className={cn(header, "text-right")}>{t("sync.report.added")}</th>
               <th className={cn(header, "text-right")}>{t("sync.report.renamed")}</th>
               <th className={cn(header, "text-right")}>{t("sync.report.size")}</th>
-              <th className="pb-1 font-medium">{t("sync.report.mirror", names)}</th>
+              <th className="pb-1 font-medium">{t(mirrorHeader(report), names)}</th>
               {sync && <th className="pb-1 pl-3 font-medium">{t("sync.report.sent")}</th>}
             </tr>
           </thead>

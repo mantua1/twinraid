@@ -636,6 +636,8 @@ export interface SyncReport {
   blockers: GuardBlocker[];
   check: GuardCheck | null;
   shares: SyncShareReport[];
+  // Ab v0.5.4: Spiegel je Share aus dem check nach dem Senden (Konzept 4.3).
+  mirrors_after_send: boolean;
 }
 
 // Die drei Ebenen: twinraid.yaml, source-guard.conf (Klein), mirror.conf (Groß).
