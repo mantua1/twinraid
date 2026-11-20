@@ -201,7 +201,7 @@ def _section(number: int) -> str:
 
 
 def _before_sync() -> str:
-    """Abschnitte 1 bis 15 und 18 bis 21 ohne den Rückweg auf 0.5.0: Stand v0.5.1."""
+    """Abschnitte 1 bis 15 und 18 bis 22 ohne den Rückweg auf 0.5.0: Stand v0.5.1."""
     return (
         SETUP.replace(_rollback_section(), "").replace(_section(16), "").replace(_section(17), "")
     )
@@ -232,15 +232,13 @@ def _blocks(text: str = SETUP) -> list[str]:
 
 
 def test_scripts_are_taken_from_the_release_of_each_section() -> None:
-    version = re.search(r'^__version__ = "(.+)"$', _init(), flags=re.M)
-    assert version is not None
     # Abschnitt 16 bleibt bei v0.5.2, nur testdata.sh kommt aus v0.5.3 (bulk, F15).
     section_16 = re.findall(r"mantua1/twinraid/(v[0-9.]+)/host-scripts/(\S+)", _section(16))
     assert {tag for tag, name in section_16 if name != "testdata.sh"} == {"v0.5.2"}
-    assert {tag for tag, name in section_16 if name == "testdata.sh"} == {f"v{version[1]}"}
-    assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _section_17_update())) == {
-        f"v{version[1]}"
-    }
+    assert {tag for tag, name in section_16 if name == "testdata.sh"} == {"v0.5.3"}
+    assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _section_17_update())) == {"v0.5.3"}
+    # v0.5.4 ändert keine Skripte; Abschnitt 18 lädt nichts.
+    assert "mantua1/twinraid/v" not in _section(18)
     assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _rollback_0_5_2())) == {"v0.5.2"}
     assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _before_sync())) == {"v0.5.1"}
     assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _rollback_section())) == {"v0.5.0"}
@@ -262,7 +260,9 @@ def test_section_16_loads_the_scripts_of_0_5_2(name: str) -> None:
 
 @pytest.mark.parametrize("name", ["source-guard.sh", "testdata.sh"])
 def test_section_17_loads_the_scripts_of_this_version(name: str) -> None:
-    """Herunterladen und Kopieren prüfen beide dieselbe SHA-256, die der Datei im Repo."""
+    """Herunterladen und Kopieren prüfen beide dieselbe SHA-256, die der Datei im Repo.
+
+    v0.5.4 ändert die Skripte nicht; die Datei im Repo ist also noch die von v0.5.3."""
     documented = re.findall(rf"([0-9a-f]{{64}})  /tmp/{re.escape(name)}", _section_17_update())
     assert documented == [_sha256(name)] * 2
 
@@ -529,3 +529,67 @@ def test_lock_of_test_2b_can_be_released() -> None:
 
 def _init() -> str:
     return (REPO_ROOT / "backend" / "src" / "twinraid" / "__init__.py").read_text(encoding="utf-8")
+
+
+# --- Ab v0.5.4: Rechte der Konfiguration und Warten nach restart (Konzept 6.1) ---
+
+CONFIG_FILE = "/mnt/user/appdata/twinraid/config/twinraid.yaml"
+
+
+def test_toc_lists_every_section_with_its_anchor() -> None:
+    headings = re.findall(r"^## (\d+)\. (.+)$", SETUP, flags=re.M)
+    toc = re.findall(r"^(\d+)\. \[(.+?)\]\(#(.+?)\)$", SETUP, flags=re.M)
+    assert [(number, title) for number, title, _ in toc] == headings
+    for number, title, anchor in toc:
+        expected = re.sub(r"[^\w\- ]", "", f"{number}. {title}".lower()).replace(" ", "-")
+        assert anchor == expected
+
+
+def test_every_replaced_configuration_gets_its_rights_back() -> None:
+    """Wo die Anleitung twinraid.yaml anlegt oder ersetzt, folgen chmod 644 und ls -l."""
+    writes = [
+        block
+        for block in _blocks()
+        if re.search(rf"(wget -O|cp -p \S+) {re.escape(CONFIG_FILE)}\s*(\\|$)", block, flags=re.M)
+    ]
+    assert len(writes) == 3
+    for block in writes:
+        assert f"chown root:root {CONFIG_FILE}" in block
+        assert f"chmod 644 {CONFIG_FILE}" in block
+        assert f"ls -l {CONFIG_FILE}" in block
+
+
+def test_box_for_the_rights_of_the_configuration() -> None:
+    section = _section(3)
+    assert "**Rechte der Konfiguration.**" in section
+    box = [block for block in _blocks(section) if block.startswith("chown root:root")]
+    assert box == [f"chown root:root {CONFIG_FILE}\nchmod 644 {CONFIG_FILE}\nls -l {CONFIG_FILE}\n"]
+
+
+def test_folders_are_owned_by_root_and_not_writable_for_others() -> None:
+    folders = "/mnt/user/appdata/twinraid /mnt/user/appdata/twinraid/config"
+    first = next(block for block in _blocks(_section(3)) if block.startswith("mkdir -p"))
+    assert f"chown root:root {folders} /mnt/user/appdata/twinraid/data" in first
+    assert f"chmod 755 {folders} /mnt/user/appdata/twinraid/data" in first
+    # Den Ordner über config sieht TwinRaid nicht; Abschnitt 18 prüft ihn von Hand.
+    assert any(block.startswith(f"ls -ld {folders}\n") for block in _blocks(_section(18)))
+
+
+def test_status_after_a_restart_waits_for_the_new_guard() -> None:
+    """Direkt nach restart zeigt status noch die alte status.json (Befund aus v0.5.3)."""
+    waiting = 0
+    for block in _blocks():
+        if "source-guard.sh restart" not in block:
+            continue
+        after = block[block.index("source-guard.sh restart") :]
+        if "source-guard.sh status" not in after:
+            continue
+        waiting += 1
+        before = block[: block.index("source-guard.sh restart")]
+        assert re.search(r"ALT=\$\(.*grep -o '\"started_at\":\[0-9\]\*'\)", before)
+        assert "for i in $(seq 20); do" in after
+        assert '[ -n "$NEU" ] && [ "$NEU" != "$ALT" ] && break' in after
+        # status mit dem Ergebnis nur, wenn der neue Stand da ist.
+        shown = after[after.index('if [ -n "$NEU" ] && [ "$NEU" != "$ALT" ]; then') :]
+        assert "source-guard.sh status" in shown.split("else")[0]
+    assert waiting == 3
