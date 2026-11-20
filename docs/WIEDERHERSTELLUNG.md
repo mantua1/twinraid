@@ -1,6 +1,6 @@
 # TwinRaid: Wiederherstellung
 
-> **Stand: Version 0.5.3.** Diese Anleitung ist für den Ernstfall: den letzten Stand finden, einzelne Dateien zurückholen, einen gesperrten Spiegel freigeben, den Notbetrieb auf Groß starten und danach zurück nach Klein. Die Vorlagen der Container (Templates) kommen erst mit Version 0.5.4; bis dahin legst du die Container im Notbetrieb von Hand an.
+> **Stand: Version 0.5.4.** Diese Anleitung ist für den Ernstfall: den letzten Stand finden, einzelne Dateien zurückholen, einen gesperrten Spiegel freigeben, den Notbetrieb auf Groß starten und danach zurück nach Klein. Die Vorlagen der Container (Templates) kommen erst mit einer späteren Version (Nummer offen); bis dahin legst du die Container im Notbetrieb von Hand an.
 
 Die Grundlagen stehen in [KONZEPT.md](KONZEPT.md), Abschnitte 3.7 und 4.6. TwinRaid hat für die Schritte hier keine Funktion; sie laufen von Hand als root, fast alle im **Unraid-Terminal von Groß**. Wo ein Befehl auf Klein läuft, steht das dabei.
 
@@ -307,7 +307,7 @@ Erwartet: wieder `mainpool/twinraid-mirror/<Share>@twinraid-…` (es ist noch de
 
 **8. Docker auf Groß einschalten:** *Settings → Docker → Enable Docker: Yes* → **Apply**. Im Normalbetrieb ist Docker auf Groß aus. Fehlt das Docker-Abbild (`docker.img`), legt Unraid ein neues an; die Images lädt Docker dann beim Anlegen der Container neu, dafür braucht Groß Internet.
 
-**9. Container anlegen:** bis Version 0.5.4 von Hand (Reiter **Docker** → **Add Container**), mit demselben Image, denselben Pfaden unter `/mnt/user/<Share>/…` und denselben Netzwerkeinstellungen wie auf Klein. Feste IP und MAC dürfen gleich sein, weil Klein aus ist. TwinRaid selbst gehört nicht dazu.
+**9. Container anlegen:** bis zur Version mit den Templates von Hand (Reiter **Docker** → **Add Container**), mit demselben Image, denselben Pfaden unter `/mnt/user/<Share>/…` und denselben Netzwerkeinstellungen wie auf Klein. Feste IP und MAC dürfen gleich sein, weil Klein aus ist. TwinRaid selbst gehört nicht dazu.
 
 Zur Kontrolle meldet `SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync` in der Zeile `summary` jetzt `clones=1` (je Klon eins mehr); ein Sync wäre gesperrt. Der Notbetrieb läuft, bis Klein wieder da ist.
 
