@@ -38,6 +38,18 @@ Wenn eine Anfrage dem Konzept widerspricht: nachfragen, nicht eigenmächtig abwe
 - Kleine, thematische Commits.
 - Der Nutzer kann etwas Python und C#, ist aber kein Profi-Entwickler. Befehle, die er selbst ausführen soll (Git, Docker, Terminal), Schritt für Schritt erklären.
 
+## Testumfang (festgelegt am 20.11.2026)
+
+Was getestet wird, richtet sich nach dem, was sich ändert. Was die CI prüft, wird auf den Servern nicht wiederholt.
+
+- **Nur Doku:** kein Test 0, keine Servertests.
+- **Oberfläche oder Texte:** Test 0 (Simulation am PC) nur für das Neue, etwa 5 Minuten; keine Servertests.
+- **Worker ohne Änderung an `host-scripts/`:** Test 0 nur für das Neue. Auf den Servern nur der Rauchtest: ein Sync, danach `testdata.sh report source` auf Klein und `testdata.sh report target` auf Groß.
+- **Änderung an `guard.sh` oder `source-guard.sh`:** der Rauchtest plus gezielt das geänderte Verhalten, sonst nichts.
+- **Neue Share oder neuer Datenweg:** einmalig der dafür nötige Test, zum Beispiel Z5 vor der ersten echten Share.
+- **Pläne und `docs/EINRICHTUNG.md`** enthalten nur die nötigen Tests, keine optionalen. Jede Testliste nennt je Test, warum die CI ihn nicht abdeckt.
+- **Unverändert:** Bis 1.0 gibt es keine Servertests für den Rückweg auf die Vorversion (Konzept, Kapitel 9).
+
 ## Konventionen
 
 - Code, Bezeichner und Commit-Messages auf Englisch; Kommentare und Dokumentation auf Deutsch.
