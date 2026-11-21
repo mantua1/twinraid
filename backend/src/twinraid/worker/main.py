@@ -45,8 +45,9 @@ def main() -> int:
         return EXIT_STARTUP_ERROR
     warn_if_mock(logger, mode)
 
+    config_path = runtime.config_path(env)
     try:
-        config = load_config(runtime.config_path(env))
+        config = load_config(config_path)
     except ConfigError as exc:
         logger.error("%s", exc.render())
         return EXIT_STARTUP_ERROR
@@ -60,7 +61,9 @@ def main() -> int:
     paths = DataPaths(runtime.data_dir(env))
     password_check = PasswordCheck(PasswordStore(paths.password_file))
     integrations = build_integrations(mode, config, paths, runtime.mock_flag_dir(env), wol)
-    monitor = StatusMonitor(integrations.status, changes=integrations.status_changed)
+    monitor = StatusMonitor(
+        integrations.status, changes=integrations.status_changed, config_path=config_path
+    )
     action_log = ActionLog(paths.action_log)
     # Probelauf und Sync (ab v0.5.1): eigene Ressource „Sync“; „Kopierjob läuft“ kommt von hier.
     sync = SyncCoordinator(

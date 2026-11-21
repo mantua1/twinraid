@@ -65,7 +65,8 @@ SCENARIO: tuple[tuple[ResourceInfo, ResourceInfo, ResourceInfo, tuple[StatusNoti
     _unknown(StatusReason.VM_SERVICE_UNAVAILABLE),
     (_ON, _ON, _OFF, (StatusNotice.TARGET_ARC_UNLIMITED,)),
     (_ON, _ON, ResourceInfo(state=ResourceState.STARTING), _NONE),
-    (_ON, _ON, _ON, _NONE),
+    # Klein: Konfiguration ungeschützt (Konzept 6.1, ab v0.5.4).
+    (_ON, _ON, _ON, (StatusNotice.CONFIG_WRITABLE,)),
     (
         _ON,
         _ON,

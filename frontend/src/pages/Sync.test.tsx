@@ -529,6 +529,43 @@ describe("finished sync", () => {
     expect(within(tile).getByTestId("sync-share-sent")).toHaveTextContent("350 MiBangekommen");
     // Der Bericht eines Syncs sagt nicht „Senden wäre möglich“.
     expect(within(tile).queryByTestId("sync-send-ready")).toBeNull();
+    // Ohne check nach dem Senden stammen die Spiegel aus prepare (ab v0.5.4, Konzept 4.3).
+    expect(within(tile).getByTestId("sync-report")).toHaveTextContent(
+      "Spiegel auf Unraid Groß vor dem Senden",
+    );
+  });
+
+  it("names the mirrors after sending when the check after sending arrived", async () => {
+    const report = {
+      ...REPORT,
+      kind: "sync" as const,
+      mirrors_after_send: true,
+      shares: [
+        {
+          ...SHARE_REPORT,
+          sent: 350 * 1024 ** 2,
+          result: "ok" as const,
+          mirror: {
+            state: "mirror" as const,
+            props: "ok" as const,
+            count: 6,
+            newest_received: "2026-10-13T12:03:00Z",
+          },
+        },
+      ],
+    };
+    const { sync: tile } = await openDashboard({ status: withSync({ last, report }) });
+    const box = within(tile).getByTestId("sync-report");
+    expect(box).toHaveTextContent("Spiegel auf Unraid Groß nach dem Senden");
+    expect(box).toHaveTextContent("6 Snapshots");
+    expect(box).not.toHaveTextContent("vor dem Senden");
+  });
+
+  it("keeps the plain mirror heading for a dry run", async () => {
+    const { sync: tile } = await openDashboard({ status: withSync({ report: REPORT }) });
+    const box = within(tile).getByTestId("sync-report");
+    expect(box).toHaveTextContent("Spiegel auf Unraid Groß");
+    expect(box).not.toHaveTextContent("dem Senden");
   });
 
   it("lists the history, newest first, with reasons", async () => {

@@ -146,6 +146,8 @@ class Sent:
     delay: int = 1
     # Ergebnis je Share; ohne Angabe ok bzw. bei einem Fehler send_failed.
     results: dict[str, GuardDatasetResult] = field(default_factory=dict)
+    # check nach dem Senden (Wächter Version 4); None: das check aus prepare bleibt stehen.
+    check: GuardCheck | None = None
 
 
 @dataclass
@@ -286,6 +288,9 @@ class ScriptedGuard:
             )
             for item in job.datasets
         )
+        if sent.check is not None:
+            # Wie adopt_child: check und Ende des Jobs erscheinen im selben Status.
+            self.check = sent.check
         self.job = job.model_copy(
             update={
                 "state": GuardJobState.DONE if ok else GuardJobState.FAILED,

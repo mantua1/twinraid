@@ -875,12 +875,12 @@ class SyncCoordinator:
         run.progress = tracker
         deadline = self._monotonic() + self._timings.send_wait_seconds
         while True:
-            _details, job = await self._own_job(run)
+            details, job = await self._own_job(run)
             done = job.state is GuardJobState.DONE
             tracker.update(self._monotonic(), self._clock(), job.datasets, done)
             if not job.open:
                 run.sending = False
-                self._update_report(job)
+                self._update_report(job, details.target_check)
                 return job
             if self._monotonic() >= deadline:
                 await self._close_quietly(run)
@@ -910,21 +910,37 @@ class SyncCoordinator:
             case _:
                 return ActionOutcome.SOURCE_GUARD_LOST, None
 
-    def _update_report(self, job: GuardJob) -> None:
-        """Gesendete Bytes und Ergebnis je Share in den Bericht des Laufs übernehmen."""
+    def _update_report(self, job: GuardJob, check: GuardCheck | None) -> None:
+        """Gesendete Bytes und Ergebnis je Share in den Bericht des Laufs übernehmen.
+
+        Ab v0.5.4: Steht ein erfolgreiches check im Status, das sich von dem aus prepare
+        unterscheidet und nicht älter ist (der Wächter Version 4 fragt nach dem Senden erneut;
+        die Zeit hat nur ganze Sekunden), kommen die Spiegel je Share von dort
+        (Konzept 4.3, „Spiegel in der Ergebnistabelle“). Platz, Sperrgründe und Freigabe
+        bleiben aus prepare.
+        """
         report = self._report
         if report is None or report.snapshot != job.snapshot:
             return
-        results = {item.name: item for item in job.datasets}
-        shares = tuple(
-            share.model_copy(
-                update={"sent": results[share.name].sent, "result": results[share.name].result}
-            )
-            if share.name in results
-            else share
-            for share in report.shares
+        after_send = (
+            check is not None
+            and check.result is GuardCheckResult.OK
+            and (report.check is None or (check != report.check and check.at >= report.check.at))
         )
-        self._report = report.model_copy(update={"shares": shares})
+        mirrors = _mirrors(check) if after_send else {}
+        results = {item.name: item for item in job.datasets}
+        shares = []
+        for share in report.shares:
+            update: dict[str, object] = {}
+            if share.name in results:
+                update["sent"] = results[share.name].sent
+                update["result"] = results[share.name].result
+            if after_send:
+                update["mirror"] = mirrors.get(share.name)
+            shares.append(share.model_copy(update=update) if update else share)
+        self._report = report.model_copy(
+            update={"shares": tuple(shares), "mirrors_after_send": after_send}
+        )
 
     # --- Übernommene Übertragung ---
 
@@ -1080,18 +1096,23 @@ def _history_shares(job: GuardJob | None) -> tuple[SyncHistoryShare, ...]:
     )
 
 
+def _mirrors(check: GuardCheck | None) -> dict[str, SyncMirror]:
+    """Spiegel je Share aus einem check (Konzept 3.7)."""
+    if check is None:
+        return {}
+    return {
+        mirror.name: SyncMirror(
+            state=mirror.state,
+            props=mirror.props,
+            count=mirror.count,
+            newest_received=mirror.newest_received,
+        )
+        for mirror in check.mirrors
+    }
+
+
 def _report(kind: SyncKind, job: GuardJob, check: GuardCheck | None, now: datetime) -> SyncReport:
-    mirrors = {}
-    if check is not None:
-        mirrors = {
-            mirror.name: SyncMirror(
-                state=mirror.state,
-                props=mirror.props,
-                count=mirror.count,
-                newest_received=mirror.newest_received,
-            )
-            for mirror in check.mirrors
-        }
+    mirrors = _mirrors(check)
     return SyncReport(
         kind=kind,
         prepared_at=now,

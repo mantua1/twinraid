@@ -14,8 +14,13 @@ import { SyncTile } from "@/components/SyncTile";
 import type { DashboardData } from "@/hooks/useDashboardData";
 
 const UNKNOWN: ResourceInfo = { state: "unknown", reason: null };
+// config_writable betrifft die Konfiguration auf Klein (Konzept 6.1, ab v0.5.4).
 const tileOf = (notice: StatusNotice) =>
-  notice.startsWith("source_") ? "source" : notice.startsWith("vm_") ? "vm" : "target";
+  notice.startsWith("source_") || notice === "config_writable"
+    ? "source"
+    : notice.startsWith("vm_")
+      ? "vm"
+      : "target";
 
 export function Dashboard({ data }: { data: DashboardData }) {
   const { t, i18n } = useTranslation();

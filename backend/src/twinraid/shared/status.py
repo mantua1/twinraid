@@ -72,6 +72,9 @@ class StatusNotice(StrEnum):
     SOURCE_BASE_HOLD_MISSING = "source_base_hold_missing"
     # Der Wächter meldet einen Abstand zwischen Snapshots unter 30 min (Testwert, ab v0.5.3).
     SOURCE_SNAPSHOT_INTERVAL_TEST = "source_snapshot_interval_test"
+    # twinraid.yaml oder /config ist für andere beschreibbar oder gehört nicht root (Kachel Klein,
+    # Konzept 6.1, „Rechte der Konfiguration“, ab v0.5.4).
+    CONFIG_WRITABLE = "config_writable"
 
 
 class ResourceInfo(StrictModel):

@@ -65,7 +65,7 @@ sync:
     - medien                   #   und mirror.conf (Groß), siehe Konzept 4.3
   stop_containers: true        # Container der Erlaubnisliste des Wächters für den Snapshot anhalten
   never_stop: []               # zusätzlich nie anhalten; TwinRaid selbst ist immer ausgenommen
-  copy_templates: false        # ohne Wirkung bis v0.5.4
+  copy_templates: false        # ohne Wirkung, bis die Templates kommen (Nummer offen)
   # Die Löschgrenze (max_deletions) steht in source-guard.conf auf Klein.
   schedule:                    # wird erst ab Phase 6 ausgeführt
     enabled: true

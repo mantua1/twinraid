@@ -85,6 +85,14 @@ async def test_sync_in_the_simulation(tmp_path: Path) -> None:
     history = worker.sync.snapshot().history
     assert history[0].containers_stopped == 1
     assert {share.result for share in history[0].shares} == {GuardDatasetResult.OK}
+    # Ab v0.5.4: Die Ergebnistabelle zeigt die Spiegel nach dem Senden, einer mehr als vorher.
+    report = worker.sync.snapshot().report
+    assert report is not None
+    assert report.mirrors_after_send is True
+    check = details.target_check
+    assert check is not None
+    counts = {mirror.name: mirror.count for mirror in check.mirrors}
+    assert {share.name: share.mirror.count for share in report.shares if share.mirror} == counts
     # Die gehaltene Basis ist der gesendete Snapshot.
     job = details.job
     assert job is not None
@@ -110,6 +118,8 @@ async def test_send_error_hits_the_last_share(tmp_path: Path) -> None:
     results = [share.result for share in report.shares]
     assert results[:-1] == [GuardDatasetResult.OK] * (len(results) - 1)
     assert results[-1] is GuardDatasetResult.SEND_FAILED
+    # Nach einem Fehler von SSH fragt der Wächter nicht erneut: die Spiegel vor dem Senden.
+    assert report.mirrors_after_send is False
 
 
 async def test_deletions_need_a_confirmation(tmp_path: Path) -> None:

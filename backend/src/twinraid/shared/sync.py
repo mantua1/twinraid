@@ -143,6 +143,9 @@ class SyncReport(StrictModel):
     blockers: tuple[GuardBlocker, ...]
     check: GuardCheck | None
     shares: tuple[SyncShareReport, ...]
+    # Ab v0.5.4: Die Spiegel je Share stammen aus dem check nach dem Senden (Wächter Version 4),
+    # sonst aus prepare (Konzept 4.3, „Spiegel in der Ergebnistabelle“).
+    mirrors_after_send: bool = False
 
 
 class SyncLevels(StrictModel):

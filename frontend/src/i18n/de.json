@@ -69,7 +69,8 @@
       "source_guard_allows_self": "Die Erlaubnisliste des Wächters auf {{target}} enthält den Container von TwinRaid. source-guard.conf prüfen: TwinRaid wird nie angehalten.",
       "target_arc_unlimited": "Auf {{target}} ist keine Grenze für den ZFS-Cache eingetragen. Trage sie in Unraid unter Settings → Disk Settings ein.",
       "source_base_hold_missing": "Die neue Basis von {{datasets}} auf {{target}} ist nicht gehalten; der nächste erfolgreiche Sync behebt das.",
-      "source_snapshot_interval_test": "Testwert aktiv: Abstand zwischen Snapshots {{minutes}} min (Standard 30)."
+      "source_snapshot_interval_test": "Testwert aktiv: Abstand zwischen Snapshots {{minutes}} min (Standard 30).",
+      "config_writable": "twinraid.yaml oder der Ordner config auf {{target}} ist für andere beschreibbar oder gehört nicht root. Im Unraid-Terminal von {{target}} korrigieren: chown root:root und chmod 755 für den Ordner, chmod 644 für die Datei (docs/EINRICHTUNG.md, Fehlerbilder)."
     }
   },
   "dashboard": {
@@ -583,6 +584,8 @@
       "renamed": "umbenannt",
       "size": "Größe",
       "mirror": "Spiegel auf {{target}}",
+      "mirrorAfterSend": "Spiegel auf {{target}} nach dem Senden",
+      "mirrorBeforeSend": "Spiegel auf {{target}} vor dem Senden",
       "full": "vollständig (erster Lauf)",
       "incremental": "inkrementell",
       "incrementalBookmark": "inkrementell vom Lesezeichen",
