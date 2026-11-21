@@ -12,7 +12,6 @@ import json
 import os
 import re
 import selectors
-import signal
 import subprocess
 import sys
 import time
@@ -22,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from tests.conftest import REPO_ROOT
+from tests.support.reaper import kill_until_gone, marker_for
 
 GUARD = REPO_ROOT / "host-scripts" / "guard.sh"
 FAKE_DIR = REPO_ROOT / "docker" / "fake-target"
@@ -541,16 +541,9 @@ def make_guard(tmp_path: Path, **constants: str) -> Guard:
 
 
 def kill_loops(tmp_path: Path) -> None:
-    """Keine Schleife darf den Test überleben."""
-    marker = str(tmp_path).encode()
-    for proc in Path("/proc").iterdir():
-        if proc.name.isdigit():
-            try:
-                cmdline = (proc / "cmdline").read_bytes()
-            except OSError:
-                continue
-            if marker in cmdline:
-                os.kill(int(proc.name), signal.SIGKILL)
+    """Keine Schleife darf den Test überleben, auch kein Prozess in ihrer Sitzung."""
+    if not kill_until_gone(marker_for(tmp_path), exclude=os.getpid()):
+        raise AssertionError("Prozesse aus dem Test laufen nach 5 s noch")
 
 
 def processes_of(session: int) -> list[int]:

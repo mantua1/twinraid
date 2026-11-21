@@ -6,7 +6,6 @@ tests/support/fake_source_host.py, Unraid-Pfade zeigen in einen Testordner, der 
 ist der eigene Benutzer statt root, und die Schleife läuft im Takt von Zehntelsekunden.
 """
 
-import contextlib
 import hashlib
 import json
 import os
@@ -20,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from tests.conftest import REPO_ROOT
+from tests.support.reaper import kill_until_gone, marker_for
 from twinraid.integrations.source_guard import parse_status
 
 SCRIPT = REPO_ROOT / "host-scripts" / "source-guard.sh"
@@ -351,14 +351,6 @@ def make_host(tmp_path: Path, **constants: str) -> Host:
 
 
 def kill_leftovers(tmp_path: Path) -> None:
-    """Kein Wächter darf den Test überleben."""
-    marker = str(tmp_path).encode()
-    for proc in Path("/proc").iterdir():
-        if proc.name.isdigit():
-            try:
-                cmdline = (proc / "cmdline").read_bytes()
-            except OSError:
-                continue
-            if marker in cmdline:
-                with contextlib.suppress(ProcessLookupError):
-                    os.kill(int(proc.name), signal.SIGKILL)
+    """Kein Wächter darf den Test überleben, auch kein Prozess in seiner Sitzung."""
+    if not kill_until_gone(marker_for(tmp_path), exclude=os.getpid()):
+        raise AssertionError("Prozesse aus dem Test laufen nach 5 s noch")

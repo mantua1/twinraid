@@ -1,13 +1,17 @@
 """Gemeinsame Test-Fixtures."""
 
 import logging
+import os
 import socket
+import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from ipaddress import IPv4Interface, ip_address, ip_network
 from pathlib import Path
 
 import pytest
 
+from tests.support import reaper
 from twinraid.shared import addresses
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +37,33 @@ def _allowed(address: object) -> bool:
     except ValueError:
         return False
     return host.is_loopback or host in _TEST_NET
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _reaper(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Startet einen Aufräumer, der nach dem Ende von pytest alle Prozesse aus den
+    Test-Ordnern dieser Sitzung beendet, auch nach Strg+C oder kill -9 (tests/support/reaper.py).
+    Er wartet über einen pidfd auf pytest und endet nach dem Aufräumen selbst."""
+    pidfd = os.pidfd_open(os.getpid())
+    try:
+        starter = subprocess.Popen(  # noqa: S603 - feste Argumente, nur im Test
+            [
+                sys.executable,
+                "-I",
+                reaper.__file__,
+                str(pidfd),
+                str(tmp_path_factory.getbasetemp()),
+            ],
+            pass_fds=(pidfd,),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    finally:
+        os.close(pidfd)
+    # Der Starter endet sofort; der Aufräumer läuft als sein Kind weiter.
+    assert starter.wait(timeout=10) == 0
 
 
 # Die echte Erkennung, bevor _fixed_interfaces sie in jedem Test ersetzt.
