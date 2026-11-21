@@ -3290,14 +3290,14 @@ Test 0 läuft mit einer **Kopie** von `config.dev.yaml` in deinem Home-Ordner, w
 1. **Kopie anlegen, den Sync darin freischalten und auf `644` setzen.** Im Repo-Hauptordner:
 
    ```bash
-   cp config.dev.yaml ~/twinraid-test0.yaml
+   [ -e ~/twinraid-test0.yaml ] || cp config.dev.yaml ~/twinraid-test0.yaml
    sed -i 's/^  sync: false$/  sync: true/' ~/twinraid-test0.yaml
    chmod 644 ~/twinraid-test0.yaml
    grep -n -A5 '^actions:' ~/twinraid-test0.yaml
    ls -l ~/twinraid-test0.yaml
    ```
 
-   `cp` kopiert die Datei, `sed` ändert im Abschnitt `actions` genau die Zeile `  sync: false` in `  sync: true` (die Zeile `sync_dry_run` und der Abschnitt `sync:` passen nicht auf das Muster). Statt `sed` kannst du die Zeile auch in einem Editor ändern. `chmod 644` ist nötig, weil Linux Mint neue Dateien mit `-rw-rw-r--` anlegt; damit erschiene der Hinweis von Anfang an.
+   `cp` kopiert die Datei, aber nur, wenn es die Kopie noch nicht gibt; ein zweiter Durchgang überschreibt also nichts. `sed` ändert im Abschnitt `actions` genau die Zeile `  sync: false` in `  sync: true` (die Zeile `sync_dry_run` und der Abschnitt `sync:` passen nicht auf das Muster). Statt `sed` kannst du die Zeile auch in einem Editor ändern. `chmod 644` ist nötig, weil Linux Mint neue Dateien mit `-rw-rw-r--` anlegt; damit erschiene der Hinweis von Anfang an.
 
    Erwartet: `grep` zeigt unter `actions:` die Zeile `sync: true`, `ls -l` zeigt `-rw-r--r--` mit deinem Benutzer. Mit Docker im Rootless-Modus ist dein Benutzer im Container root.
 2. TwinRaid mit der Kopie starten und anmelden:
