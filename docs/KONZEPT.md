@@ -1,6 +1,6 @@
 # TwinRaid – Projektkonzept
 
-> Arbeitstitel „TwinRaid“ · Version 0.17 · Stand 20.11.2026
+> Arbeitstitel „TwinRaid“ · Version 0.18 · Stand 21.11.2026
 > Dieses Dokument ist die verbindliche Grundlage für die Entwicklung. Änderungen am Konzept werden hier eingetragen, bevor sie umgesetzt werden.
 
 ---
@@ -742,7 +742,7 @@ Inhalt der Anleitung, mit fertigen Befehlen:
 - **Letzten Stand finden:** die Snapshots der Spiegel auf Groß mit `twinraid:received` auflisten.
 - **Spiegel gesperrt (`props-mismatch`):** die Schritte zum Zurücksetzen aus 3.7, schon ab v0.5.1.
 - **Einzelne Dateien zurückholen:** auf Klein aus `/mnt/mainpool/<Share>/.zfs/snapshot/…` (letzte 7 Tage), auf Groß aus dem Spiegel unter `/mnt/mainpool/twinraid-mirror/<Share>` und seinen Snapshots (30 Tage).
-- **Notbetrieb starten:** Docker-Dienst auf Groß einschalten (im Normalbetrieb aus). Fehlt dort das Docker-Abbild (`docker.img`), legt Unraid ein neues an; die Images werden dann beim Anlegen der Container neu geladen, dafür braucht Groß Internet. Je Share einen Klon des neuesten Spiegel-Snapshots als `mainpool/<Share>` anlegen, mit ausdrücklich gesetzten Eigenschaften (`readonly=off`, `exec=on`, `setuid=off`, `devices=off`, `primarycache=all`, `compression=lz4`, `atime=off`, `xattr=sa`, `acltype=posix`), weil ein Klon sonst von der obersten Ebene erbt, die Unraid verwaltet. Damit liegen die Daten unter denselben Pfaden `/mnt/mainpool/<Share>` wie auf Klein. Hat Unraid an dieser Stelle schon ein Dataset angelegt, wird es vorher geprüft und entfernt (E26, siehe 3.7). Danach die Shares in Unraid neu anlegen, mit Primärspeicher `mainpool` (im Normalbetrieb gibt es dafür keine Konfiguration, E26), und die Container aus den Vorlagen anlegen (Templates: Nummer offen, bis dahin von Hand). Der Spiegel selbst bleibt unverändert; solange Klone bestehen, lehnt guard.sh jeden Empfang ab (`clone-active`).
+- **Notbetrieb starten:** Docker-Dienst auf Groß einschalten (im Normalbetrieb aus). Fehlt dort das Docker-Abbild (`docker.img`), legt Unraid ein neues an; die Images werden dann beim Anlegen der Container neu geladen, dafür braucht Groß Internet. Je Share einen Klon des neuesten Spiegel-Snapshots als `mainpool/<Share>` anlegen, mit ausdrücklich gesetzten Eigenschaften (`readonly=off`, `exec=on`, `setuid=off`, `devices=off`, `primarycache=all`, `compression=lz4`, `atime=off`, `xattr=sa`, `acltype=posix`), weil ein Klon sonst von der obersten Ebene erbt, die Unraid verwaltet. Damit liegen die Daten unter denselben Pfaden `/mnt/mainpool/<Share>` wie auf Klein. Hat Unraid an dieser Stelle schon ein Dataset angelegt, wird es vorher geprüft und entfernt (E26, siehe 3.7). Danach die Shares in Unraid neu anlegen, mit Primärspeicher `mainpool` (im Normalbetrieb gibt es dafür keine Konfiguration, E26), und die Container aus den Vorlagen anlegen (Templates: Nummer offen, bis dahin von Hand). Container, die mit einem Cloud-Dienst synchronisieren (Sync-Clients), werden im Notbetrieb nicht gestartet (festgelegt am 21.11.2026): Mit dem alten Stand könnten sie Löschungen oder alte Dateien in die Cloud übertragen, und ihre Zugangsdaten liegen gegebenenfalls im Spiegel. Der Spiegel selbst bleibt unverändert; solange Klone bestehen, lehnt guard.sh jeden Empfang ab (`clone-active`).
 - **setuid und Gerätedateien** bleiben im Klon aus: Images liegen nicht in appdata, und durchgereichte Geräte kommen aus `/dev` des Hosts. Vor dem ersten echten Spiegel von appdata prüft die Anleitung auf Klein mit `find`, ob es solche Dateien gibt; braucht ein Container es doch, wird `setuid` am Klon eingeschaltet.
 - **Grundsatz:** Container laufen nie gleichzeitig auf Klein und Groß. Sie haben auf beiden Servern dieselben festen IPs und MACs, und doppelt laufende Container wirken doppelt nach außen.
 - **Rückweg nach Klein** (Reihenfolge festgelegt am 08.11.2026):
@@ -1469,13 +1469,14 @@ Die Rechte der API bestehen nur aus Ressource und Aktion (Casbin-Regel `obj` und
 
 Bevor eine echte Share gespiegelt wird (nach v0.5.2), gilt:
 
-- Die Machbarkeitstests Z1, Z3 und Z4, die Tests 0 bis 8, Z5 (Notbetrieb mit der Test-Share) und S1 und S2 (Snapshots) aus `docs/EINRICHTUNG.md` sind bestanden und in den PRs festgehalten (nur „Klein“ und „Groß“). S3 ist durch die ZFS-CI (`testdata.sh report target` mit `readonly=off`) und auf den Servern durch Test 5e (iii) in `docs/EINRICHTUNG.md`, 16.9, abgedeckt und entfällt (festgelegt am 14.11.2026).
+- Die Machbarkeitstests Z1, Z3 und Z4, die Tests 0 bis 8 und S1 und S2 (Snapshots) aus `docs/EINRICHTUNG.md` sind bestanden und in den PRs festgehalten (nur „Klein“ und „Groß“). S3 ist durch die ZFS-CI (`testdata.sh report target` mit `readonly=off`) und auf den Servern durch Test 5e (iii) in `docs/EINRICHTUNG.md`, 16.9, abgedeckt und entfällt (festgelegt am 14.11.2026).
 - Auf Groß ist `zfs_arc_max` eingetragen (kein Hinweis `target_arc_unlimited`); die gleichzeitig laufenden VMs, der ARC und Unraid passen in den Arbeitsspeicher.
 - In `mainpool` auf Groß liegen nur `twinraid-mirror` und die Spiegel; vorübergehende Datasets (etwa aus einem Umzug) sind gelöscht. Es gibt keine Share-Konfigurationen mit den Namen der gespiegelten Shares, kein Pool hat Datasets mit diesen Namen, und der ISO-Ordner des VM-Managers zeigt nicht auf eine solche Share (E26).
 - Platz auf Groß: die Menge laut Probelauf plus Reserve; nach dem ersten Lauf ist `mainpool` höchstens zu 80 % belegt.
 - Für appdata: eigenes Dataset von TwinRaid gefunden; Erlaubnisliste des Wächters mit den echten Containern; `never_stop` geprüft; das Ergebnis der Suche nach setuid- und Gerätedateien (4.6) angesehen.
 - Templates: Bis zur Version mit den Templates (Nummer offen) ist der Notbetrieb ohne Vorlagen nur eingeschränkt möglich; das ist bewusst so, bis der Weg entschieden ist.
-- Je Share alle drei Ebenen ergänzen (4.3), eine Share nach der anderen, appdata erst mit der echten Erlaubnisliste des Wächters. Danach ist Phase 5 fertig.
+- **Z5 (Notbetrieb mit der Test-Share)** ist vor der ersten Share mit Containern im Notbetrieb bestanden, also vor appdata; für eine Share ohne Container (etwa isos) ist er keine Voraussetzung (festgelegt am 21.11.2026; vorher galt er vor der ersten echten Share).
+- Je Share alle drei Ebenen ergänzen (4.3), eine Share nach der anderen, appdata zuletzt und erst mit der echten Erlaubnisliste des Wächters. Reihenfolge je Share (festgelegt am 21.11.2026): zuerst Groß (`mirror.conf`), dann Klein (`source-guard.conf`, Neustart des Wächters), dann `twinraid.yaml`. Groß ist die passive Seite; so steht Klein nie mit einem Dataset da, das Groß noch ablehnt (`not_in_mirror_conf`). Bis alle drei Ebenen passen, sperrt TwinRaid Sync bzw. Probelauf mit `levels_mismatch` (4.2); das ist ein Zwischenstand, kein Fehler. Die Schritte stehen in `docs/EINRICHTUNG.md`, Abschnitt 19. Danach ist Phase 5 fertig.
 
 ### 10.3 Merkliste für Phase 7
 
@@ -1483,7 +1484,26 @@ Punkte, die bewusst nicht in Phase 5 umgesetzt werden (festgehalten am 21.10.202
 
 - **Rückweg-Test je Version (ab 1.0, festgelegt am 08.11.2026):** Jede Version ab 1.0 bekommt einen Servertest für den Rückweg auf die Vorversion. Bis dahin ist der Rückweg in `docs/EINRICHTUNG.md` nur beschrieben (Kapitel 9).
 - **Lesezeichen auf Klein aufräumen:** Der Wächter löscht eigene Lesezeichen (`#twinraid-…`), die älter sind als der älteste Snapshot des Spiegels auf Groß (`oldest_created` aus `check`, 3.7), nie das neueste je Dataset. Ein solches Lesezeichen kann nie mehr Basis eines inkrementellen Stroms sein, weil Groß den passenden Snapshot nicht mehr hat. Bis dahin bleiben alle (3.6).
+- **Einrichtungshilfe für eine neue Share:** Die Oberfläche zeigt für eine neue Share die fertigen Zeilen für `source-guard.conf` (Klein), `mirror.conf` (Groß) und `twinraid.yaml`, je mit einem Knopf zum Kopieren. Sie bleibt nur Anzeige; eintragen muss der Nutzer selbst (Konfiguration read-only, `CLAUDE.md`, Regel 2). Bis dahin gilt `docs/EINRICHTUNG.md`, Abschnitt 19 (festgehalten am 21.11.2026).
 - **Freigabe des Boot-Mediums prüfen:** TwinRaid weist darauf hin, wenn die Freigabe „flash“ auf Klein oder Groß exportiert ist (auf Klein über den Wächter, auf Groß über `guard.sh status`), wie bei den Hinweisen zu Unraid Connect. Bis dahin ist *Export: No* eine Voraussetzung der Einrichtung (Kapitel 9).
+
+### 10.4 Merkliste nach Phase 7: Sicherheitsmodi
+
+Festgehalten am 21.11.2026, nicht entschieden. Bevor daran gearbeitet wird, kommt ein eigenes Kapitel im Konzept mit einem Bedrohungsmodell je Modus.
+
+1. **Data Sync:** nur Fileshares, ohne guard.sh, Schlüssel und SSH. Offen: der Datenweg nach Groß ohne SSH (dateiweise über SMB oder NFS oder ein kleiner Empfänger) und das Ausschalten von Groß ohne SSH.
+2. **Data + Docker Sync:** eingeschränkte Sicherheit, nur im Heimnetz.
+3. **Full Sync** (Daten, Docker, VMs): eingeschränkte Sicherheit, nur im Heimnetz.
+4. **Full Mode High Security:** der heutige Stand.
+
+Für alle Modi:
+
+- Die festen Regeln (`CLAUDE.md`, „Unverhandelbare Sicherheitsregeln“) gelten in jedem Modus.
+- Modus 4 bleibt unangetastet.
+- Ein Wechsel des Modus geht ohne Neuaufbau.
+- Der aktive Modus ist in der Oberfläche immer sichtbar.
+- In den Modi 1–3 ist eine zentrale Konfiguration denkbar; Modus 4 behält die getrennten Listen auf Klein (`source-guard.conf`) und Groß (`mirror.conf`).
+- Zu prüfen: welche Container ganz appdata einbinden (statt nur ihres eigenen Ordners) und damit an die Konfiguration von TwinRaid kämen. Die Ordner über `appdata/twinraid` liegen in der Verantwortung von Unraid (6.1, „Rechte der Konfiguration“).
 
 ---
 
