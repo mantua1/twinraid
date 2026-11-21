@@ -201,7 +201,7 @@ def _section(number: int) -> str:
 
 
 def _before_sync() -> str:
-    """Abschnitte 1 bis 15 und 18 bis 22 ohne den Rückweg auf 0.5.0: Stand v0.5.1."""
+    """Abschnitte 1 bis 15 und 18 bis 23 ohne den Rückweg auf 0.5.0: Stand v0.5.1."""
     return (
         SETUP.replace(_rollback_section(), "").replace(_section(16), "").replace(_section(17), "")
     )
@@ -429,7 +429,7 @@ def test_poweroff_is_only_sent_while_a_receive_runs() -> None:
 
 
 def test_wait_for_the_run_in_test_6c_ends_by_itself() -> None:
-    with_restart = [block for block in _blocks() if "docker restart TwinRaid" in block]
+    with_restart = [b for b in _blocks(_section(16)) if "docker restart TwinRaid" in b]
     assert len(with_restart) == 1
     assert "timeout 300 sh -c 'until grep -q" in with_restart[0]
     assert '|| echo "kein Lauf geöffnet, nichts neu gestartet"' in with_restart[0]
@@ -592,4 +592,62 @@ def test_status_after_a_restart_waits_for_the_new_guard() -> None:
         # status mit dem Ergebnis nur, wenn der neue Stand da ist.
         shown = after[after.index('if [ -n "$NEU" ] && [ "$NEU" != "$ALT" ]; then') :]
         assert "source-guard.sh status" in shown.split("else")[0]
-    assert waiting == 3
+    assert waiting == 4
+
+
+# --- Echte Shares (Abschnitt 19, Konzept 10.2) ---
+
+ON_KLEIN_OR_GROSS = (f"if {ON_KLEIN}", f"if {ON_GROSS}")
+
+
+def test_real_shares_are_added_target_first() -> None:
+    """Groß ist die passive Seite: erst mirror.conf, dann source-guard.conf, dann twinraid.yaml."""
+    section = _section(19)
+    order = [
+        section.index("### 19.3 Groß: `mirror.conf`"),
+        section.index("### 19.4 Klein: `source-guard.conf`"),
+        section.index("### 19.5 Klein: `twinraid.yaml`"),
+        section.index("### 19.6 Probelauf"),
+        section.index("### 19.7 Sync"),
+        section.index("### 19.8 Prüfen mit `testdata.sh report`"),
+    ]
+    assert order == sorted(order)
+    assert "levels_mismatch" in section
+    assert "not_in_mirror_conf" in section
+
+
+def test_real_shares_only_name_isos_and_appdata() -> None:
+    """Private Namen nie ins Repo (CLAUDE.md, „Namen der echten Server“)."""
+    section = _section(19)
+    assert set(re.findall(r"mainpool/([A-Za-z0-9._-]+)", section)) <= {
+        "isos",
+        "appdata",
+        "twinraid-mirror",
+    }
+    assert set(re.findall(r"^S=(\S+)$", section, flags=re.M)) == {"isos"}
+    assert set(re.findall(r"report (?:source|target) (\S+);", section)) == {"isos"}
+    assert not re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", section)
+    assert "mantua1/twinraid/v" not in section
+
+
+def test_real_share_boxes_that_change_something_check_the_server() -> None:
+    checked = 0
+    for block in _blocks(_section(19)):
+        if not any(change in block for change in (*_CHANGES, "chmod ")):
+            continue
+        first_if = next(line for line in block.splitlines() if line.startswith("if "))
+        assert first_if.startswith(ON_KLEIN_OR_GROSS), first_if
+        # Vor der Prüfung stehen nur Zuweisungen.
+        before = block[: block.index(first_if)].splitlines()
+        assert all(re.fullmatch(r"[SC]=\S*", line) for line in before), before
+        checked += 1
+    assert checked == 4
+
+
+def test_real_share_lines_are_only_appended_when_missing() -> None:
+    appending = [block for block in _blocks(_section(19)) if '>> "$F"' in block]
+    assert len(appending) == 2
+    for block in appending:
+        assert '{ f = 1 } END { exit !f }\' "$F"; then' in block
+        # Eine letzte Zeile ohne Zeilenende würde sonst mit der neuen verklebt.
+        assert '[ -z "$(tail -c 1 "$F")" ] || echo >> "$F"' in block

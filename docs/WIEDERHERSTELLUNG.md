@@ -309,6 +309,8 @@ Erwartet: wieder `mainpool/twinraid-mirror/<Share>@twinraid-…` (es ist noch de
 
 **9. Container anlegen:** bis zur Version mit den Templates von Hand (Reiter **Docker** → **Add Container**), mit demselben Image, denselben Pfaden unter `/mnt/user/<Share>/…` und denselben Netzwerkeinstellungen wie auf Klein. Feste IP und MAC dürfen gleich sein, weil Klein aus ist. TwinRaid selbst gehört nicht dazu.
 
+> **Sync-Clients nicht starten.** Container, die mit einem Cloud-Dienst synchronisieren (etwa für Dateien, Fotos oder Kalender), legst du im Notbetrieb nicht an, oder nur mit **Autostart** aus, und startest sie nicht. Im Klon liegt der Stand des letzten Syncs: Mit ihm könnten sie Löschungen oder alte Dateien in die Cloud übertragen, und das macht kein Rückweg rückgängig. Ihre Zugangsdaten liegen gegebenenfalls im Spiegel. Erst wenn Klein wieder läuft, synchronisieren sie dort weiter.
+
 Zur Kontrolle meldet `SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync` in der Zeile `summary` jetzt `clones=1` (je Klon eins mehr); ein Sync wäre gesperrt. Der Notbetrieb läuft, bis Klein wieder da ist.
 
 ---
