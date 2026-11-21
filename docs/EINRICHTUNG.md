@@ -3285,17 +3285,30 @@ Die Ergebnisse von G12, W11, T1, D1, N1, S1, S2, Z5 und B1, falls gemacht auch T
 
 `docker/run-local.sh` bindet **nur die Datei** ein (`config.dev.yaml` bzw. die Datei aus `TWINRAID_LOCAL_CONFIG` als `/config/twinraid.yaml`), nicht den Ordner. Der Ordner `/config` im Container stammt aus dem Image (root, `drwxr-xr-x`). Den Teil mit dem Ordner gibt es in Test 0 deshalb nicht.
 
-1. **Zuerst die lokale Datei auf `644` setzen.** Linux Mint legt Dateien mit `-rw-rw-r--` an; damit erschiene der Hinweis von Anfang an. Im Repo-Hauptordner:
+Test 0 läuft mit einer **Kopie** von `config.dev.yaml` in deinem Home-Ordner, weil `config.dev.yaml` `actions.sync: false` hat und „Jetzt synchronisieren“ (Schritt 5) damit gesperrt wäre. `config.dev.yaml` selbst bleibt unverändert.
+
+1. **Kopie anlegen, den Sync darin freischalten und auf `644` setzen.** Im Repo-Hauptordner:
 
    ```bash
-   chmod 644 config.dev.yaml
-   ls -l config.dev.yaml
+   cp config.dev.yaml ~/twinraid-test0.yaml
+   sed -i 's/^  sync: false$/  sync: true/' ~/twinraid-test0.yaml
+   chmod 644 ~/twinraid-test0.yaml
+   grep -n -A5 '^actions:' ~/twinraid-test0.yaml
+   ls -l ~/twinraid-test0.yaml
    ```
 
-   Erwartet: `-rw-r--r--` mit deinem Benutzer. Mit Docker im Rootless-Modus ist dein Benutzer im Container root.
-2. `docker/run-local.sh` starten und anmelden. Kachel **Unraid Klein**: kein Hinweis zur Konfiguration (der Hinweis „Testwert aktiv“ gehört zur Simulation).
-3. In einem zweiten Terminal `chmod 666 config.dev.yaml`. Erwartet: Nach höchstens 10 Sekunden steht in der Kachel **Unraid Klein** gelb „twinraid.yaml oder der Ordner config auf Unraid Klein ist für andere beschreibbar oder gehört nicht root. …“, in den Kacheln **Unraid Groß** und **Gaming-VM** nicht.
-4. `chmod 644 config.dev.yaml`. Erwartet: Der Hinweis verschwindet nach höchstens 10 Sekunden.
+   `cp` kopiert die Datei, `sed` ändert im Abschnitt `actions` genau die Zeile `  sync: false` in `  sync: true` (die Zeile `sync_dry_run` und der Abschnitt `sync:` passen nicht auf das Muster). Statt `sed` kannst du die Zeile auch in einem Editor ändern. `chmod 644` ist nötig, weil Linux Mint neue Dateien mit `-rw-rw-r--` anlegt; damit erschiene der Hinweis von Anfang an.
+
+   Erwartet: `grep` zeigt unter `actions:` die Zeile `sync: true`, `ls -l` zeigt `-rw-r--r--` mit deinem Benutzer. Mit Docker im Rootless-Modus ist dein Benutzer im Container root.
+2. TwinRaid mit der Kopie starten und anmelden:
+
+   ```bash
+   TWINRAID_LOCAL_CONFIG=~/twinraid-test0.yaml docker/run-local.sh
+   ```
+
+   Kachel **Unraid Klein**: kein Hinweis zur Konfiguration (der Hinweis „Testwert aktiv“ gehört zur Simulation).
+3. In einem zweiten Terminal `chmod 666 ~/twinraid-test0.yaml`. Erwartet: Nach höchstens 10 Sekunden steht in der Kachel **Unraid Klein** gelb „twinraid.yaml oder der Ordner config auf Unraid Klein ist für andere beschreibbar oder gehört nicht root. …“, in den Kacheln **Unraid Groß** und **Gaming-VM** nicht.
+4. `chmod 644 ~/twinraid-test0.yaml`. Erwartet: Der Hinweis verschwindet nach höchstens 10 Sekunden.
 5. **Jetzt synchronisieren** → **Sync starten** und warten, bis der Sync „erfolgreich“ meldet. Erwartet: Die Ergebnistabelle hat die Spalte „Spiegel auf Unraid Groß nach dem Senden“, und die Zahl der Snapshots darin ist dieselbe wie bei Groß unter „Snapshots von …“.
 6. Simulation zurücksetzen (Kasten aus 17.1) und einen Fehler beim Senden einschalten:
 
