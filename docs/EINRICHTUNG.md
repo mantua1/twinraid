@@ -3413,7 +3413,7 @@ if [ -f /boot/config/twinraid/guard.sh ] && [ ! -f /boot/config/twinraid/source-
   ls -l "/boot/config/shares/$S.cfg"
   zfs list -H -o name | awk -F/ -v s="$S" '$NF == s'
   grep -n -F "/$S" /boot/config/domain.cfg
-  zpool list -o name,size,alloc,free,cap mainpool
+  zfs list -o name,used,avail mainpool
 else
   echo "Nichts getan: Das ist nicht Groß, oder der Name in S ist ungültig. Diesen Kasten im Unraid-Terminal von Groß einfügen."
 fi
@@ -3423,10 +3423,10 @@ fi
 |---|---|
 | `ls -l` | `No such file or directory`: keine Share-Konfiguration mit diesem Namen (E26) |
 | `zfs list` | nichts: auf keinem Pool ein Dataset mit diesem Namen, auch nicht unter `twinraid-mirror` |
-| `grep` | nichts, oder nur Zeilen mit `/mnt/mainpool/twinraid-mirror/<Share>`: Der ISO- und VM-Ordner des VM-Managers zeigt nicht auf die Share. Fehlt `domain.cfg`, meldet `grep` das; dann ist der VM-Manager nie eingerichtet worden. |
-| `zpool list` | Größe (`SIZE`) und Belegung (`ALLOC`) von `mainpool` auf Groß, für die Rechnung unten |
+| `grep` | nichts, oder nur Zeilen mit `/mnt/mainpool/twinraid-mirror/<Share>`: Der VM-Manager zeigt nicht auf die Share. Die häufigsten Funde sind `MEDIADIR` (Feld **Default ISO storage path**) und `VIRTIOISO` (Feld **Default Windows VirtIO driver ISO**, eine Datei, meist unter `/mnt/user/isos/`); beide stehen unter *Settings → VM Manager*. Fehlt `domain.cfg`, meldet `grep` das; dann ist der VM-Manager nie eingerichtet worden. |
+| `zfs list` (letzte Zeile) | `USED` und `AVAIL` von `mainpool` auf Groß, für die Rechnung unten |
 
-Weicht etwas ab, erst nach 13.2, Punkte 3 bis 5, beheben. Für `isos` ist der ISO-Ordner des VM-Managers der häufigste Fund (Standard `/mnt/user/isos`).
+Weicht etwas ab, erst nach 13.2, Punkte 3 bis 5, beheben. Für `isos` sind `MEDIADIR` und `VIRTIOISO` die häufigsten Funde (Standard `/mnt/user/isos`); 13.2, Punkt 3, sagt, wie man beide umstellt.
 
 **Auf Klein,** im **Unraid-Terminal von Klein** (ändert nichts):
 
@@ -3441,7 +3441,9 @@ fi
 
 Erwartet: eine Zeile `mainpool/<Share>` mit `/mnt/mainpool/<Share>` und `compression` `on` oder `lz4`. Meldet `zfs list` `dataset does not exist`, ist die Share noch kein eigenes Dataset in `mainpool` (Konzept 2); dann hier aufhören.
 
-**Platz:** `REFER` auf Klein ist ungefähr die Menge, die der erste Sync sendet. Nach dem ersten Lauf soll `mainpool` auf Groß höchstens zu 80 % belegt sein: `ALLOC` plus `REFER` darf höchstens 80 % von `SIZE` sein (Konzept 10.2). Passt das nicht, nicht weitermachen. Der Probelauf (19.6) zeigt die genaue Größe noch einmal.
+**Platz:** `REFER` auf Klein ist ungefähr die Menge, die der erste Sync sendet. Nach dem ersten Lauf soll `mainpool` auf Groß höchstens zu 80 % belegt sein: `USED` von Groß plus `REFER` von Klein darf höchstens 80 % von `USED` plus `AVAIL` von Groß sein (Konzept 10.2). Passt das nicht, nicht weitermachen. Der Probelauf (19.6) zeigt die genaue Größe noch einmal.
+
+Warum `zfs list` und nicht `zpool list`: Bei raidz zählen `SIZE` und `ALLOC` aus `zpool list` die Parität mit, `REFER` und `USED` aus `zfs list` nur die Daten. Nur `zfs list` passt deshalb zu `REFER` von Klein. Dieselbe Größe (`used` plus `available` des Pools) nimmt auch guard.sh für die Reserve (Konzept 3.7).
 
 ### 19.3 Groß: `mirror.conf`
 
