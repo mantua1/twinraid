@@ -1,6 +1,6 @@
 # TwinRaid auf Unraid einrichten
 
-> **Stand: Version 0.5.4.** Diese Version zeigt den Status beider Server und der Gaming-VM an und kann Unraid Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Status und VM laufen über SSH und `guard.sh` auf Groß; einen API-Key von Unraid braucht TwinRaid seit 0.4.3 nicht mehr. Die Aktionen werden einzeln freigeschaltet (Abschnitt 11). Seit 0.5.0 gibt es den Wächter auf Klein (Abschnitt 12), die Vorbereitung von Groß für den Spiegel (Abschnitt 13) und das eigene Dataset für TwinRaid (Abschnitt 14). Seit 0.5.1 gibt es „Nur Probelauf“ mit `guard.sh` Version 3 und `source-guard.sh` Version 2 (Abschnitt 15). **Neu in 0.5.2** ist der echte Sync der Test-Share mit `source-guard.sh` Version 3 (Abschnitt 16): Container kurz anhalten, Löschungen freigeben, Fortschritt mit Restzeit, Abbrechen und eine Sync-Historie. **Neu in 0.5.3** (Abschnitt 17): die Snapshots beider Seiten in der Kachel **Sync**, ein Dialog vor „Jetzt synchronisieren“, „Nächster Snapshot frühestens um …“, `source-guard.sh` Version 4 mit einstellbarem Abstand zwischen Snapshots, `testdata.sh report` und `bulk` und die vollständige Anleitung für den Notbetrieb in [WIEDERHERSTELLUNG.md](WIEDERHERSTELLUNG.md). **Neu in 0.5.4** (Abschnitt 18): ein gelber Hinweis, wenn `twinraid.yaml` oder der Ordner `config` für andere beschreibbar ist oder nicht root gehört, und die Ergebnistabelle eines Syncs zeigt die Spiegel nach dem Senden. **Von 0.5.0 auf 0.5.1 genügt das Update nicht:** Vorher die Schlüssel `exclude` und `protect_on_target` aus `twinraid.yaml` entfernen, sonst startet der Container nicht, und die Reihenfolge aus Abschnitt 15 einhalten. Von 0.5.1 auf 0.5.2 genügt das Update für den bisherigen Betrieb; für den Sync folgen die Skripte in der Reihenfolge aus Abschnitt 16. Von 0.5.2 auf 0.5.3 genügt das Update ebenfalls; `source-guard.sh` Version 4 kommt erst danach, in der Reihenfolge aus Abschnitt 17. Von 0.5.3 auf 0.5.4 genügt das Update; danach die Rechte nach Abschnitt 18 prüfen. Wer von 0.4.2 kommt, beginnt mit Abschnitt 19. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
+> **Stand: Version 0.5.4.** Diese Version zeigt den Status beider Server und der Gaming-VM an und kann Unraid Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Status und VM laufen über SSH und `guard.sh` auf Groß; einen API-Key von Unraid braucht TwinRaid seit 0.4.3 nicht mehr. Die Aktionen werden einzeln freigeschaltet (Abschnitt 11). Seit 0.5.0 gibt es den Wächter auf Klein (Abschnitt 12), die Vorbereitung von Groß für den Spiegel (Abschnitt 13) und das eigene Dataset für TwinRaid (Abschnitt 14). Seit 0.5.1 gibt es „Nur Probelauf“ mit `guard.sh` Version 3 und `source-guard.sh` Version 2 (Abschnitt 15). **Neu in 0.5.2** ist der echte Sync der Test-Share mit `source-guard.sh` Version 3 (Abschnitt 16): Container kurz anhalten, Löschungen freigeben, Fortschritt mit Restzeit, Abbrechen und eine Sync-Historie. **Neu in 0.5.3** (Abschnitt 17): die Snapshots beider Seiten in der Kachel **Sync**, ein Dialog vor „Jetzt synchronisieren“, „Nächster Snapshot frühestens um …“, `source-guard.sh` Version 4 mit einstellbarem Abstand zwischen Snapshots, `testdata.sh report` und `bulk` und die vollständige Anleitung für den Notbetrieb in [WIEDERHERSTELLUNG.md](WIEDERHERSTELLUNG.md). **Neu in 0.5.4** (Abschnitt 18): ein gelber Hinweis, wenn `twinraid.yaml` oder der Ordner `config` für andere beschreibbar ist oder nicht root gehört, und die Ergebnistabelle eines Syncs zeigt die Spiegel nach dem Senden. **Von 0.5.0 auf 0.5.1 genügt das Update nicht:** Vorher die Schlüssel `exclude` und `protect_on_target` aus `twinraid.yaml` entfernen, sonst startet der Container nicht, und die Reihenfolge aus Abschnitt 15 einhalten. Von 0.5.1 auf 0.5.2 genügt das Update für den bisherigen Betrieb; für den Sync folgen die Skripte in der Reihenfolge aus Abschnitt 16. Von 0.5.2 auf 0.5.3 genügt das Update ebenfalls; `source-guard.sh` Version 4 kommt erst danach, in der Reihenfolge aus Abschnitt 17. Von 0.5.3 auf 0.5.4 genügt das Update; danach die Rechte nach Abschnitt 18 prüfen. Echte Shares kommen nach Abschnitt 19 dazu. Wer von 0.4.2 kommt, beginnt mit Abschnitt 20. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
 
 Diese Anleitung führt Schritt für Schritt durch die Installation auf **Unraid Klein** (dem stromsparenden Server, der immer läuft). Am Ende:
 
@@ -37,10 +37,11 @@ Die Begriffe und Sicherheitsregeln stehen in [KONZEPT.md](KONZEPT.md).
 16. [Echter Sync der Test-Share (ab 0.5.2)](#16-echter-sync-der-test-share-ab-052)
 17. [Snapshots und Notbetrieb (ab 0.5.3)](#17-snapshots-und-notbetrieb-ab-053)
 18. [Aufräumen nach 0.5.3 (ab 0.5.4)](#18-aufräumen-nach-053-ab-054)
-19. [Von 0.4.2 auf 0.4.3 umstellen](#19-von-042-auf-043-umstellen)
-20. [Fehlerbilder und Abhilfe](#20-fehlerbilder-und-abhilfe)
-21. [Updates einspielen und Herkunft prüfen](#21-updates-einspielen-und-herkunft-prüfen)
-22. [Befehle der Admin-CLI](#22-befehle-der-admin-cli)
+19. [Echte Share hinzufügen](#19-echte-share-hinzufügen)
+20. [Von 0.4.2 auf 0.4.3 umstellen](#20-von-042-auf-043-umstellen)
+21. [Fehlerbilder und Abhilfe](#21-fehlerbilder-und-abhilfe)
+22. [Updates einspielen und Herkunft prüfen](#22-updates-einspielen-und-herkunft-prüfen)
+23. [Befehle der Admin-CLI](#23-befehle-der-admin-cli)
 
 ### So sind die Schritte zu lesen
 
@@ -139,7 +140,7 @@ drwxr-xr-x 1 root root 0 Oct 13 20:00 /mnt/user/appdata/twinraid/data
 
 Steht dort `nobody users` oder beginnt eine Zeile mit `drwxrwxrwx`, die beiden Befehle `chown` und `chmod` von oben wiederholen. Ist `config` oder `twinraid` für andere beschreibbar, startet TwinRaid zwar, könnte seine Konfiguration aber von anderen Programmen verändert bekommen; ab 0.5.4 zeigt die Kachel Klein dann einen Hinweis (Abschnitt 18). Den Ordner `twinraid` sieht TwinRaid selbst nicht; ihn prüft nur dieser Befehl.
 
-> **Vorsicht mit „New Permissions“ und „Docker Safe New Perms“.** Das Unraid-Werkzeug *Tools → New Permissions* und *Docker Safe New Perms* aus dem Plugin *Fix Common Problems* setzen Besitzer und Rechte auf `nobody:users` und Schreibrechte für alle zurück. *New Permissions* tut das für alle gewählten Shares und Datenträger, auch für `appdata`. *Docker Safe New Perms* lässt `appdata` normalerweise aus, aber nur, solange es in seinen Einstellungen ausgenommen ist. Erwischt eines der Werkzeuge den Datenordner von TwinRaid, startet der Container danach nicht mehr. Wie du das reparierst, steht in Abschnitt 20 unter „Rechte des Datenordners zurückgesetzt“.
+> **Vorsicht mit „New Permissions“ und „Docker Safe New Perms“.** Das Unraid-Werkzeug *Tools → New Permissions* und *Docker Safe New Perms* aus dem Plugin *Fix Common Problems* setzen Besitzer und Rechte auf `nobody:users` und Schreibrechte für alle zurück. *New Permissions* tut das für alle gewählten Shares und Datenträger, auch für `appdata`. *Docker Safe New Perms* lässt `appdata` normalerweise aus, aber nur, solange es in seinen Einstellungen ausgenommen ist. Erwischt eines der Werkzeuge den Datenordner von TwinRaid, startet der Container danach nicht mehr. Wie du das reparierst, steht in Abschnitt 21 unter „Rechte des Datenordners zurückgesetzt“.
 
 > **Hinweis zu `appdata`:** TwinRaid speichert eine kleine SQLite-Datenbank. Am zuverlässigsten liegt `appdata` auf einem Pool (z. B. Cache) mit der Share-Einstellung *Exclusive access*. Bei den Unraid-Standardeinstellungen ist das meist schon so.
 
@@ -184,7 +185,7 @@ chmod 644 /mnt/user/appdata/twinraid/config/twinraid.yaml
 ls -l /mnt/user/appdata/twinraid/config/twinraid.yaml
 ```
 
-Erwartet: Die Zeile beginnt mit `-rw-r--r--` und enthält `root root`. `nano` behält die Rechte der Datei; wer sie aber durch eine neue ersetzt (etwa mit `….neu` und `mv`), bekommt im Unraid-Terminal `-rw-rw-rw-`, und andere Programme auf Klein könnten die Konfiguration ändern. Ab 0.5.4 zeigt die Kachel Klein das als gelben Hinweis (Abschnitt 20, Fehlerbilder).
+Erwartet: Die Zeile beginnt mit `-rw-r--r--` und enthält `root root`. `nano` behält die Rechte der Datei; wer sie aber durch eine neue ersetzt (etwa mit `….neu` und `mv`), bekommt im Unraid-Terminal `-rw-rw-rw-`, und andere Programme auf Klein könnten die Konfiguration ändern. Ab 0.5.4 zeigt die Kachel Klein das als gelben Hinweis (Abschnitt 21, Fehlerbilder).
 
 > **Welche Netze eintragen?** Eine Router-Firewall wie die von UniFi filtert nur Verkehr **zwischen** Netzen, nicht **innerhalb** eines Netzes. Im Server-Netz, in dem TwinRaid selbst steht, stehen auch andere Container mit eigener IP und VMs direkt daneben. Die Router-Firewall sieht deren Zugriffe auf TwinRaid gar nicht. Trag im Server-Netz deshalb **nur einzelne Geräte als `/32`** ein, die TwinRaid wirklich aufrufen sollen (z. B. deinen Admin-PC). Andere Netze wie das Client-Netz kannst du **ganz** eintragen, weil dort die Firewall-Regel aus Schritt 6 den Zugriff regelt.
 >
@@ -234,7 +235,7 @@ Die zusätzlichen Docker-Parameter (*Extra Parameters*, nur in der *Advanced Vie
 **5.1 Log ansehen:** Reiter **Docker** → Symbol *TwinRaid* → **Logs**. Du solltest unter anderem sehen:
 
 - einen deutlichen Hinweis **SIMULATION MODE ACTIVE**,
-- `TLS address: 192.168.10.20 (detected on eth0)` mit deiner festen IP. Steht hier eine andere Adresse oder eine Warnung **PROBABLY THE WRONG NETWORK TYPE**, ist im Template nicht `Custom: br0` gewählt (siehe Abschnitt 20).
+- `TLS address: 192.168.10.20 (detected on eth0)` mit deiner festen IP. Steht hier eine andere Adresse oder eine Warnung **PROBABLY THE WRONG NETWORK TYPE**, ist im Template nicht `Custom: br0` gewählt (siehe Abschnitt 21).
 - `Generated the TwinRaid CA. Install its certificate once on your devices.`
 - `TLS CA SHA-256 fingerprint: …` und `TLS CA SHA-1 fingerprint (shown by Windows): …`
 - `No password is set. Run inside the container: twinraid-admin set-password`
@@ -270,7 +271,7 @@ Lass dieses Fenster offen oder notiere die Werte unter *CA certificate*. Du brau
 3. Den Befehl aus 1. wiederholen. Die MAC muss **gleich** geblieben sein.
 4. Zusätzlich einmal **Restart** (Symbol *TwinRaid* → **Restart**) und erneut vergleichen.
 
-Hat sich die MAC geändert, ist das Feld **Fixed MAC address** leer oder die Unraid-Version älter als 7.3. Ohne feste MAC vergibt Docker bei jedem Start eine neue. Wiederhole den Vergleich nach dem ersten echten Update (Abschnitt 21).
+Hat sich die MAC geändert, ist das Feld **Fixed MAC address** leer oder die Unraid-Version älter als 7.3. Ohne feste MAC vergibt Docker bei jedem Start eine neue. Wiederhole den Vergleich nach dem ersten echten Update (Abschnitt 22).
 
 ---
 
@@ -651,7 +652,7 @@ Alle Aktionen außer Wecken laufen über den Key „power“. Deshalb kommt er v
 | Ausgabe | `This host key was already confirmed.`, `OK: guard.sh answers (twinraid-guard 3 status ok).`, `OK: guard.sh answers (twinraid-guard 3 power ok).` und ab 0.4.4 `TwinRaid connects with the key 'status' right away.` |
 | Unraid Groß | nichts passiert; der Test verändert nichts |
 
-Meldet der Befehl einen Fehler, steht die Abhilfe dabei, zum Beispiel bei abgelehntem Key (`Users → root`), ausgeschaltetem SSH oder fehlendem `guard.sh`. Siehe auch Abschnitt 20.
+Meldet der Befehl einen Fehler, steht die Abhilfe dabei, zum Beispiel bei abgelehntem Key (`Users → root`), ausgeschaltetem SSH oder fehlendem `guard.sh`. Siehe auch Abschnitt 21.
 
 ### 11.7 Test 4: VM starten, herunterfahren und erzwingen
 
@@ -965,7 +966,7 @@ Dieser Test zeigt, dass Unraid einen leeren Pfad im Template auslässt und Docke
    ```
 
    Erwartet: `No such file or directory`.
-2. TwinRaid aktualisieren: Reiter **Docker** → bei *TwinRaid* **update ready** → **Update** (Abschnitt 21).
+2. TwinRaid aktualisieren: Reiter **Docker** → bei *TwinRaid* **update ready** → **Update** (Abschnitt 22).
 3. **Die zwei Einträge leer anlegen.** Wer TwinRaid neu installiert (Abschnitt 4), hat sie schon im Template; dann bei Punkt 4 weiter. Wer von 0.4.x kommt, ergänzt sie einmal von Hand, weil Unraid ein vorhandenes Template beim Update nicht erweitert: Reiter **Docker** → Symbol *TwinRaid* → **Edit** → unten **Add another Path, Port, Variable, Label or Device**:
 
    | Feld | Auftragsdatei | Status |
@@ -1522,7 +1523,7 @@ stat -c '%U:%G %a %n' \
 | `…/in/request` | `root:root 600` | Auftragsdatei des Wächters |
 | `…/state` | `root:root 755` | Status des Wächters |
 
-Weicht etwas ab, erst beheben (bei `data` und `secrets`: Abschnitt 20, „Rechte des Datenordners zurückgesetzt“).
+Weicht etwas ab, erst beheben (bei `data` und `secrets`: Abschnitt 21, „Rechte des Datenordners zurückgesetzt“).
 
 - **Gruppe von `data/secrets`:** Sie bleibt vom Anlegen im Container und erscheint auf dem Host oft als `UNKNOWN` (10001). Das ist unbedenklich; es zählen nur der Besitzer root und die Rechte `700`.
 - **`config` mit `777`:** Das funktioniert, richtig ist aber `755`. Unraid setzt `appdata` oft auf `777`, zum Beispiel über *New Permissions*. Korrigieren mit `chmod 755 /mnt/user/appdata/twinraid/config`.
@@ -1975,7 +1976,7 @@ Vor `vm-start` prüft `guard.sh`, ob genug Arbeitsspeicher frei ist. Der Test ze
 
 ### 15.13 Abschluss
 
-Die Ergebnisse von G10, K1, W9, 1, 2, 2b bis 2e, G8 und M1 bitte im Pull Request festhalten. `actions.sync_dry_run` kann eingeschaltet bleiben; der Probelauf schreibt nie nach Groß. Die Simulation ohne echte Server zeigt dasselbe: **Nur Probelauf** in der Kachel **Sync** und `twinraid-admin mock-fault` mit den Namen aus Abschnitt 22.
+Die Ergebnisse von G10, K1, W9, 1, 2, 2b bis 2e, G8 und M1 bitte im Pull Request festhalten. `actions.sync_dry_run` kann eingeschaltet bleiben; der Probelauf schreibt nie nach Groß. Die Simulation ohne echte Server zeigt dasselbe: **Nur Probelauf** in der Kachel **Sync** und `twinraid-admin mock-fault` mit den Namen aus Abschnitt 23.
 
 ---
 
@@ -2710,7 +2711,7 @@ Erwartet: kein Snapshot älter als 30 Tage, die drei neuesten immer da; im Syslo
 
 ### 16.19 Abschluss
 
-Die Ergebnisse von G11, W10, 3, 3b, 4, A1, 5a, 5c, 5e, 6a bis 6d, 7, 5d, 8a und 8b, falls gemacht auch A2, 8c, M1 und 5b, bitte im Pull Request festhalten, A3 später. `actions.sync` kann eingeschaltet bleiben, ebenso `stop_containers: true`. Bevor eine echte Share dazukommt, gilt die Merkliste aus dem Konzept (10.2). Die Simulation ohne echte Server zeigt dasselbe: **Jetzt synchronisieren** in der Kachel **Sync** und `twinraid-admin mock-fault` mit den Namen aus Abschnitt 22.
+Die Ergebnisse von G11, W10, 3, 3b, 4, A1, 5a, 5c, 5e, 6a bis 6d, 7, 5d, 8a und 8b, falls gemacht auch A2, 8c, M1 und 5b, bitte im Pull Request festhalten, A3 später. `actions.sync` kann eingeschaltet bleiben, ebenso `stop_containers: true`. Bevor eine echte Share dazukommt, gilt die Merkliste aus dem Konzept (10.2). Die Simulation ohne echte Server zeigt dasselbe: **Jetzt synchronisieren** in der Kachel **Sync** und `twinraid-admin mock-fault` mit den Namen aus Abschnitt 23.
 
 ---
 
@@ -3361,7 +3362,242 @@ Die Ergebnisse von Test 0 und dem Rauchtest bitte im Pull Request festhalten, wi
 
 ---
 
-## 19. Von 0.4.2 auf 0.4.3 umstellen
+## 19. Echte Share hinzufügen
+
+Nach den Tests mit der Test-Share kommen die echten Shares dazu, **eine nach der anderen**: zuerst `isos`, `appdata` zuletzt. Jede Share braucht dieselben drei Ebenen wie die Test-Share (Konzept 4.3): eine Zeile `mirror` in `mirror.conf` auf Groß, eine Zeile `dataset` in `source-guard.conf` auf Klein und einen Eintrag in `sync.shares` in `twinraid.yaml`. Am Code ändert sich dafür nichts.
+
+**Reihenfolge je Share:** erst Groß, dann Klein, dann `twinraid.yaml`. Groß ist die passive Seite; so steht Klein nie mit einem Dataset da, das Groß noch ablehnt (`not_in_mirror_conf`). Bis alle drei Ebenen passen, sperrt TwinRaid den Sync und teils den Probelauf mit „sync.shares in twinraid.yaml passt nicht zu den Zeilen dataset …“ (`levels_mismatch`). **Das ist ein Zwischenstand, kein Fehler;** was TwinRaid nach jedem Schritt zeigt, steht dabei. Zwischen 19.3 und 19.5 keinen Sync starten.
+
+In den Kästen steht der Name der Share in der ersten Zeile, hier am Beispiel `S=isos`. Für eine andere Share nur diese Zeile ändern. Die Namen deiner Shares (außer `isos` und `appdata`) und deiner Container gehören nicht in einen PR; dort heißen sie „Share 2“ bzw. „Container 1“.
+
+**Testumfang (CLAUDE.md, „Testumfang“):** je Share einmal genau die Schritte 19.2 bis 19.8, für appdata vorher 19.1, nichts darüber hinaus. Die Tests 0 bis 8 werden nicht wiederholt.
+
+| Schritt | Warum die CI ihn nicht abdeckt |
+|---|---|
+| 19.1 Vor appdata | Die CI kennt die echten Container in appdata, ihre Dateien und das eigene Dataset von TwinRaid auf Klein nicht. |
+| 19.2 Vorprüfung | Share-Konfigurationen, Pools und VM-Manager von Groß und die echten Größen gibt es nur auf den Servern. |
+| 19.3 bis 19.5 Drei Ebenen | Die CI prüft die Regeln mit Testnamen; ob die echten Dateien richtig ergänzt sind, zeigt nur der Lauf. |
+| 19.6 Probelauf | erste Zählung und Größe der echten Share, Platz auf Groß |
+| 19.7 Sync | echte Daten in voller Menge und, mit Containern, die echte Erlaubnisliste |
+| 19.8 `report` | Hold, Lesezeichen, feste Werte und Syslog auf den echten Servern für dieses Dataset |
+
+### 19.1 Nur für appdata: vorher prüfen
+
+1. **Test Z5 ist bestanden** (17.10). Vor der ersten Share mit Containern im Notbetrieb ist er Pflicht (Konzept 10.2); für `isos` nicht.
+2. **Eigenes Dataset von TwinRaid** (Test Z4, Abschnitt 14), im **Unraid-Terminal von Klein**:
+
+   ```bash
+   zfs list -r -o name,mountpoint mainpool/appdata
+   bash /boot/config/twinraid/source-guard.sh status | grep -o '"self_dataset":"[a-z_]*"'
+   ```
+
+   Erwartet: eine Zeile `mainpool/appdata/twinraid  /mnt/mainpool/appdata/twinraid` und `"self_dataset":"found"`. Weitere Zeilen unter `mainpool/appdata` können Namen deiner Container enthalten; sie gehören nicht in den PR. Sonst erst Abschnitt 14.
+3. **setuid- und Gerätedateien:** die Suche aus [WIEDERHERSTELLUNG.md](WIEDERHERSTELLUNG.md#vor-dem-ersten-echten-spiegel-von-appdata), „Vor dem ersten echten Spiegel von appdata“.
+4. **Erlaubnisliste:** Alle Container, die in appdata schreiben, gehören in `allow` (19.4); nur sie hält der Wächter für den Snapshot an. Diese Liste zeigt die Container, die einen Ordner aus appdata einbinden; sie ändert nichts:
+
+   ```bash
+   for c in $(docker ps -a --format '{{.Names}}'); do
+     docker inspect --type container --format '{{range .Mounts}}{{println .Source}}{{end}}' -- "$c" | grep -q -E '^/mnt/(user|mainpool)/appdata(/|$)' && echo "$c"
+   done
+   ```
+
+   TwinRaid steht auch in der Liste; es kommt nie in `allow` (der Wächter meldet sonst `allow_contains_twinraid`). Ein Container, den du nicht anhalten willst, bleibt draußen oder steht in `never_stop` in `twinraid.yaml`; sein Stand im Snapshot ist dann nur absturzkonsistent. `stop_containers` steht seit 16.10 auf `true`. Mit vielen Containern dauert das Anhalten länger: Jeder hat bis zu `stop_timeout_seconds` (60 s), und ein Lauf darf höchstens `max_stop_minutes` (20 min) dauern. Container, die mit einem Cloud-Dienst synchronisieren, startest du im Notbetrieb nicht ([WIEDERHERSTELLUNG.md](WIEDERHERSTELLUNG.md#notbetrieb-starten), Schritt 9).
+
+### 19.2 Vorprüfung auf Groß und Platz
+
+**Auf Groß,** im **Unraid-Terminal von Groß** (ändert nichts):
+
+```bash
+S=isos
+if [ -f /boot/config/twinraid/guard.sh ] && [ ! -f /boot/config/twinraid/source-guard.sh ] && [[ "$S" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+  ls -l "/boot/config/shares/$S.cfg"
+  zfs list -H -o name | awk -F/ -v s="$S" '$NF == s'
+  grep -n -F "/$S" /boot/config/domain.cfg
+  zpool list -o name,size,alloc,free,cap mainpool
+else
+  echo "Nichts getan: Das ist nicht Groß, oder der Name in S ist ungültig. Diesen Kasten im Unraid-Terminal von Groß einfügen."
+fi
+```
+
+| Zeile | Erwartet |
+|---|---|
+| `ls -l` | `No such file or directory`: keine Share-Konfiguration mit diesem Namen (E26) |
+| `zfs list` | nichts: auf keinem Pool ein Dataset mit diesem Namen, auch nicht unter `twinraid-mirror` |
+| `grep` | nichts, oder nur Zeilen mit `/mnt/mainpool/twinraid-mirror/<Share>`: Der ISO- und VM-Ordner des VM-Managers zeigt nicht auf die Share. Fehlt `domain.cfg`, meldet `grep` das; dann ist der VM-Manager nie eingerichtet worden. |
+| `zpool list` | Größe (`SIZE`) und Belegung (`ALLOC`) von `mainpool` auf Groß, für die Rechnung unten |
+
+Weicht etwas ab, erst nach 13.2, Punkte 3 bis 5, beheben. Für `isos` ist der ISO-Ordner des VM-Managers der häufigste Fund (Standard `/mnt/user/isos`).
+
+**Auf Klein,** im **Unraid-Terminal von Klein** (ändert nichts):
+
+```bash
+S=isos
+if [ -f /boot/config/twinraid/source-guard.sh ] && [ ! -f /boot/config/twinraid/guard.sh ] && [[ "$S" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+  zfs list -o name,used,refer,compression,mountpoint "mainpool/$S"
+else
+  echo "Nichts getan: Das ist nicht Klein, oder der Name in S ist ungültig. Diesen Kasten im Unraid-Terminal von Klein einfügen."
+fi
+```
+
+Erwartet: eine Zeile `mainpool/<Share>` mit `/mnt/mainpool/<Share>` und `compression` `on` oder `lz4`. Meldet `zfs list` `dataset does not exist`, ist die Share noch kein eigenes Dataset in `mainpool` (Konzept 2); dann hier aufhören.
+
+**Platz:** `REFER` auf Klein ist ungefähr die Menge, die der erste Sync sendet. Nach dem ersten Lauf soll `mainpool` auf Groß höchstens zu 80 % belegt sein: `ALLOC` plus `REFER` darf höchstens 80 % von `SIZE` sein (Konzept 10.2). Passt das nicht, nicht weitermachen. Der Probelauf (19.6) zeigt die genaue Größe noch einmal.
+
+### 19.3 Groß: `mirror.conf`
+
+Im **Unraid-Terminal von Groß**. Der Kasten hängt die Zeile nur an, wenn sie fehlt, und fragt danach `check`:
+
+```bash
+S=isos
+if [ -f /boot/config/twinraid/guard.sh ] && [ ! -f /boot/config/twinraid/source-guard.sh ] && [[ "$S" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+  F=/boot/config/twinraid/mirror.conf
+  if awk -v s="$S" '$1 == "mirror" && $2 == s { f = 1 } END { exit !f }' "$F"; then
+    echo "mirror $S steht schon in mirror.conf"
+  else
+    [ -z "$(tail -c 1 "$F")" ] || echo >> "$F"
+    printf 'mirror %s\n' "$S" >> "$F"
+    echo "mirror $S angehängt"
+  fi
+  grep -n '^mirror ' "$F"
+  SSH_ORIGINAL_COMMAND=check bash /boot/config/twinraid/guard.sh sync | awk -v s="$S" '($1 == "mirror" && $2 == s) || $1 == "summary"'
+else
+  echo "Nichts getan: Das ist nicht Groß, oder der Name in S ist ungültig. Diesen Kasten im Unraid-Terminal von Groß einfügen."
+fi
+```
+
+Erwartet: `mirror <Share> angehängt` (beim zweiten Mal `… steht schon …`), die Zeilen `mirror` mit der neuen am Ende, dann `mirror <Share> state=absent props=- count=0 …` und `summary root=ok conf=ok deleg=ok receive=idle clones=0 …`. Steht dort `conf=invalid`, ist eine Zeile in `mirror.conf` fehlerhaft; das Syslog von Groß nennt ihre Nummer (`grep twinraid-guard /var/log/syslog | tail -n 3`).
+
+**TwinRaid zeigt danach:** nichts Neues. `mirror.conf` kennt TwinRaid nur aus dem `check` des nächsten Probelaufs oder Syncs. Liefe jetzt ein Sync der übrigen Shares, wäre danach **Jetzt synchronisieren** bis zum Ende von 19.6 grau (`levels_mismatch`); deshalb gleich mit 19.4 weitermachen.
+
+### 19.4 Klein: `source-guard.conf` und Neustart des Wächters
+
+Im **Unraid-Terminal von Klein**. In `C=( )` stehen die Container, die in die Share schreiben, durch Leerzeichen getrennt, etwa `C=(container-a container-b)`; schreibt keiner hinein (bei `isos` meist so), bleibt `C=()`. Der Kasten hängt `dataset` und jedes `allow` nur an, wenn die Zeile fehlt, und prüft danach die Datei:
+
+```bash
+S=isos
+C=()
+if [ -f /boot/config/twinraid/source-guard.sh ] && [ ! -f /boot/config/twinraid/guard.sh ] && [[ "$S" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+  F=/boot/config/twinraid/source-guard.conf
+  add_line() {
+    if awk -v k="$1" -v v="$2" '$1 == k && $2 == v { f = 1 } END { exit !f }' "$F"; then
+      echo "$1 $2 steht schon in source-guard.conf"
+    else
+      [ -z "$(tail -c 1 "$F")" ] || echo >> "$F"
+      printf '%s %s\n' "$1" "$2" >> "$F"
+      echo "$1 $2 angehängt"
+    fi
+  }
+  add_line dataset "$S"
+  for c in "${C[@]}"; do
+    if [[ "$c" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]]; then add_line allow "$c"; else echo "Kein gültiger Container-Name, übersprungen: $c"; fi
+  done
+  grep -n -E '^(dataset|allow) ' "$F"
+  bash /boot/config/twinraid/source-guard.sh check-config
+else
+  echo "Nichts getan: Das ist nicht Klein, oder der Name in S ist ungültig. Diesen Kasten im Unraid-Terminal von Klein einfügen."
+fi
+```
+
+Erwartet: `dataset <Share> angehängt`, je Container `allow … angehängt`, die Zeilen `dataset` und `allow` und zum Schluss `Konfiguration in Ordnung: … Container freigegeben, … Datasets.` mit einem Dataset mehr als vorher. Meldet `check-config` einen Fehler, die genannte Zeile mit `nano /boot/config/twinraid/source-guard.conf` korrigieren und den Kasten wiederholen; der Wächter läuft bis zum Neustart mit der alten Datei weiter.
+
+Dann den Wächter neu starten. Der Kasten tut das nur, wenn kein Lauf und kein Job offen ist, denn `restart` bräche eine Übertragung ab:
+
+```bash
+if [ -f /boot/config/twinraid/source-guard.sh ] && [ ! -f /boot/config/twinraid/guard.sh ]; then
+  ST=$(bash /boot/config/twinraid/source-guard.sh status)
+  if printf '%s' "$ST" | grep -q '"run":null' && printf '%s' "$ST" | grep -q -E '"job":(null|\{"id":[0-9]+,"state":"(closed|done|failed)")'; then
+    ALT=$(printf '%s' "$ST" | grep -o '"started_at":[0-9]*')
+    bash /boot/config/twinraid/source-guard.sh restart
+    for i in $(seq 20); do
+      NEU=$(bash /boot/config/twinraid/source-guard.sh status | grep -o '"started_at":[0-9]*')
+      [ -n "$NEU" ] && [ "$NEU" != "$ALT" ] && break
+      sleep 1
+    done
+    if [ -n "$NEU" ] && [ "$NEU" != "$ALT" ]; then
+      bash /boot/config/twinraid/source-guard.sh status | grep -o -E '"protocol":[0-9]+|"version":[0-9]+|"error":(null|"[a-z_]+")'
+    else
+      echo "Noch kein neuer Status nach 20 s; siehe den Text unter dem Kasten."
+    fi
+  else
+    echo "Nicht neu gestartet: Ein Lauf oder ein Job ist offen. Warten und den Kasten wiederholen."
+  fi
+else
+  echo "Nichts getan: Das ist nicht Klein. Diesen Kasten im Unraid-Terminal von Klein einfügen."
+fi
+```
+
+Erwartet: `Der Wächter wurde gestartet.`, dann `"protocol":3`, `"version":4` und `"error":null`. Meldet er „Noch kein neuer Status“, in einer Minute `bash /boot/config/twinraid/source-guard.sh status | grep -o '"error":[a-z_"]*'` einfügen.
+
+**TwinRaid zeigt danach** (nach höchstens 5 Sekunden):
+
+| Wo | Erwartet |
+|---|---|
+| Kachel **Unraid Klein** | die neue Share in der ZFS-Zeile, kein gelber Hinweis zu ihr; bei appdata kein Hinweis zum eigenen Dataset |
+| Kachel **Sync** | **Nur Probelauf** und **Jetzt synchronisieren** grau: „sync.shares in twinraid.yaml passt nicht zu den Zeilen dataset in source-guard.conf auf …“. Erwartet, bis 19.5 fertig ist. |
+| *Einstellungen* → **Spiegel** | die neue Share mit `twinraid.yaml` „nein“, Klein „ja“ und Groß „nein“ |
+
+### 19.5 Klein: `twinraid.yaml`
+
+Nur, wenn kein Sync läuft (Kachel **Sync**). Im **Unraid-Terminal von Klein** `nano /mnt/user/appdata/twinraid/config/twinraid.yaml`. Unter `sync:` → `shares:` eine Zeile mit dem Namen ergänzen, genauso eingerückt wie die vorhandenen, etwa `    - isos`. Speichern mit `Strg+O`, `Enter`, beenden mit `Strg+X`. Dann Rechte prüfen und TwinRaid neu starten:
+
+```bash
+if [ -f /boot/config/twinraid/source-guard.sh ] && [ ! -f /boot/config/twinraid/guard.sh ]; then
+  chmod 644 /mnt/user/appdata/twinraid/config/twinraid.yaml
+  ls -l /mnt/user/appdata/twinraid/config/twinraid.yaml
+  grep -n -A8 '^  shares:' /mnt/user/appdata/twinraid/config/twinraid.yaml
+  docker restart TwinRaid
+else
+  echo "Nichts getan: Das ist nicht Klein. Diesen Kasten im Unraid-Terminal von Klein einfügen."
+fi
+```
+
+Erwartet: `-rw-r--r-- 1 root root …`, unter `shares:` die neue Zeile und `TwinRaid`. Gehört die Datei nicht root, zuerst `chown root:root /mnt/user/appdata/twinraid/config/twinraid.yaml` (18.2). Startet TwinRaid nicht, nennt das Log (Reiter **Docker** → *TwinRaid* → **Logs**) die Zeile; meist stimmt die Einrückung nicht.
+
+**TwinRaid zeigt danach:** Die Shares-Zeile der Kachel **Sync** nennt die neue Share; **Nur Probelauf** ist frei. **Jetzt synchronisieren** bleibt grau mit demselben Text wie in 19.4, bis der Probelauf gelaufen ist: TwinRaid vergleicht den Sync auch mit den Spiegeln aus dem letzten `check`, und der kennt die neue Zeile in `mirror.conf` noch nicht. Der Text nennt nur `source-guard.conf`; welche Ebene fehlt, zeigt *Einstellungen* → **Spiegel** (Groß „nein“).
+
+### 19.6 Probelauf
+
+Kachel **Sync** → **Nur Probelauf**. Ist Groß aus, weckt TwinRaid es nur mit `actions.wake`.
+
+| Prüfen | Erwartet |
+|---|---|
+| Ergebnis | „Probelauf abgeschlossen; Senden wäre möglich.“ |
+| Bericht, Zeile der neuen Share | Modus „vollständig (erster Lauf)“, gelöscht, geändert, neu und umbenannt „nicht gezählt (erster Lauf)“, Größe ungefähr `REFER` aus 19.2, Spiegel „noch keiner“ |
+| Bericht, übrige Shares | wie sonst, inkrementell |
+| Zeile mit dem freien Platz | frei minus Größe der neuen Share ist mindestens 20 % der Größe von `mainpool` (80-%-Regel aus 19.2) |
+| *Einstellungen* → **Spiegel** | alle drei Spalten „ja“ |
+
+Meldet der Probelauf „Ein Share fehlt in mirror.conf auf …“ (`not_in_mirror_conf`), fehlt die Zeile aus 19.3 oder ist falsch geschrieben. Bei `space_low` reicht der Platz auf Groß nicht; dann die neue Share wieder aus allen drei Ebenen nehmen (umgekehrte Reihenfolge: `twinraid.yaml`, `source-guard.conf` mit Neustart, `mirror.conf`).
+
+### 19.7 Sync
+
+Nach dem Mindestabstand zwischen zwei Snapshots („Nächster Snapshot frühestens um hh:mm“) **Jetzt synchronisieren**. Der Dialog nennt die Shares und die Container, die kurz angehalten werden; mit appdata sind das die Container aus `allow`, die gerade laufen. → **Sync starten**. Der erste Lauf der neuen Share sendet alles; die Restzeit steht in der Kachel.
+
+| Prüfen | Erwartet |
+|---|---|
+| Ergebnis | „erfolgreich“; mit Containern **nicht** `container_restart_failed` |
+| Ergebnistabelle, neue Share | Modus „vollständig (erster Lauf)“, Spalte „Spiegel auf … nach dem Senden“ mit „vorhanden“ und 1 Snapshot |
+| Kachel **Sync**, „Snapshots von …“ | bei der neuen Share auf Groß 1 Snapshot |
+
+### 19.8 Prüfen mit `testdata.sh report`
+
+Im **Unraid-Terminal von Klein**:
+
+```bash
+bash /boot/config/twinraid/testdata.sh report source isos; echo "Exit: $?"
+```
+
+Im **Unraid-Terminal von Groß**:
+
+```bash
+bash /boot/config/twinraid/testdata.sh report target isos; echo "Exit: $?"
+```
+
+Statt `isos` den Namen der Share. Erwartet auf beiden Servern: nur Zeilen mit `OK` oder `INFO`, zum Schluss `Alles in Ordnung.` und `Exit: 0`. `INFO` bei den Testdaten („keine Testdaten im neuesten Snapshot, nicht geprüft“) ist in Ordnung: In einer echten Share gibt es keine Prüfliste von `testdata.sh`. Bei `ABWEICHUNG` nicht mit der nächsten Share weitermachen; die Zeile nennt den Punkt.
+
+Die Ausgabe darf für `isos` und `appdata` so in den PR. Bei einer Share mit eigenem Namen den Namen vorher durch „Share 2“ ersetzen. Danach folgt die nächste Share mit 19.2; nach appdata ist Phase 5 fertig (Konzept 10.2).
+
+## 20. Von 0.4.2 auf 0.4.3 umstellen
 
 Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API-Key mehr. Die Umstellung dauert etwa zehn Minuten. Groß sollte dabei an sein. Der Abschnitt beschreibt den Stand von 0.4.3; wer gleich auf 0.5.1 geht, bekommt in Schritt 3 `guard.sh` Version 3 und liest in Schritt 6 entsprechend `twinraid-guard 3`.
 
@@ -3378,7 +3614,7 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 
 ---
 
-## 20. Fehlerbilder und Abhilfe
+## 21. Fehlerbilder und Abhilfe
 
 | Anzeige im Dashboard | Bedeutung | Abhilfe |
 |---|---|---|
@@ -3402,7 +3638,8 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 | Probelauf oder Sync: „Auf … besteht ein Klon eines Spiegels (Notbetrieb?).“, Button grau „… laut letzter Prüfung ein Klon eines Spiegels“ | Auf Groß besteht noch ein Klon aus dem Notbetrieb; `guard.sh` lehnt jeden Empfang ab (`clone-active`) | Nach dem Rückweg [WIEDERHERSTELLUNG.md](WIEDERHERSTELLUNG.md), „Aufräumen auf Groß“; danach einen Probelauf, damit die Prüfung frisch ist |
 | Container startet nicht, Log: `exclude is no longer supported since v0.5.1` oder `protect_on_target is no longer supported since v0.5.1` | In `twinraid.yaml` stehen noch Einträge unter diesen Schlüsseln | Den Schlüssel samt Einträgen löschen (15.1), Container neu starten |
 | Log: `sync.appdata_share is ignored since v0.5.1` oder dasselbe für `max_deletions`, `exclude`, `protect_on_target` | Entfallene Schlüssel ohne Wirkung | Nur ein Hinweis; die Zeilen bei Gelegenheit löschen |
-| Button **Nur Probelauf** oder **Jetzt synchronisieren** grau: „sync.shares in twinraid.yaml passt nicht zu den Zeilen dataset …“ | Die drei Ebenen enthalten verschiedene Namen | `sync.shares` und die Zeilen `dataset` in `source-guard.conf` angleichen, dann TwinRaid bzw. `source-guard.sh restart` (15.6) |
+| Button **Nur Probelauf** oder **Jetzt synchronisieren** grau: „sync.shares in twinraid.yaml passt nicht zu den Zeilen dataset …“ | Die drei Ebenen enthalten verschiedene Namen | `sync.shares` und die Zeilen `dataset` in `source-guard.conf` angleichen, dann TwinRaid bzw. `source-guard.sh restart` (15.6). Beim Hinzufügen einer Share ist das bis zum Probelauf ein Zwischenstand (19.3 bis 19.6); welche Ebene fehlt, zeigt *Einstellungen* → **Spiegel** |
+| Probelauf: „Ein Share fehlt in mirror.conf auf …“ | Die Zeile `mirror` für die Share fehlt in `mirror.conf` auf Groß oder ist falsch geschrieben | Zeile nach 19.3 ergänzen, dann erneut **Nur Probelauf** |
 | Button **Nur Probelauf** oder **Jetzt synchronisieren** grau: „der Wächter … ist nicht aktiv oder ZFS ist dort nicht verfügbar“ | Wächter nicht aktiv, oder `mainpool` ist noch nicht da | Kachel Klein ansehen; kurz nach einem Start von Klein normal |
 | Probelauf: „Der Zielserver hat die Prüfung (check) nicht beantwortet.“ | Der Grund steht dabei: Key „sync“ fehlt, Hostkey nicht bestätigt, Key abgelehnt, SSH nicht erreichbar oder `guard.sh` zu alt | Test K1 (15.3) nachholen. Key abgelehnt: Zeile aus `init-key` auf Groß prüfen (`from=` muss die IP des Hosts Klein sein, nicht die von TwinRaid) |
 | Probelauf: „Die Rechte für den Empfang (zfs allow) … stimmen nicht“ | `zfs allow mainpool/twinraid-mirror` weicht von 15.3 ab | Delegation wie in 15.3 herstellen; mit `check` prüfen (`deleg=ok`). `id-in-use` heißt: UID oder GID 64000 steht in `/etc/passwd` oder `/etc/group` |
@@ -3433,7 +3670,7 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 | VM: **Statusverbindung wird aufgebaut …** | Groß ist gerade angegangen, SSH antwortet noch nicht | Normal nach dem Start von Groß; verschwindet nach wenigen Sekunden |
 | VM: **Statusverbindung unterbrochen – neuer Versuch folgt** | Die SSH-Verbindung für den Status ist abgebrochen | TwinRaid versucht es nach 5 s, 15 s, 60 s und dann alle 5 Minuten erneut; die Uhrzeit des nächsten Versuchs steht darunter (ab 0.4.4). Bleibt die Meldung, SSH auf Groß und das Netz prüfen |
 | VM: **Nächster Versuch um …** (ab 0.4.4) | Nach einem Fehler der Statusverbindung wartet TwinRaid, damit Groß nicht mit Anmeldungen überhäuft wird: nach Abbrüchen 5 Sekunden bis 5 Minuten, nach Fehlern bei Key, Hostkey oder `guard.sh` 30 Minuten | Die Ursache aus der Meldung darüber beheben, dann `twinraid-admin trust-host-key target`. Besteht der Test mit dem Key „status“, endet die Wartezeit sofort (Test G9, 11.22) |
-| VM: **Kein SSH-Key „status“** | Schritt 10.2 bzw. Abschnitt 19, Punkt 5 fehlt | `twinraid-admin init-ssh-keys --key status` und die Zeile auf Groß eintragen |
+| VM: **Kein SSH-Key „status“** | Schritt 10.2 bzw. Abschnitt 20, Punkt 5 fehlt | `twinraid-admin init-ssh-keys --key status` und die Zeile auf Groß eintragen |
 | VM: **SSH-Hostkey des Servers nicht bestätigt** | Hostkey von Groß noch nicht bestätigt | `twinraid-admin trust-host-key target` (10.2) |
 | VM: **Der Server lehnt den SSH-Key „status“ ab** | Zeile für „status“ fehlt oder ist abgeschnitten, oder TwinRaid hat eine andere IP als in `from=` | `twinraid-admin init-ssh-keys --key status` (gibt die Zeile erneut aus) und auf Groß eintragen oder ersetzen; danach `twinraid-admin trust-host-key target`, dann verbindet sich TwinRaid sofort statt erst zur angezeigten Uhrzeit |
 | VM: **guard.sh lehnt ab** | Auf Groß liegt noch `guard.sh` Version 1 (kennt den Key „status“ nicht), oder die Zeile ruft `guard.sh` in einem anderen Modus auf | `guard.sh` wie in 9.2 neu holen; die Zeile für „status“ muss auf `guard.sh status` enden. Danach `twinraid-admin trust-host-key target` (verbindet sofort neu) |
@@ -3504,7 +3741,7 @@ Danach den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart
 
 ---
 
-## 21. Updates einspielen und Herkunft prüfen
+## 22. Updates einspielen und Herkunft prüfen
 
 - Unraid prüft regelmäßig, ob es eine neue Version gibt. Im Reiter **Docker** steht dann bei TwinRaid **update ready**. Klick auf das Symbol → **Update**. Daten und Einstellungen bleiben erhalten, die MAC dank des Felds **Fixed MAC address** ebenso. Nach dem ersten Update einmal wie in Schritt 5.4 vergleichen.
 - Von 0.4.3 auf 0.4.4 genügt das Update: `guard.sh` (Version 2), `power.conf`, die Keys und `twinraid.yaml` bleiben unverändert.
@@ -3523,7 +3760,7 @@ Steht am Ende `Verification succeeded!`, stammt das Image nachweislich aus diese
 
 ---
 
-## 22. Befehle der Admin-CLI
+## 23. Befehle der Admin-CLI
 
 Alle Befehle laufen in der **Container-Konsole**.
 
