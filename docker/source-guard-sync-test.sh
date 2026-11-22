@@ -178,11 +178,14 @@ age_mirrors() {
     fi
   done
 }
+# Ende der Pause nach einem verworfenen Snapshot abwarten (ab Version 5, im Test 2 s).
+wait_pause() { wait_status probe_allowed_at null 10 || true; }
 # Ein ganzer Lauf ohne Container: snapshot, prepare, send.
 full_run() {
   age_mirrors
   # Snapshot-Namen haben Sekunden; zwei Läufe in derselben Sekunde gäbe es auf Klein nie.
   sleep 1
+  wait_pause
   order snapshot created
   order prepare preparing
   wait_job "prepared|awaiting_confirm|failed"
@@ -241,9 +244,10 @@ sed -e "s|^readonly CONF=.*|readonly CONF=${WORK}/source-guard.conf|" \
   -e "s|^readonly SELF_DATASET=.*|readonly SELF_DATASET=${KLEIN}/appdata/twinraid|" \
   -e "s|^readonly DAY=.*|readonly DAY=1|" \
   -e "s|^readonly SNAPSHOT_MINUTE=.*|readonly SNAPSHOT_MINUTE=0|" \
+  -e "s|^readonly PROBE_PAUSE=.*|readonly PROBE_PAUSE=2|" \
   "${REPO_DIR}/host-scripts/source-guard.sh" >"${SOURCE_GUARD}"
 expect_equal "source guard: only the test values differ" \
-  "$(diff "${REPO_DIR}/host-scripts/source-guard.sh" "${SOURCE_GUARD}" | grep -c '^>' || true)" 11
+  "$(diff "${REPO_DIR}/host-scripts/source-guard.sh" "${SOURCE_GUARD}" | grep -c '^>' || true)" 12
 
 # Statt ssh: feste Form prüfen, dann guard.sh wie sshd mit command="… guard.sh sync".
 cat >"${WORK}/ssh" <<EOF
@@ -278,7 +282,7 @@ EOF
 /bin/bash "${SOURCE_GUARD}" start
 wait_status zfs.state ok 30
 expect_equal "guard active" "$(status_field error)" "null"
-expect_equal "protocol 3" "$(status_field protocol)" "3"
+expect_equal "protocol 4" "$(status_field protocol):$(status_field version)" "4:5"
 expect_equal "snapshot interval in limits" "$(status_field limits.min_snapshot_interval_minutes)" "30"
 
 echo "== Erster Lauf: vollständig"
@@ -513,6 +517,89 @@ full_run
 order send sending
 wait_job "done|failed"
 expect_equal "next run after the restart" "$(job state):$(job result)" "done:ok"
+
+echo "== Vorläufige Snapshots (ab Version 5, Konzept 3.6)"
+# Ein Probelauf: snapshot, prepare, close. Danach ist sein Snapshot auf Klein weg; Basis,
+# Holds, Lesezeichen und fremde Snapshots bleiben.
+full_run
+expect_equal "dry run ready" "$(job state):$(job send_ready)" "prepared:true"
+probe="$(job snapshot)"
+probe_id="$(job id)"
+own_list() { { own_snapshots "${KLEIN}/twinraidtest"; own_snapshots "${KLEIN}/dokumente"; } | xargs; }
+own_before="$(own_list)"
+base_before="$(status_field zfs.datasets.0.base)"
+marks_before="$(zfs list -H -t bookmark -o name,guid -- "${KLEIN}/twinraidtest" "${KLEIN}/dokumente")"
+order close closed
+# Das Verwerfen läuft in derselben Runde wie close; der Status nennt danach die Pause.
+if [[ "$(status_field probe_allowed_at)" != null ]]; then pass "pause after the dry run"; else fail "no pause after the dry run"; fi
+for name in twinraidtest dokumente; do
+  expect_equal "dry run snapshot gone on ${name}" \
+    "$(zfs list -H -o name -- "${KLEIN}/${name}@${probe}" 2>/dev/null || true)" ""
+done
+expect_contains "discard in the syslog" "$(cat "${WORK}/syslog-klein.log")" \
+  "job ${probe_id}: provisional snapshot ${probe} discarded on 2 datasets, kept on 0"
+expect_equal "own snapshots as before" "$(own_list)" \
+  "$(tr ' ' '\n' <<<"${own_before}" | grep -v -- "@${probe}\$" | xargs)"
+expect_equal "held base unchanged" "$(status_field zfs.datasets.0.base)" "${base_before}"
+expect_equal "bookmarks unchanged" \
+  "$(zfs list -H -t bookmark -o name,guid -- "${KLEIN}/twinraidtest" "${KLEIN}/dokumente")" \
+  "${marks_before}"
+expect_equal "foreign snapshot untouched by the discard" \
+  "$(value name "${KLEIN}/twinraidtest@manuell")" "${KLEIN}/twinraidtest@manuell"
+# Die Pause: snapshot sofort danach abgelehnt, nichts angelegt; danach ein Sync.
+order snapshot too_soon_probe
+expect_equal "no job from the refused snapshot" "$(job id)" "${probe_id}"
+wait_pause
+expect_equal "pause over" "$(status_field probe_allowed_at)" "null"
+age_mirrors
+sleep 1
+order snapshot created
+order prepare preparing
+wait_job "prepared|awaiting_confirm|failed"
+order send sending
+wait_job "done|failed"
+expect_equal "sync right after the dry run" "$(job state):$(job result)" "done:ok"
+sent_snap="$(job snapshot)"
+expect_equal "sent snapshot stays" "$(value name "${KLEIN}/twinraidtest@${sent_snap}")" \
+  "${KLEIN}/twinraidtest@${sent_snap}"
+
+# Löschen verweigert: Die Bedingung ändert root auf Klein zwischen snapshot und close.
+# refuse <Grund>: ruft before_<Grund> und after_<Grund> mit dem Snapshot von twinraidtest auf.
+T="${KLEIN}/twinraidtest"
+before_hold() { zfs hold fremd "$1"; }
+after_hold() { zfs release fremd "$1" && zfs destroy "$1"; }
+before_clone() { zfs clone "$1" "${KLEIN}/klon"; }
+after_clone() { zfs destroy "${KLEIN}/klon" && zfs destroy "$1"; }
+before_foreign() { zfs destroy "$1" && zfs snapshot "$1"; }
+after_foreign() { zfs destroy "$1"; }
+before_guid() { zfs destroy "$1" && zfs snapshot -o twinraid:created-by=source-guard "$1"; }
+after_guid() { zfs destroy "$1"; }
+refuse() {
+  local reason="$1" snap id
+  age_mirrors
+  sleep 1
+  wait_pause
+  order snapshot created
+  snap="$(job snapshot)"
+  id="$(job id)"
+  "before_${reason}" "${T}@${snap}"
+  order close closed
+  expect_contains "discard refused (${reason})" "$(cat "${WORK}/syslog-klein.log")" \
+    "dataset twinraidtest: provisional snapshot ${snap} kept (${reason})"
+  expect_contains "the other dataset is discarded (${reason})" "$(cat "${WORK}/syslog-klein.log")" \
+    "job ${id}: provisional snapshot ${snap} discarded on 1 datasets, kept on 1"
+  expect_equal "snapshot stays (${reason})" \
+    "$(zfs list -H -o name -- "${KLEIN}/twinraidtest@${snap}" 2>/dev/null || true)" \
+    "${KLEIN}/twinraidtest@${snap}"
+  expect_equal "dokumente discarded (${reason})" \
+    "$(zfs list -H -o name -- "${KLEIN}/dokumente@${snap}" 2>/dev/null || true)" ""
+  "after_${reason}" "${T}@${snap}"
+}
+for reason in hold clone foreign guid; do
+  refuse "${reason}"
+done
+expect_equal "every discard without -r, -R, -d or -f" \
+  "$(zpool history "${KLEIN}" | grep 'zfs destroy' | grep -c -E 'destroy -[rRdf]' || true)" "0"
 
 echo "== testdata.sh bulk mit einem echten Pool"
 # Am Ende des Tests: Die Zufallsdaten gingen sonst in die nächsten Läufe ein.

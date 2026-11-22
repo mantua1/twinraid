@@ -200,6 +200,8 @@ age_mirror() {
 prepare_run() {
   age_mirror
   sleep 1
+  # Ab Version 5: Pause von 10 s nach einem verworfenen Snapshot abwarten.
+  wait_status probe_allowed_at null 15 || true
   order snapshot created
   order prepare preparing
   wait_job "prepared|awaiting_confirm|failed"
@@ -478,8 +480,15 @@ prepare_run
 expect_contains "dry run blocked by the clone" "$(job blockers)" '"clone_active"'
 expect_equal "check counts the clone" "$(status_field target.check.summary.clones)" "1"
 order send not_ready
-order close closed
 newer="$(job snapshot)"
+# Ab Version 5 verwirft der Wächter den Snapshot eines Probelaufs. Damit wie nach einem
+# gescheiterten Senden ein eigener Snapshot neuer als die Basis bleibt (den der Rückweg
+# löscht), hält ihn der Test während close fest; der Wächter behält ihn dann (hold).
+zfs hold recovery-test "${KLEIN}/${NAME}@${newer}"
+order close closed
+wait_status job.state closed 10 || true
+sleep 1
+zfs release recovery-test "${KLEIN}/${NAME}@${newer}"
 expect_equal "an own snapshot newer than the base on Klein" \
   "$(own_snapshots "${KLEIN}/${NAME}" | tail -1)" "${KLEIN}/${NAME}@${newer}"
 expect_equal "mirror unchanged during the emergency" "$(mirror_snapshots)" "${mirror_before}"
