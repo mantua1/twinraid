@@ -2,6 +2,7 @@
 
 import copy
 import logging
+import math
 import os
 import re
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,7 @@ from twinraid.integrations.source_guard import (
     MAX_STATUS_BYTES,
     GuardObservation,
     GuardPaths,
+    GuardReport,
     HoldNoticeDelay,
     InvalidStatusError,
     RealSourceGuard,
@@ -66,6 +68,7 @@ from twinraid.shared.source_guard import (
     GuardZfsState,
 )
 from twinraid.shared.status import StatusNotice
+from twinraid.sync.coordinator import pause_allowed_at, probe_allowed_at, snapshot_allowed_at
 
 pytestmark = pytest.mark.anyio
 
@@ -578,6 +581,113 @@ async def test_evaluated_when_asked() -> None:
     assert guard.report().status.heartbeat_age_seconds == 4
     now[0] = NOW + timedelta(seconds=27)
     assert guard.report().status.state is GuardState.INACTIVE
+
+
+# --- Eine Sekunde Sicherheit (Konzept 3.6, ab v0.5.5) ---------------------------------------
+
+TIME_FIELDS = ("run_allowed_at", "snapshot_allowed_at", "probe_allowed_at")
+
+
+def _reported(accept: datetime) -> tuple[int, int]:
+    """Was der Wächter für eine Frist meldet, die er ab accept annimmt.
+
+    Er rechnet NOW + Frist - UP mit getrennt und auf ganze Sekunden gelesener Uhr und
+    Laufzeit: abwechselnd die ganze Sekunde vor accept und die danach.
+    """
+    low = math.floor(accept.timestamp())
+    return low, low + 1
+
+
+def _blocked_until(field: str, report: GuardReport, now: datetime) -> datetime | None:
+    """Bis wann der Worker Sync bzw. Probelauf sperrt und was die Kachel nennt."""
+    details = report.status.details
+    assert details is not None
+    if field == "run_allowed_at":
+        return pause_allowed_at(details.run_allowed_at, now)
+    if field == "snapshot_allowed_at":
+        return snapshot_allowed_at(details, now)
+    return probe_allowed_at(details, now)
+
+
+@pytest.mark.parametrize("field", TIME_FIELDS)
+@pytest.mark.parametrize("offset", [-0.5, 0.5])
+@pytest.mark.parametrize("first", [0, 1])
+def test_guard_times_jitter_over_a_minute(field: str, offset: float, first: int) -> None:
+    """Zwei Status im Abstand von 1 s über eine Minutengrenze, in beiden Reihenfolgen: Die
+    genannte Zeit bleibt gleich und ist frühestens dann frei, wenn der Wächter annimmt."""
+    accept = NOW + timedelta(minutes=10, seconds=offset)
+    values = _reported(accept)
+    guard = RealSourceGuard(GuardPaths(), clock=lambda: NOW)
+    shown: set[datetime | None] = set()
+    reports: list[GuardReport] = []
+    for index in range(6):
+        guard._observation = _observation(changed(field, values[(first + index) % 2]))
+        report = guard.report()
+        reports.append(report)
+        shown.add(_blocked_until(field, report, NOW))
+    assert len(shown) == 1
+    (until,) = shown
+    assert until is not None
+    assert until >= accept
+    if field != "probe_allowed_at":
+        assert until.second == 0
+    for report in reports:
+        assert _blocked_until(field, report, accept - timedelta(milliseconds=1)) is not None
+        assert _blocked_until(field, report, until) is None
+
+
+@pytest.mark.parametrize("offset", [-0.5, 0.5])
+def test_without_the_margin_the_minute_would_be_too_early(offset: float) -> None:
+    """Ohne die Sekunde läge die frühere der beiden gemeldeten Zeiten vor accept, und bei
+    offset 0.5 spränge die genannte Minute (Befund vom 22.11.2026)."""
+    accept = NOW + timedelta(minutes=10, seconds=offset)
+    raw_times = [datetime.fromtimestamp(value, UTC) for value in _reported(accept)]
+    assert min(raw_times) < accept
+    minutes = {pause_allowed_at(value, NOW) for value in raw_times}
+    assert len(minutes) == (2 if offset > 0 else 1)
+
+
+def test_guard_time_margin_follows_the_guard() -> None:
+    now = [NOW]
+    guard = RealSourceGuard(GuardPaths(), clock=lambda: now[0])
+    base = int(NOW.timestamp()) + 600
+
+    def shown(value: int | None) -> datetime | None:
+        guard._observation = _observation(changed("probe_allowed_at", value))
+        details = guard.report().status.details
+        assert details is not None
+        return details.probe_allowed_at
+
+    def at(seconds: int) -> datetime:
+        return datetime.fromtimestamp(seconds, UTC)
+
+    assert shown(base) == at(base + 1)
+    # Der Nachbarwert und bis zu 2 s darunter ändern nichts.
+    assert shown(base + 1) == at(base + 1)
+    assert shown(base - 1) == at(base + 1)
+    # Eine spätere Frist gilt sofort, eine um mehr als 2 s frühere ebenso.
+    assert shown(base + 2) == at(base + 3)
+    assert shown(base - 2) == at(base - 1)
+    # Ohne frischen Status bleibt der Wert gemerkt.
+    now[0] = NOW + timedelta(seconds=60)
+    assert guard.report().status.details is None
+    now[0] = NOW
+    assert shown(base - 3) == at(base - 1)
+    # Fehlt die Zeit im Status, ist sie vergessen.
+    assert shown(None) is None
+    assert shown(base - 3) == at(base - 2)
+    # Die drei Zeiten sind unabhängig voneinander; evaluate() selbst bleibt beim Wert des
+    # Wächters.
+    data = changed("run_allowed_at", base)
+    data["snapshot_allowed_at"] = base + 100
+    guard._observation = _observation(data)
+    details = guard.report().status.details
+    assert details is not None
+    assert details.run_allowed_at == at(base + 1)
+    assert details.snapshot_allowed_at == at(base + 101)
+    raw_details = evaluate(_observation(data), NOW).status.details
+    assert raw_details is not None
+    assert raw_details.run_allowed_at == at(base)
 
 
 # --- Feste Listen wie in source-guard.sh ---------------------------------------------------
