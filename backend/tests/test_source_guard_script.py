@@ -58,8 +58,10 @@ def test_start_mounts_tmpfs_and_creates_files(host: Host) -> None:
     assert host.private.stat().st_mode & 0o777 == 0o700
     status = host.wait_status(lambda s: s["error"] is None)
     assert host.status_file.stat().st_mode & 0o777 == 0o644
-    assert status["protocol"] == 3
-    assert status["version"] == 4
+    assert status["protocol"] == 4
+    assert status["version"] == 5
+    assert status["snapshot_allowed_at"] is None
+    assert status["probe_allowed_at"] is None
     assert len(status["instance"]) == 16
     assert status["last_seq"] == 0
     assert status["last"] is None
@@ -1032,6 +1034,7 @@ def test_without_zfs_the_guard_is_still_active(running: Host) -> None:
                 "compression": None,
                 "snapshots": None,
                 "oldest_snapshot_at": None,
+                "newest_snapshot_at": None,
                 "base": None,
                 "bookmark": None,
             }
@@ -1055,6 +1058,7 @@ def test_zfs_values_and_own_dataset(host: Host) -> None:
             "compression": "lz4",
             "snapshots": 0,
             "oldest_snapshot_at": None,
+            "newest_snapshot_at": None,
             "base": None,
             "bookmark": False,
         },
@@ -1065,6 +1069,7 @@ def test_zfs_values_and_own_dataset(host: Host) -> None:
             "compression": None,
             "snapshots": None,
             "oldest_snapshot_at": None,
+            "newest_snapshot_at": None,
             "base": None,
             "bookmark": None,
         },

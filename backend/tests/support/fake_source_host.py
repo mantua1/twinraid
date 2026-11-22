@@ -273,6 +273,13 @@ def _zfs_list(zfs: dict[str, Any], options: list[str], name: str) -> int:
     if "raw_output" in zfs and name in zfs["raw_output"]:
         _out(zfs["raw_output"][name])
         return 0
+    if options == ["-H", "-o", "name", "-t", "snapshot"]:
+        # Gibt es einen Snapshot dieses Namens, auch einen fremden (ab Version 5)?
+        if "@" not in name or name not in zfs.get("snapshots", {}):
+            _err(f"cannot open '{name}': dataset does not exist")
+            return 1
+        _out(name)
+        return 0
     if options == ["-H", "-p", "-o", "used,available"] and name == zfs["pool"]:
         _out(f"{zfs['used']}\t{zfs['available']}")
         return 0
