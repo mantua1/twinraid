@@ -87,6 +87,12 @@ DEFAULT_SNAPSHOT_INTERVAL_MINUTES = 30
 # + FRESH_SECONDS nach dem Auftrag als aktiv (Konzept 3.6, „Während docker stop“); 15 s wie
 # STOP_EXTRA im Wächter und die Wartezeit auf die Antwort.
 STOP_EXTRA_SECONDS = 15
+# Der Wächter liest Uhr und Laufzeit getrennt auf ganze Sekunden; run_allowed_at,
+# snapshot_allowed_at und probe_allowed_at schwanken deshalb zwischen zwei Status um 1 s und
+# können bis zu 1 s zu früh sein (Konzept 3.6, „Eine Sekunde Sicherheit“, ab v0.5.5).
+GUARD_TIME_MARGIN = timedelta(seconds=1)
+# So weit darunter darf der Wächter melden, ohne dass sich der aufgeschlagene Wert ändert.
+GUARD_TIME_KEEP = timedelta(seconds=2)
 
 # Zeichenregeln wie im Wächter.
 ContainerName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")]
@@ -793,6 +799,45 @@ class GuardReport:
     hold_candidates: frozenset[str] = frozenset()
 
 
+class GuardTimeMargin:
+    """1 s Sicherheit auf run_allowed_at, snapshot_allowed_at und probe_allowed_at.
+
+    Der Wächter meldet abwechselnd zwei benachbarte Sekunden, die frühere bis zu 1 s vor dem
+    Zeitpunkt, ab dem er annimmt. Der Worker rechnet 1 s auf und behält diesen Wert, solange
+    der Wächter einen Wert bis zu GUARD_TIME_KEEP darunter meldet: So scheitert ein Versuch zur
+    angezeigten Zeit nie an too_soon bzw. too_soon_probe, und die angezeigte Minute springt
+    nicht. Fehlt die Zeit im Status, vergisst er den Wert. Nur im Worker (Konzept 3.6, „Eine
+    Sekunde Sicherheit“).
+    """
+
+    def __init__(self) -> None:
+        self._kept: dict[str, datetime] = {}
+
+    def _adjust(self, name: str, value: datetime | None) -> datetime | None:
+        if value is None:
+            self._kept.pop(name, None)
+            return None
+        kept = self._kept.get(name)
+        if kept is not None and kept - GUARD_TIME_KEEP <= value <= kept:
+            return kept
+        adjusted = value + GUARD_TIME_MARGIN
+        self._kept[name] = adjusted
+        return adjusted
+
+    def apply(self, report: GuardReport) -> GuardReport:
+        """Nur ein frischer Status hat Zeiten; ohne ihn bleibt der gemerkte Wert stehen."""
+        details = report.status.details
+        if details is None:
+            return report
+        times = {
+            "run_allowed_at": self._adjust("run_allowed_at", details.run_allowed_at),
+            "snapshot_allowed_at": self._adjust("snapshot_allowed_at", details.snapshot_allowed_at),
+            "probe_allowed_at": self._adjust("probe_allowed_at", details.probe_allowed_at),
+        }
+        status = report.status.model_copy(update={"details": details.model_copy(update=times)})
+        return replace(report, status=status)
+
+
 class StopWindow:
     """Ein offener stop des Workers (Konzept 3.6, „Während docker stop“, ab v0.5.5).
 
@@ -937,10 +982,11 @@ class RealSourceGuard:
         self._observation = NOT_READ
         self._logged: str | None = None
         self._hold = HoldNoticeDelay()
+        self._times = GuardTimeMargin()
 
     def report(self) -> GuardReport:
         now = self._clock()
-        report = evaluate(self._observation, now, self._stops.since)
+        report = self._times.apply(evaluate(self._observation, now, self._stops.since))
         return with_hold_notice(report, self._hold.confirmed(report.hold_candidates, now))
 
     async def refresh(self) -> None:

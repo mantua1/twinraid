@@ -32,6 +32,7 @@ from twinraid.integrations.mocks.lab import LabTimings
 from twinraid.integrations.source_guard import (
     GuardPaths,
     GuardReport,
+    GuardTimeMargin,
     StopWindow,
     evaluate,
     read_observation,
@@ -84,14 +85,17 @@ class Later:
 
 class HostGuard:
     """Status für Verfügbarkeit und Kachel, frisch gelesen wie RealSourceGuard; mit demselben
-    offenen stop wie der Kanal (ab v0.5.5, Konzept 3.6, „Während docker stop“)."""
+    offenen stop wie der Kanal (ab v0.5.5, Konzept 3.6, „Während docker stop“) und derselben
+    Sekunde Sicherheit auf den Zeiten des Wächters („Eine Sekunde Sicherheit“)."""
 
     def __init__(self, paths: GuardPaths, stops: StopWindow | None = None) -> None:
         self._paths = paths
         self._stops = stops or StopWindow()
+        self._times = GuardTimeMargin()
 
     def report(self) -> GuardReport:
-        return evaluate(read_observation(self._paths), datetime.now(UTC), self._stops.since)
+        report = evaluate(read_observation(self._paths), datetime.now(UTC), self._stops.since)
+        return self._times.apply(report)
 
 
 def _paths(host: Host) -> HostPaths:
@@ -356,8 +360,10 @@ async def test_check_and_interval_after_a_sync(host: Host, tmp_path: Path) -> No
     status = worker.sync.snapshot()
     assert status.snapshot_allowed_at is not None
     assert status.snapshot_allowed_at.second == 0
-    # Der Wächter meldet created + 5 s; TwinRaid rundet auf die volle Minute auf.
-    assert timedelta(seconds=5) <= status.snapshot_allowed_at - created <= timedelta(seconds=65)
+    # Der Wächter meldet created + 5 s, wegen seiner getrennt gelesenen Uhr und Laufzeit um
+    # bis zu 1 s daneben; TwinRaid rechnet 1 s auf und rundet auf die volle Minute auf (Konzept
+    # 3.6, „Eine Sekunde Sicherheit“).
+    assert timedelta(seconds=5) <= status.snapshot_allowed_at - created <= timedelta(seconds=66)
     availability = worker.actions.availability(worker.monitor.current())
     assert availability[ActionName.SYNC_DRY_RUN] is ActionBlocker.SOURCE_GUARD_SNAPSHOT_TOO_SOON
     assert availability[ActionName.SYNC_START] is ActionBlocker.SOURCE_GUARD_SNAPSHOT_TOO_SOON
