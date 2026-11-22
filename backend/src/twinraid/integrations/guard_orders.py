@@ -23,6 +23,7 @@ from twinraid.integrations.source_guard import (
     GuardObservation,
     GuardPaths,
     GuardReport,
+    StopWindow,
     evaluate,
     read_observation,
 )
@@ -138,9 +139,12 @@ class RealGuardChannel:
         clock: Callable[[], datetime] = _utc_now,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        stops: StopWindow | None = None,
     ) -> None:
         self._paths = paths or GuardPaths()
         self._timings = timings or OrderTimings()
+        # Offener stop: Der Wächter gilt dann länger als aktiv (Konzept 3.6, ab v0.5.5).
+        self._stops = stops or StopWindow()
         self._clock = clock
         self._monotonic = monotonic
         self._sleep = sleep
@@ -157,7 +161,7 @@ class RealGuardChannel:
             read_observation, self._paths, self._last_heartbeat
         )
         self._last_heartbeat = observation.last_heartbeat
-        return evaluate(observation, self._clock())
+        return evaluate(observation, self._clock(), self._stops.since)
 
     async def order(
         self,
@@ -166,8 +170,12 @@ class RealGuardChannel:
         reply_seconds: float | None = None,
     ) -> GuardOrderResult:
         async with self._lock:
-            seq, instance = await self._write(order, container)
-            return await self._reply(order, seq, instance, reply_seconds)
+            try:
+                seq, instance = await self._write(order, container)
+                return await self._reply(order, seq, instance, reply_seconds)
+            finally:
+                # Offen bis zur Antwort oder bis das Warten endet, auch bei einem Abbruch.
+                self._stops.close()
 
     async def post(self, order: GuardOrder) -> None:
         async with self._lock:
@@ -188,6 +196,8 @@ class RealGuardChannel:
         if seq > MAX_SEQ:
             raise GuardOrderError(ActionOutcome.SOURCE_GUARD_LOST)
         line = order_line(seq, order, container)
+        if order is GuardOrder.STOP:
+            self._stops.open(self._clock())
         try:
             await asyncio.to_thread(write_order, self._paths.request, line)
         except OSError:

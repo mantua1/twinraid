@@ -76,6 +76,7 @@ APPDATA = "appdata"
 # Ergebnisse von snapshot, die eine eigene Bedeutung im Aktionslog haben (Konzept 5.3).
 _SNAPSHOT_OUTCOMES: dict[GuardOrderResult, ActionOutcome] = {
     GuardOrderResult.TOO_SOON: ActionOutcome.TOO_SOON,
+    GuardOrderResult.TOO_SOON_PROBE: ActionOutcome.TOO_SOON_PROBE,
     GuardOrderResult.SNAPSHOT_LOW_SPACE: ActionOutcome.SNAPSHOT_LOW_SPACE,
     GuardOrderResult.SNAPSHOT_LIMIT: ActionOutcome.SNAPSHOT_LIMIT,
 }
@@ -291,7 +292,14 @@ class SyncCoordinator:
         clones = check.summary.clones if check is not None and check.summary is not None else None
         if sync and checked and clones:
             return ActionBlocker.TARGET_CLONE_ACTIVE
-        return self._target_blocker(status)
+        target = self._target_blocker(status)
+        if target is not None:
+            return target
+        # Pause nach einem verworfenen Snapshot (ab v0.5.5) zuletzt: Ist sie der Grund, sperrt
+        # sonst nichts, und die Oberfläche darf den Button nach ihrem Ende selbst freigeben.
+        if probe_allowed_at(details, self._clock()) is not None:
+            return ActionBlocker.SOURCE_GUARD_PROBE_TOO_SOON
+        return None
 
     def _run_allowed_at(self, details: GuardDetails) -> datetime | None:
         """Ende der Pause zwischen zwei Läufen, wie die Kachel es zeigt; nur mit
@@ -345,6 +353,7 @@ class SyncCoordinator:
             history=self._history.recent(),
             preview=self._preview(report),
             snapshot_allowed_at=snapshot_allowed_at(report.status.details, self._clock()),
+            probe_allowed_at=probe_allowed_at(report.status.details, self._clock()),
         )
 
     def _preview(self, report: GuardReport) -> SyncPreview:
@@ -1027,17 +1036,38 @@ def pause_allowed_at(run_allowed_at: datetime | None, now: datetime) -> datetime
 def snapshot_allowed_at(details: GuardDetails | None, now: datetime) -> datetime | None:
     """Frühester nächster Snapshot (Konzept 3.6, „Nächster Snapshot“, ab v0.5.3).
 
-    Aus dem Job im frischen Status: Der Wächter legt ihn nur nach einem erfolgreichen
-    zfs snapshot an, und er bleibt stehen, bis der nächste ihn ersetzt. Dazu der Abstand aus
-    limits (bei Protokoll 2 fest 30 min). Kein Job, ein Zeitpunkt in der Zukunft (Uhr von
-    Klein gesprungen) oder ein schon erreichter Zeitpunkt: None, keine Sperre. Maßgeblich
-    bleibt der Wächter (too_soon).
+    Ab Protokoll 4 (v0.5.5) rechnet ihn der Wächter selbst ab dem letzten behaltenen Snapshot
+    (snapshot_allowed_at); ein verworfener Snapshot eines Probelaufs zählt nicht. Bei
+    Protokoll 3 aus dem Job im frischen Status: Der Wächter legt ihn nur nach einem
+    erfolgreichen zfs snapshot an, und er bleibt stehen, bis der nächste ihn ersetzt; dazu der
+    Abstand aus limits. Auf die volle Minute aufgerundet. Kein Zeitpunkt, einer in der Zukunft
+    (Uhr von Klein gesprungen, nur Protokoll 3) oder ein schon erreichter: None, keine Sperre.
+    Maßgeblich bleibt der Wächter (too_soon).
     """
-    if details is None or details.job is None or details.job.created_at > now:
+    if details is None:
         return None
-    interval = timedelta(minutes=details.limits.min_snapshot_interval_minutes)
-    allowed_at = _round_up_to_minute(details.job.created_at + interval)
+    if details.protocol >= 4:
+        if details.snapshot_allowed_at is None:
+            return None
+        allowed_at = _round_up_to_minute(details.snapshot_allowed_at)
+    else:
+        if details.job is None or details.job.created_at > now:
+            return None
+        interval = timedelta(minutes=details.limits.min_snapshot_interval_minutes)
+        allowed_at = _round_up_to_minute(details.job.created_at + interval)
     return allowed_at if allowed_at > now else None
+
+
+def probe_allowed_at(details: GuardDetails | None, now: datetime) -> datetime | None:
+    """Ende der Pause von 10 s nach einem verworfenen Snapshot (Protokoll 4, ab v0.5.5).
+
+    Sekundengenau, ohne Aufrunden: Die Pause ist kurz, und die Oberfläche gibt die Buttons
+    zu diesem Zeitpunkt selbst frei. None bei Protokoll 3, ohne Pause oder wenn sie vorbei
+    ist. Maßgeblich bleibt der Wächter (too_soon_probe).
+    """
+    if details is None or details.protocol < 4 or details.probe_allowed_at is None:
+        return None
+    return details.probe_allowed_at if details.probe_allowed_at > now else None
 
 
 def _seconds(moment: datetime) -> datetime:

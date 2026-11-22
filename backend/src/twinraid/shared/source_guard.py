@@ -156,6 +156,8 @@ class GuardOrderResult(StrEnum):
     DENIED_SELF = "denied_self"
     NOT_FOUND = "not_found"
     STOP_FAILED = "stop_failed"
+    # Ab Version 5: snapshot innerhalb von 10 s nach einem verworfenen Snapshot.
+    TOO_SOON_PROBE = "too_soon_probe"
     # Ab Version 2 (Konzept 3.6, „Job, Prüfen und Senden“).
     JOB_OPEN = "job_open"
     CREATED = "created"
@@ -349,6 +351,9 @@ class GuardDataset(StrictModel):
     # ein eigenes Lesezeichen da ist. None: unbekannt.
     snapshots: int | None = None
     oldest_snapshot_at: datetime | None = None
+    # Neuester eigener Snapshot: ab Protokoll 4 vom Wächter, bei Protokoll 3 der Snapshot des
+    # Jobs, solange er im Status steht (Konzept 4.1, Kachel Sync).
+    newest_snapshot_at: datetime | None = None
     base_created_at: datetime | None = None
     bookmark: bool | None = None
     # Ab v0.5.2: Die gehaltene Basis fehlt oder ist älter als der zuletzt gesendete Snapshot
@@ -451,7 +456,7 @@ class GuardLimits(StrictModel):
     heartbeat_timeout_seconds: int
     stop_timeout_seconds: int
     min_run_interval_minutes: int
-    # Ab Protokoll 3 aus source-guard.conf, bei Protokoll 2 fest 30 (Konzept 3.6).
+    # Aus source-guard.conf (ab Protokoll 3, Konzept 3.6).
     min_snapshot_interval_minutes: int
     max_deletions: int
     snapshot_keep_days: int
@@ -462,6 +467,8 @@ class GuardDetails(StrictModel):
     """Inhalt eines frischen Status (Herzschlag höchstens 30 s alt, auch bei error)."""
 
     version: int
+    # Ab v0.5.5: Protokoll 3 oder 4 (Konzept 3.6, „Protokoll 4“).
+    protocol: int = 3
     started_at: datetime
     allowed: tuple[GuardContainer, ...]
     run: GuardRun | None
@@ -482,6 +489,10 @@ class GuardDetails(StrictModel):
     target_known_host: bool = False
     target_check: GuardCheck | None = None
     job: GuardJob | None = None
+    # Ab Protokoll 4 (Wächter Version 5): Ende des Abstands ab dem letzten behaltenen Snapshot
+    # und Ende der Pause von 10 s nach einem verworfenen Snapshot; None, wenn keine gilt.
+    snapshot_allowed_at: datetime | None = None
+    probe_allowed_at: datetime | None = None
 
 
 class SourceGuardStatus(StrictModel):
@@ -499,6 +510,9 @@ class SourceGuardStatus(StrictModel):
     # Alter des Herzschlags beim Aufruf von get_status, nur bei frischem Status.
     heartbeat_age_seconds: int | None = None
     details: GuardDetails | None = None
+    # Ab v0.5.5: Ein stop des Workers ist offen; der Wächter gilt bis zu stop_timeout_seconds
+    # + 15 s + 30 s nach dem Auftrag als aktiv (Konzept 3.6, „Während docker stop“).
+    stopping: bool = False
 
 
 GUARD_NOT_READ = SourceGuardStatus(state=GuardState.INACTIVE)

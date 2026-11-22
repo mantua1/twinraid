@@ -18,6 +18,11 @@ deshalb zeigt die Kachel Klein in der Simulation immer den Hinweis „Testwert a
 Snapshots auf Klein (10 eigene, der älteste vor 6 Tagen, Basis gehalten, Lesezeichen) und
 auf Groß (20 je Spiegel, der älteste vor 29 Tagen), nach jedem Snapshot bzw. Senden einer
 mehr (Konzept 6.4).
+
+Ab v0.5.5 hat er Version 5 (Protokoll 4): Der Snapshot eines Probelaufs oder eines Laufs, der
+vor dem Senden endet, wird verworfen, danach gilt eine Pause von 10 s (guard_jobs.py). Mit
+mock-fault slow-stop braucht stop die vollen stop_timeout_seconds; währenddessen meldet der
+Status stopping wie im Modus real (Konzept 3.6, „Während docker stop“).
 """
 
 import asyncio
@@ -91,7 +96,8 @@ _ZFS = GuardZfs(
 
 def _details(started_at: datetime, **changes: object) -> GuardDetails:
     details = GuardDetails(
-        version=4,
+        version=5,
+        protocol=4,
         started_at=started_at,
         allowed=(GuardContainer(name=MOCK_CONTAINER, state=GuardContainerState.RUNNING),),
         run=None,
@@ -377,6 +383,8 @@ class MockSourceGuard:
         self._started = monotonic()
         self._started_at = clock().replace(microsecond=0)
         self._instance = secrets.token_hex(8)
+        # Ein stop läuft gerade (Anzeige „Container wird angehalten“, ab v0.5.5).
+        self._stopping = False
         self._jobs = MockJobs(
             datasets,
             (MOCK_CONTAINER,),
@@ -437,6 +445,7 @@ class MockSourceGuard:
                             compression="on",
                             snapshots=jobs.own_snapshots[name],
                             oldest_snapshot_at=jobs.oldest_own,
+                            newest_snapshot_at=jobs.newest_own,
                             base_created_at=jobs.bases.get(name),
                             bookmark=True,
                         )
@@ -455,8 +464,12 @@ class MockSourceGuard:
             limits=_LIMITS.model_copy(
                 update={"min_snapshot_interval_minutes": jobs.timings.snapshot_interval_minutes}
             ),
+            snapshot_allowed_at=jobs.snapshot_allowed_at(now),
+            probe_allowed_at=jobs.probe_allowed_at(now),
         )
         status = _active(now, self._started_at, **changes)
+        if self._stopping:
+            status = status.model_copy(update={"stopping": True})
         if self._fault_since("source-guard-lost") is not None:
             status = status.model_copy(
                 update={"state": GuardState.ERROR, "error": GuardError.STATE_LOST}
@@ -482,7 +495,14 @@ class MockSourceGuard:
         if order is GuardOrder.SNAPSHOT:
             await self._sleep(timings.snapshot_seconds)
         elif order is GuardOrder.STOP and container and self._jobs.will_stop(container):
-            await self._sleep(timings.stop_seconds)
+            seconds = timings.stop_seconds
+            if fault_flag(self._flag_dir, "slow-stop").exists():
+                seconds = float(_LIMITS.stop_timeout_seconds)
+            self._stopping = True
+            try:
+                await self._sleep(seconds)
+            finally:
+                self._stopping = False
         return self._jobs.apply(order, container)
 
     async def post(self, order: GuardOrder) -> None:

@@ -23,6 +23,7 @@ from tests.support.guard_status import (
     guard_paths,
     mount_line,
     mountinfo,
+    protocol_3,
     raw,
 )
 from twinraid.integrations.source_guard import (
@@ -33,6 +34,7 @@ from twinraid.integrations.source_guard import (
     HoldNoticeDelay,
     InvalidStatusError,
     RealSourceGuard,
+    StopWindow,
     check_mounts,
     evaluate,
     hold_missing,
@@ -151,13 +153,14 @@ def _problem(raw: bytes) -> GuardStatusProblem:
         (b'{"protocol":NaN}', GuardStatusProblem.BAD_JSON),
         ('{"name":"ä"}'.encode(), GuardStatusProblem.BAD_JSON),
         (b"[1]", GuardStatusProblem.SCHEMA),
-        # Version 1 des Wächters (TwinRaid 0.5.0) schreibt Protokoll 1.
+        # Version 1 des Wächters (TwinRaid 0.5.0) schreibt Protokoll 1, Version 2 und 3
+        # Protokoll 2; TwinRaid 0.5.5 nimmt nur 3 (Version 4) und 4 (Version 5) an.
         (b'{"protocol":1}', GuardStatusProblem.PROTOCOL_MISMATCH),
-        # Protokoll 3 ab Version 4 (v0.5.3); 4 gibt es noch nicht.
-        (b'{"protocol":4}', GuardStatusProblem.PROTOCOL_MISMATCH),
+        (b'{"protocol":2}', GuardStatusProblem.PROTOCOL_MISMATCH),
+        (b'{"protocol":5}', GuardStatusProblem.PROTOCOL_MISMATCH),
         (b'{"protocol":3}', GuardStatusProblem.SCHEMA),
+        (b'{"protocol":4}', GuardStatusProblem.SCHEMA),
         (b'{"protocol":true}', GuardStatusProblem.SCHEMA),
-        (b'{"protocol":2}', GuardStatusProblem.SCHEMA),
     ],
 )
 def test_status_syntax(raw: bytes, problem: GuardStatusProblem) -> None:
@@ -260,19 +263,11 @@ def test_schema_rejects_missing_fields_and_long_lists() -> None:
     assert _problem(raw(data)) is GuardStatusProblem.SCHEMA
 
 
-def protocol_3(interval: Any = 10) -> dict[str, Any]:  # noqa: ANN401 - beliebiger JSON-Wert
-    """Status von Version 4 (Protokoll 3) mit dem Abstand zwischen Snapshots."""
-    data = changed("protocol", 3)
-    data["version"] = 4
-    data["limits"]["min_snapshot_interval_minutes"] = interval
-    return data
-
-
 def test_protocol_3_has_the_snapshot_interval() -> None:
-    """Ab v0.5.3 (Konzept 3.6, F17): Protokoll 2 ohne Feld (fest 30 min), 3 mit Feld."""
+    """Ab v0.5.3 (Konzept 3.6, F17): der Abstand steht bei Protokoll 3 und 4 in limits."""
     assert parse_status(raw(protocol_3(5))).limits.min_snapshot_interval_minutes == 5
     assert parse_status(raw(protocol_3(1440))).limits.min_snapshot_interval_minutes == 1440
-    assert parse_status(raw(STATUS)).limits.min_snapshot_interval_minutes is None
+    assert parse_status(raw(STATUS)).limits.min_snapshot_interval_minutes == 30
 
 
 @pytest.mark.parametrize("interval", [4, 1441, None, "10", True, 10.0])
@@ -280,13 +275,31 @@ def test_protocol_3_checks_the_snapshot_interval(interval: Any) -> None:  # noqa
     assert _problem(raw(protocol_3(interval))) is GuardStatusProblem.SCHEMA
 
 
-def test_snapshot_interval_must_match_the_protocol() -> None:
-    without = protocol_3()
-    del without["limits"]["min_snapshot_interval_minutes"]
+def test_snapshot_interval_is_required() -> None:
+    for data in (protocol_3(), copy.deepcopy(STATUS)):
+        del data["limits"]["min_snapshot_interval_minutes"]
+        assert _problem(raw(data)) is GuardStatusProblem.SCHEMA
+
+
+@pytest.mark.parametrize("field", ["snapshot_allowed_at", "probe_allowed_at", "newest_snapshot_at"])
+def test_protocol_4_fields_must_match_the_protocol(field: str) -> None:
+    """Ab v0.5.5 (Konzept 3.6, „Protokoll 4“): die drei Felder nur bei 4, dort Pflicht."""
+    without = copy.deepcopy(STATUS)
+    with_field = protocol_3()
+    if field == "newest_snapshot_at":
+        del without["zfs"]["datasets"][1][field]
+        with_field["zfs"]["datasets"][0][field] = None
+    else:
+        del without[field]
+        with_field[field] = None
     assert _problem(raw(without)) is GuardStatusProblem.SCHEMA
-    with_field = copy.deepcopy(STATUS)
-    with_field["limits"]["min_snapshot_interval_minutes"] = 30
     assert _problem(raw(with_field)) is GuardStatusProblem.SCHEMA
+
+
+@pytest.mark.parametrize("value", [-1, 10**11, "1", True, 1.5])
+def test_protocol_4_checks_the_times(value: Any) -> None:  # noqa: ANN401
+    for path in ("snapshot_allowed_at", "probe_allowed_at"):
+        assert _problem(raw(changed(path, value))) is GuardStatusProblem.SCHEMA
 
 
 def test_snapshot_interval_in_the_details(tmp_path: Path) -> None:
@@ -496,7 +509,7 @@ def test_notice_for_a_test_value_of_the_snapshot_interval(interval: int, notice:
     assert (StatusNotice.SOURCE_SNAPSHOT_INTERVAL_TEST in notices) is notice
 
 
-def test_no_interval_notice_with_protocol_2() -> None:
+def test_no_interval_notice_with_the_default() -> None:
     assert (
         StatusNotice.SOURCE_SNAPSHOT_INTERVAL_TEST
         not in evaluate(_observation(STATUS), NOW).notices
@@ -660,10 +673,17 @@ def test_prepare_and_send_codes_match_the_script() -> None:
     assert results == _values(GuardDatasetResult)
 
 
-def test_details_of_protocol_2() -> None:
+def test_details_of_protocol_4() -> None:
     """Ziel, check, Job und Snapshots je Dataset kommen aus dem Status; GUIDs nicht."""
     details = evaluate(_observation(STATUS), NOW).status.details
     assert details is not None
+    assert (details.version, details.protocol) == (5, 4)
+    # Ab Protokoll 4 rechnet der Wächter beide Grenzen und nennt den neuesten Snapshot.
+    assert details.snapshot_allowed_at == datetime.fromtimestamp(HEARTBEAT + 600, UTC)
+    assert details.probe_allowed_at is None
+    assert details.zfs.datasets[0].newest_snapshot_at == datetime.fromtimestamp(
+        HEARTBEAT - 1200, UTC
+    )
     assert details.instance == "0123456789abcdef"
     assert details.last_seq == 7
     assert details.last_order is not None
@@ -834,3 +854,83 @@ async def test_real_source_guard_reports_the_hold_notice(tmp_path: Path) -> None
     assert report.status.details is not None
     flags = {d.name: d.base_hold_missing for d in report.status.details.zfs.datasets}
     assert flags == {"twinraidtest": True, "dokumente": False}
+
+
+def test_details_of_protocol_3() -> None:
+    """Protokoll 3: keine Grenzen vom Wächter; der neueste Snapshot ist der des Jobs."""
+    details = evaluate(_observation(protocol_3()), NOW).status.details
+    assert details is not None
+    assert (details.version, details.protocol) == (4, 3)
+    assert (details.snapshot_allowed_at, details.probe_allowed_at) == (None, None)
+    created = datetime.fromtimestamp(HEARTBEAT - 60, UTC)
+    assert [item.newest_snapshot_at for item in details.zfs.datasets] == [created, created]
+    without_job = protocol_3()
+    without_job["job"] = None
+    details = evaluate(_observation(without_job), NOW).status.details
+    assert details is not None
+    assert [item.newest_snapshot_at for item in details.zfs.datasets] == [None, None]
+
+
+# --- Während docker stop (ab v0.5.5, Konzept 3.6) ------------------------------------------
+
+
+def _stale(age: int, data: dict[str, Any] | None = None) -> GuardObservation:
+    return _observation(changed("heartbeat_at", int(NOW.timestamp()) - age) | (data or {}))
+
+
+@pytest.mark.parametrize(
+    ("since", "age", "state"),
+    [
+        # stop vor 50 s, Herzschlag 55 s alt (5 s vor dem Auftrag): noch aktiv.
+        (50, 55, GuardState.ACTIVE),
+        # Grenze: stop_timeout 60 s + 15 s + 30 s = 105 s nach dem Auftrag.
+        (105, 106, GuardState.ACTIVE),
+        (106, 107, GuardState.INACTIVE),
+        # Herzschlag mehr als 30 s älter als der Auftrag: der Wächter lief schon vorher nicht.
+        (10, 41, GuardState.INACTIVE),
+        (10, 40, GuardState.ACTIVE),
+    ],
+)
+def test_stop_keeps_the_guard_active(since: int, age: int, state: GuardState) -> None:
+    status = evaluate(_stale(age), NOW, NOW - timedelta(seconds=since)).status
+    assert status.state is state
+    assert status.stopping is (state is GuardState.ACTIVE)
+    if state is GuardState.ACTIVE:
+        assert status.details is not None
+        assert status.heartbeat_age_seconds == age
+
+
+def test_stop_grace_uses_the_stop_timeout_from_the_status() -> None:
+    data = changed("heartbeat_at", int(NOW.timestamp()) - 200)
+    data["limits"]["stop_timeout_seconds"] = 200
+    since = NOW - timedelta(seconds=170)
+    assert evaluate(_observation(data), NOW, since).status.state is GuardState.ACTIVE
+    assert evaluate(_stale(200), NOW, since).status.state is GuardState.INACTIVE
+
+
+def test_without_open_stop_it_stays_at_30_seconds() -> None:
+    assert evaluate(_stale(31), NOW).status.state is GuardState.INACTIVE
+    status = evaluate(_stale(4), NOW).status
+    assert (status.state, status.stopping) == (GuardState.ACTIVE, False)
+
+
+def test_open_stop_does_not_hide_errors() -> None:
+    data = changed("error", "docker_unavailable")
+    data["heartbeat_at"] = int(NOW.timestamp()) - 50
+    status = evaluate(_observation(data), NOW, NOW - timedelta(seconds=40)).status
+    assert status.state is GuardState.ERROR
+    assert status.stopping is False
+
+
+async def test_real_source_guard_uses_the_open_stop(tmp_path: Path) -> None:
+    stops = StopWindow()
+    paths = guard_paths(tmp_path)
+    paths.status_file.write_bytes(raw(changed("heartbeat_at", int(NOW.timestamp()) - 50)))
+    guard = RealSourceGuard(paths, clock=lambda: NOW, stops=stops)
+    await guard.refresh()
+    assert guard.report().status.state is GuardState.INACTIVE
+    stops.open(NOW - timedelta(seconds=40))
+    status = guard.report().status
+    assert (status.state, status.stopping) == (GuardState.ACTIVE, True)
+    stops.close()
+    assert guard.report().status.state is GuardState.INACTIVE

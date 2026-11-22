@@ -11,7 +11,7 @@ from twinraid.integrations.control import ActionControl, RealControl
 from twinraid.integrations.guard_orders import GuardChannel, RealGuardChannel
 from twinraid.integrations.mocks.lab import MockLab
 from twinraid.integrations.mocks.source_guard import MockSourceGuard
-from twinraid.integrations.source_guard import RealSourceGuard, SourceGuardSource
+from twinraid.integrations.source_guard import RealSourceGuard, SourceGuardSource, StopWindow
 from twinraid.integrations.ssh import GuardKey, SshPower, SshTarget
 from twinraid.integrations.status import RealStatusProvider, StatusProvider
 from twinraid.integrations.vm_watch import VmWatch
@@ -76,13 +76,15 @@ def build_integrations(
         return Integrations(lab, lab, lab.tour_active, mock_guard, mock_guard)
     watch = target_watch(config, paths)
     control = RealControl(config, watch, target_ssh(config, paths), wol)
-    guard = RealSourceGuard()
+    # Geteilt: Während eines offenen stop gilt der Wächter länger als aktiv (Konzept 3.6).
+    stops = StopWindow()
+    guard = RealSourceGuard(stops=stops)
     return Integrations(
         RealStatusProvider(config, watch),
         control,
         _never,
         guard,
-        RealGuardChannel(),
+        RealGuardChannel(stops=stops),
         background=(watch.run, guard.run),
         status_changed=watch.changed,
         retry_status_now=watch.retry_now,

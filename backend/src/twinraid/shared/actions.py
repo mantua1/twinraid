@@ -80,6 +80,9 @@ class ActionBlocker(StrEnum):
     # Ab v0.5.3, Sync und Probelauf: seit dem letzten Snapshot ist der Abstand aus dem Status
     # des Wächters noch nicht vergangen (Konzept 3.6, „Lesen in TwinRaid“).
     SOURCE_GUARD_SNAPSHOT_TOO_SOON = "source_guard_snapshot_too_soon"
+    # Ab v0.5.5, Sync und Probelauf: bis 10 s nach dem Ende eines Jobs, dessen Snapshot der
+    # Wächter verworfen hat (probe_allowed_at, Konzept 3.6, „Pause nach einem Probelauf“).
+    SOURCE_GUARD_PROBE_TOO_SOON = "source_guard_probe_too_soon"
 
 
 class ActionStep(StrEnum):
@@ -139,6 +142,8 @@ class ActionOutcome(StrEnum):
     SOURCE_GUARD_LOST = "source_guard_lost"
     SOURCE_GUARD_REFUSED = "source_guard_refused"
     TOO_SOON = "too_soon"
+    # Ab v0.5.5: snapshot in der Pause nach einem verworfenen Snapshot.
+    TOO_SOON_PROBE = "too_soon_probe"
     SNAPSHOT_LOW_SPACE = "snapshot_low_space"
     SNAPSHOT_LIMIT = "snapshot_limit"
     PREPARE_FAILED = "prepare_failed"

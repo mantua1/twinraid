@@ -210,3 +210,6 @@ class SyncStatus(StrictModel):
     # Snapshot (None, wenn keine Grenze gilt).
     preview: SyncPreview
     snapshot_allowed_at: datetime | None = None
+    # Ab v0.5.5: Ende der Pause nach einem verworfenen Snapshot, sekundengenau; None, wenn
+    # keine gilt. Die Oberfläche gibt die Buttons dann selbst frei (Konzept 3.6).
+    probe_allowed_at: datetime | None = None

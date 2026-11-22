@@ -39,7 +39,7 @@ async def test_before_the_first_dry_run(tmp_path: Path) -> None:
     lines = sync_check_lines(worker.handler.snapshot())
     assert lines[:3] == [
         "TwinRaid sync check (read only)",
-        "Source guard: active, version 4",
+        "Source guard: active, version 5",
         "Own dataset of TwinRaid: found (needed: appdata is mirrored)",
     ]
     # Die Spiegel auf Groß kennt TwinRaid erst aus einem check (Probelauf).
@@ -56,7 +56,11 @@ async def test_before_the_first_dry_run(tmp_path: Path) -> None:
     assert not any(line.startswith("  Next snapshot") for line in lines)
     start = lines.index("Snapshots per share:")
     assert lines[start + 1] == "  appdata"
-    assert lines[start + 2].startswith("    Klein: 10 own, newest -, oldest ")
+    # Ab v0.5.5 meldet der Wächter den neuesten Snapshot selbst (hier die gehaltene Basis).
+    klein = lines[start + 2]
+    assert klein.startswith("    Klein: 10 own, newest ")
+    newest = klein.split("newest ", 1)[1].split(",", 1)[0]
+    assert f", base held {newest}," in klein
     assert lines[start + 2].endswith(", bookmark yes, kept 7 days")
     assert ", base held " in lines[start + 2]
     assert lines[start + 3] == "    Groß: unknown (no dry run or sync yet)"
@@ -80,10 +84,11 @@ async def test_after_a_dry_run(tmp_path: Path) -> None:
     assert mirror.endswith(", props ok")
     assert "ZFS cache on the target: zfs_arc_max 4.0 GiB, c_max 4.0 GiB" in lines
     assert lines[-1].startswith("Last dry run: dry_run_success at ")
-    assert any(line.startswith("  Next snapshot not before ") for line in lines)
+    # Ab v0.5.5 verwirft der Wächter den Snapshot des Probelaufs; er zählt nicht für den
+    # Abstand, und auf Klein bleibt die Zahl der Snapshots gleich.
+    assert not any(line.startswith("  Next snapshot not before ") for line in lines)
     start = lines.index("  medien")
-    # Der Probelauf hat auf Klein einen Snapshot mehr angelegt; auf Groß ändert er nichts.
-    assert lines[start + 1].startswith("    Klein: 11 own, newest ")
+    assert lines[start + 1].startswith("    Klein: 10 own, newest ")
     assert lines[start + 2].startswith("    Groß: 20 snapshots, newest received ")
     assert ", kept 30 days (check " in lines[start + 2]
 
@@ -119,8 +124,8 @@ async def test_guard_problems_are_named(tmp_path: Path) -> None:
     assert sync_check_lines(failed)[1] == "Source guard: error (state_lost)"
 
 
-async def test_fixed_interval_with_protocol_2(tmp_path: Path) -> None:
-    """Version 3 des Wächters (Protokoll 2): fest 30 min, kein Hinweis (Konzept 3.6)."""
+async def test_default_interval_without_note(tmp_path: Path) -> None:
+    """Der Standard von 30 min ist kein Testwert; „fest“ gibt es ab v0.5.5 nicht mehr."""
     worker = _worker(tmp_path)
     snapshot = worker.handler.snapshot()
     details = snapshot.source_guard.details
@@ -129,13 +134,13 @@ async def test_fixed_interval_with_protocol_2(tmp_path: Path) -> None:
     old = snapshot.model_copy(
         update={
             "source_guard": snapshot.source_guard.model_copy(
-                update={"details": details.model_copy(update={"version": 3, "limits": limits})}
+                update={"details": details.model_copy(update={"limits": limits})}
             )
         }
     )
     lines = sync_check_lines(old)
-    assert "Interval between snapshots: 30 min (fixed)" in lines
-    assert not any("test value" in line for line in lines)
+    assert "Interval between snapshots: 30 min" in lines
+    assert not any("test value" in line or "fixed" in line for line in lines)
 
 
 async def test_snapshots_of_absent_foreign_and_locked_mirrors(tmp_path: Path) -> None:

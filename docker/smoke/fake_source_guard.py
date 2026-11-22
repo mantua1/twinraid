@@ -1,4 +1,4 @@
-"""Nachgebauter Wächter für den Starttest (Konzept 3.6, Protokoll 2).
+"""Nachgebauter Wächter für den Starttest (Konzept 3.6, Protokoll 4).
 
 Aufruf:
   fake_source_guard.py once <Ordner>   schreibt einmal <Ordner>/state/status.json (0644)
@@ -24,8 +24,8 @@ ORDER = re.compile(r"^TRSG1 ([1-9][0-9]{0,8}) ([a-z]+) ([0-9a-f]{16}) *\n?$")
 
 def status(now: int, last_seq: int, last: Any, job: Any) -> dict[str, Any]:
     return {
-        "protocol": 2,
-        "version": 2,
+        "protocol": 4,
+        "version": 5,
         "heartbeat_at": now,
         "started_at": now - 60,
         "instance": "0123456789abcdef",
@@ -41,6 +41,7 @@ def status(now: int, last_seq: int, last: Any, job: Any) -> dict[str, Any]:
             "heartbeat_timeout_seconds": 120,
             "stop_timeout_seconds": 60,
             "min_run_interval_minutes": 30,
+            "min_snapshot_interval_minutes": 30,
             "max_deletions": 1000,
             "snapshot_keep_days": 7,
             "snapshot_reserve_percent": 15,
@@ -49,6 +50,8 @@ def status(now: int, last_seq: int, last: Any, job: Any) -> dict[str, Any]:
         "allowed": [{"name": "twinraid-testcontainer", "id": None, "state": "missing"}],
         "run": None,
         "run_allowed_at": None,
+        "snapshot_allowed_at": None,
+        "probe_allowed_at": None,
         "last_run": None,
         "zfs": {
             "state": "unavailable",
@@ -61,6 +64,7 @@ def status(now: int, last_seq: int, last: Any, job: Any) -> dict[str, Any]:
                     "compression": None,
                     "snapshots": None,
                     "oldest_snapshot_at": None,
+                    "newest_snapshot_at": None,
                     "base": None,
                     "bookmark": None,
                 }
