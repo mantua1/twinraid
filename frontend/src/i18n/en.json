@@ -322,7 +322,8 @@
       "self_dataset_missing": "appdata is mirrored, but the own dataset mainpool/appdata/twinraid is missing (test Z4 in docs/EINRICHTUNG.md)",
       "source_guard_too_soon": "the source guard on {{source}} keeps the pause between two runs",
       "target_clone_active": "according to the last check, a clone of a mirror exists on {{target}}",
-      "source_guard_snapshot_too_soon": "the minimum interval since the last snapshot on {{source}} has not passed yet"
+      "source_guard_snapshot_too_soon": "the minimum interval since the last snapshot on {{source}} has not passed yet",
+      "source_guard_probe_too_soon": "the snapshot of a dry run on {{source}} was just discarded; possible again in a few seconds"
     },
     "outcomes": {
       "success": "successful",
@@ -358,6 +359,7 @@
       "source_guard_lost": "The guard did not answer in time or has restarted.",
       "source_guard_refused": "The guard refused.",
       "too_soon": "Too soon after the last snapshot; the guard allows a new one only after the configured interval.",
+      "too_soon_probe": "Too soon after the end of a dry run; the guard allows a new snapshot only after a short pause.",
       "snapshot_low_space": "Not enough space on mainpool for a new snapshot (reserve from source-guard.conf).",
       "snapshot_limit": "Too many own snapshots (at most 50 per dataset); older ones expire after snapshot_keep_days.",
       "prepare_failed": "The check on the source server failed; details in the syslog (twinraid-source-guard).",
@@ -470,7 +472,7 @@
       "too_large": "status.json is larger than 64 KiB.",
       "bad_json": "status.json is not valid JSON.",
       "schema": "status.json does not have the expected structure.",
-      "protocol_mismatch": "The guard speaks a different protocol; copy source-guard.sh version 2 to /boot/config/twinraid/ and run source-guard.sh restart.",
+      "protocol_mismatch": "The guard speaks a different protocol; copy source-guard.sh version 5 to /boot/config/twinraid/ and run source-guard.sh restart.",
       "heartbeat_future": "The heartbeat lies in the future; check the server's clock."
     },
     "run_one": "{{count}} container stopped ({{names}}), back on at {{time}} at the latest.",
@@ -548,12 +550,12 @@
       "datasetNoBase": "no base yet",
       "datasetBookmark": "with bookmark",
       "snapshotInterval": "Interval between snapshots",
-      "snapshotIntervalValue": "{{minutes}} min",
-      "snapshotIntervalFixed": "{{minutes}} min (fixed)"
+      "snapshotIntervalValue": "{{minutes}} min"
     },
     "active_one": "Guard: active · {{count}} container allowed",
     "active_other": "Guard: active · {{count}} containers allowed",
-    "activeHint": "Status is checked every 5 s."
+    "activeHint": "Status is checked every 5 s.",
+    "stopping": "Guard: stopping a container (up to {{seconds}} s)"
   },
   "sync": {
     "schedule": "Schedule off (from phase 6).",
@@ -652,12 +654,13 @@
       "run_open": "a run is still open on {{source}}",
       "no_job": "the job has disappeared",
       "wrong_state": "the job is in another state",
-      "not_supported": "source-guard.sh is too old (copy version 2)",
+      "not_supported": "source-guard.sh is too old (copy version 5)",
       "config_invalid": "source-guard.conf is invalid",
       "misconfigured": "the guard is set up incorrectly",
       "request_not_a_file": "the order file is unusable",
       "docker_unavailable": "Docker is not reachable on {{source}}",
       "too_soon": "the pause between two runs still applies",
+      "too_soon_probe": "the short pause after a discarded snapshot still applies",
       "no_run": "the dead man's switch of the source guard ended the run because TwinRaid did not report in time; the containers run again",
       "stop_failed": "docker stop failed for a container",
       "not_allowed": "a container is not in the allow list of the source guard (allow) or is in deny",

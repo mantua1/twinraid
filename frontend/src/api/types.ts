@@ -174,6 +174,8 @@ export interface GuardDataset {
   // Ab v0.5.1: eigene Snapshots, Basis und Lesezeichen (Konzept 3.6).
   snapshots: number | null;
   oldest_snapshot_at: string | null;
+  // Neuester eigener Snapshot (ab Protokoll 4 vom Wächter, sonst aus dem Job; v0.5.5).
+  newest_snapshot_at: string | null;
   base_created_at: string | null;
   bookmark: boolean | null;
   // Ab v0.5.2: Die gehaltene Basis fehlt oder ist veraltet (Hinweis source_base_hold_missing).
@@ -218,6 +220,8 @@ export const GUARD_ORDER_RESULTS = [
   "denied_self",
   "not_found",
   "stop_failed",
+  // Ab Version 5 des Wächters: Pause nach einem verworfenen Snapshot.
+  "too_soon_probe",
   "job_open",
   "created",
   "zfs_unavailable",
@@ -356,6 +360,8 @@ export interface GuardCheck {
 // Inhalt eines frischen Status (Herzschlag höchstens 30 s alt).
 export interface GuardDetails {
   version: number;
+  // Ab v0.5.5: Protokoll 3 oder 4 (Konzept 3.6).
+  protocol: number;
   started_at: string;
   allowed: GuardContainer[];
   run: GuardRun | null;
@@ -371,9 +377,6 @@ export interface GuardDetails {
   target_key: boolean;
   target_known_host: boolean;
   target_check: GuardCheck | null;
-  // Job des Wächters; hier nur die Felder, die die Kachel Sync braucht (Zeitpunkt des
-  // letzten Snapshots und seine Datasets). Fehlt oder null, wenn kein Job im Status steht.
-  job?: { created_at: string; datasets: { name: string }[] } | null;
 }
 
 export interface SourceGuardStatus {
@@ -386,6 +389,8 @@ export interface SourceGuardStatus {
   heartbeat_at: string | null;
   heartbeat_age_seconds: number | null;
   details: GuardDetails | null;
+  // Ab v0.5.5: Ein stop ist offen; der Wächter gilt so lange länger als aktiv (Konzept 3.6).
+  stopping: boolean;
 }
 
 export interface ResourceInfo {
@@ -436,6 +441,8 @@ export const ACTION_BLOCKERS = [
   "source_guard_too_soon",
   "target_clone_active",
   "source_guard_snapshot_too_soon",
+  // Ab v0.5.5: Pause von 10 s nach einem verworfenen Snapshot (Konzept 3.6).
+  "source_guard_probe_too_soon",
 ] as const;
 export type ActionBlocker = (typeof ACTION_BLOCKERS)[number];
 
@@ -482,6 +489,8 @@ export const ACTION_OUTCOMES = [
   "source_guard_lost",
   "source_guard_refused",
   "too_soon",
+  // Ab v0.5.5: snapshot in der Pause nach einem verworfenen Snapshot.
+  "too_soon_probe",
   "snapshot_low_space",
   "snapshot_limit",
   "prepare_failed",
@@ -688,6 +697,8 @@ export interface SyncStatus {
   // Ab v0.5.3: Dialog vor dem Sync und frühester nächster Snapshot (Konzept 4.1).
   preview: SyncPreview;
   snapshot_allowed_at: string | null;
+  // Ab v0.5.5: Ende der Pause nach einem verworfenen Snapshot, sekundengenau.
+  probe_allowed_at: string | null;
 }
 
 // Container, die der Sync voraussichtlich anhält (null bei stop_containers: false), und ob

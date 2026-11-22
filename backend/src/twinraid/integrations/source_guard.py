@@ -77,11 +77,16 @@ FRESH_SECONDS = 30
 # erst, wenn die Bedingung so lange ohne Unterbrechung besteht (Konzept 3.6).
 HOLD_NOTICE_SECONDS = 60
 MAX_STATUS_BYTES = 64 * 1024
-# Protokoll 2 ab source-guard.sh Version 2 (TwinRaid v0.5.1), Protokoll 3 ab Version 4
-# (v0.5.3) mit dem Abstand zwischen Snapshots in limits (Konzept 3.6).
-PROTOCOLS = (2, 3)
-# Abstand zwischen zwei Snapshots: Standard in source-guard.conf, bei Protokoll 2 fest.
+# Protokoll 3 ab source-guard.sh Version 4 (v0.5.3) mit dem Abstand zwischen Snapshots in
+# limits, Protokoll 4 ab Version 5 (v0.5.5) mit snapshot_allowed_at, probe_allowed_at und
+# newest_snapshot_at (Konzept 3.6). Protokoll 2 nimmt TwinRaid ab v0.5.5 nicht mehr an.
+PROTOCOLS = (3, 4)
+# Abstand zwischen zwei Snapshots: Standard in source-guard.conf; darunter ein Testwert.
 DEFAULT_SNAPSHOT_INTERVAL_MINUTES = 30
+# Während eines offenen stop gilt der Wächter bis stop_timeout_seconds + STOP_EXTRA_SECONDS
+# + FRESH_SECONDS nach dem Auftrag als aktiv (Konzept 3.6, „Während docker stop“); 15 s wie
+# STOP_EXTRA im Wächter und die Wartezeit auf die Antwort.
+STOP_EXTRA_SECONDS = 15
 
 # Zeichenregeln wie im Wächter.
 ContainerName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")]
@@ -127,8 +132,7 @@ class _Limits(_FileModel):
     heartbeat_timeout_seconds: Annotated[int, Field(ge=30, le=600)]
     stop_timeout_seconds: Annotated[int, Field(ge=10, le=600)]
     min_run_interval_minutes: Annotated[int, Field(ge=10, le=1440)]
-    # Nur bei Protokoll 3 und dort Pflicht (GuardFile prüft das).
-    min_snapshot_interval_minutes: Annotated[int, Field(ge=5, le=1440)] | None = None
+    min_snapshot_interval_minutes: Annotated[int, Field(ge=5, le=1440)]
     max_deletions: Annotated[int, Field(ge=0, le=10_000_000)]
     snapshot_keep_days: Annotated[int, Field(ge=1, le=365)]
     snapshot_reserve_percent: Annotated[int, Field(ge=5, le=50)]
@@ -223,6 +227,8 @@ class _Dataset(_FileModel):
     compression: Compression | None
     snapshots: Count | None
     oldest_snapshot_at: Timestamp | None
+    # Nur bei Protokoll 4 und dort Pflicht (GuardFile prüft das).
+    newest_snapshot_at: Timestamp | None = None
     base: _Base | None
     bookmark: bool | None
 
@@ -271,7 +277,7 @@ class _Job(_FileModel):
 class GuardFile(_FileModel):
     """state/status.json, wie write_status in source-guard.sh es schreibt."""
 
-    protocol: Literal[2, 3]
+    protocol: Literal[3, 4]
     version: Annotated[int, Field(ge=2, le=999)]
     heartbeat_at: Timestamp
     started_at: Timestamp
@@ -289,20 +295,26 @@ class GuardFile(_FileModel):
     allowed: Annotated[tuple[_Allowed, ...], Field(max_length=50)]
     run: _Run | None
     run_allowed_at: Timestamp | None
+    # Nur bei Protokoll 4 und dort Pflicht (Konzept 3.6, „Protokoll 4“).
+    snapshot_allowed_at: Timestamp | None = None
+    probe_allowed_at: Timestamp | None = None
     last_run: _LastRun | None
     zfs: _Zfs
     job: _Job | None
     seq_exhausted: bool
 
     @model_validator(mode="after")
-    def _interval_matches_protocol(self) -> Self:
-        """Protokoll 3 hat den Abstand zwischen Snapshots, Protokoll 2 nicht."""
-        present = "min_snapshot_interval_minutes" in self.limits.model_fields_set
-        if present != (self.protocol == 3) or (
-            present and self.limits.min_snapshot_interval_minutes is None
-        ):
-            msg = "min_snapshot_interval_minutes does not match the protocol"
+    def _fields_match_protocol(self) -> Self:
+        """Protokoll 4 hat drei Felder mehr als Protokoll 3, alle Pflicht."""
+        wanted = self.protocol == 4
+        both = {"snapshot_allowed_at", "probe_allowed_at"}
+        if both & self.model_fields_set != (both if wanted else set()):
+            msg = "snapshot_allowed_at and probe_allowed_at do not match the protocol"
             raise ValueError(msg)
+        for item in self.zfs.datasets:
+            if ("newest_snapshot_at" in item.model_fields_set) != wanted:
+                msg = "newest_snapshot_at does not match the protocol"
+                raise ValueError(msg)
         return self
 
 
@@ -526,8 +538,11 @@ def _time(seconds: int) -> datetime:
 
 def _details(file: GuardFile) -> GuardDetails:
     pool = file.zfs.pool
+    job = file.job
+    protocol4 = file.protocol == 4
     return GuardDetails(
         version=file.version,
+        protocol=file.protocol,
         started_at=_time(file.started_at),
         allowed=tuple(GuardContainer(name=item.name, state=item.state) for item in file.allowed),
         run=(
@@ -566,6 +581,11 @@ def _details(file: GuardFile) -> GuardDetails:
                     compression=item.compression,
                     snapshots=item.snapshots,
                     oldest_snapshot_at=_maybe_time(item.oldest_snapshot_at),
+                    newest_snapshot_at=(
+                        _maybe_time(item.newest_snapshot_at)
+                        if protocol4
+                        else _job_snapshot_at(job, item.name)
+                    ),
                     base_created_at=(
                         _time(item.base.created_at) if item.base is not None else None
                     ),
@@ -575,12 +595,7 @@ def _details(file: GuardFile) -> GuardDetails:
             ),
             self_dataset=file.zfs.self_dataset,
         ),
-        limits=GuardLimits(
-            **file.limits.model_dump(exclude={"min_snapshot_interval_minutes"}),
-            min_snapshot_interval_minutes=(
-                file.limits.min_snapshot_interval_minutes or DEFAULT_SNAPSHOT_INTERVAL_MINUTES
-            ),
-        ),
+        limits=GuardLimits(**file.limits.model_dump()),
         target_configured=file.target.configured,
         target_port=file.target.port,
         rejected_count=file.rejected.count,
@@ -599,8 +614,17 @@ def _details(file: GuardFile) -> GuardDetails:
         target_key=file.target.key,
         target_known_host=file.target.known_host,
         target_check=_check(file.target.check) if file.target.check is not None else None,
-        job=_job(file.job) if file.job is not None else None,
+        job=_job(job) if job is not None else None,
+        snapshot_allowed_at=_maybe_time(file.snapshot_allowed_at),
+        probe_allowed_at=_maybe_time(file.probe_allowed_at),
     )
+
+
+def _job_snapshot_at(job: _Job | None, name: str) -> datetime | None:
+    """Protokoll 3: neuester Snapshot ist der des Jobs, solange er im Status steht."""
+    if job is None or all(item.name != name for item in job.datasets):
+        return None
+    return _time(job.created_at)
 
 
 def _maybe_time(seconds: int | None) -> datetime | None:
@@ -750,8 +774,7 @@ def _notices(file: GuardFile, own_id: str | None) -> tuple[StatusNotice, ...]:
         notices.append(StatusNotice.SOURCE_FLASH_BACKUP)
     if own_id is not None and any(item.id == own_id for item in file.allowed):
         notices.append(StatusNotice.SOURCE_GUARD_ALLOWS_SELF)
-    interval = file.limits.min_snapshot_interval_minutes
-    if interval is not None and interval < DEFAULT_SNAPSHOT_INTERVAL_MINUTES:
+    if file.limits.min_snapshot_interval_minutes < DEFAULT_SNAPSHOT_INTERVAL_MINUTES:
         # Ein Testwert soll nicht liegen bleiben (Konzept 3.6, F17).
         notices.append(StatusNotice.SOURCE_SNAPSHOT_INTERVAL_TEST)
     return tuple(notices)
@@ -770,7 +793,44 @@ class GuardReport:
     hold_candidates: frozenset[str] = frozenset()
 
 
-def evaluate(observation: GuardObservation, now: datetime) -> GuardReport:
+class StopWindow:
+    """Ein offener stop des Workers (Konzept 3.6, „Während docker stop“, ab v0.5.5).
+
+    Der Wächter führt docker stop in seiner Hauptschleife aus und schreibt so lange keinen
+    Status. Solange ein stop offen ist (geschrieben, die Antwort noch nicht gelesen, das
+    Warten darauf nicht beendet), gilt er deshalb länger als aktiv. Nur im Worker; geteilt
+    zwischen dem Kanal für Aufträge und dem Leser im Takt von 5 s.
+    """
+
+    def __init__(self) -> None:
+        self._since: datetime | None = None
+
+    @property
+    def since(self) -> datetime | None:
+        return self._since
+
+    def open(self, at: datetime) -> None:
+        self._since = at
+
+    def close(self) -> None:
+        self._since = None
+
+
+def _stop_grace(file: GuardFile, heartbeat: datetime, now: datetime, since: datetime) -> bool:
+    """Gilt ein Herzschlag, der älter als FRESH_SECONDS ist, während des offenen stop noch?
+
+    Bis stop_timeout_seconds aus dem Status + STOP_EXTRA_SECONDS + FRESH_SECONDS nach dem
+    Auftrag, und der Herzschlag darf höchstens FRESH_SECONDS älter sein als der Auftrag.
+    """
+    fresh = timedelta(seconds=FRESH_SECONDS)
+    grace = timedelta(seconds=file.limits.stop_timeout_seconds + STOP_EXTRA_SECONDS + FRESH_SECONDS)
+    return heartbeat >= since - fresh and now <= since + grace
+
+
+def evaluate(
+    observation: GuardObservation, now: datetime, stop_since: datetime | None = None
+) -> GuardReport:
+    """Zustand aus dem gelesenen Status; stop_since: seit wann ein stop offen ist."""
     if not observation.mounted:
         return GuardReport(SourceGuardStatus(state=GuardState.NOT_MOUNTED))
     last = observation.last_heartbeat
@@ -803,7 +863,9 @@ def evaluate(observation: GuardObservation, now: datetime) -> GuardReport:
                 heartbeat_at=heartbeat,
             )
         )
-    if age > FRESH_SECONDS:
+    if age > FRESH_SECONDS and (
+        stop_since is None or not _stop_grace(file, heartbeat, now, stop_since)
+    ):
         state = GuardState.MISCONFIGURED if observation.setup_problem else GuardState.INACTIVE
         return GuardReport(
             SourceGuardStatus(
@@ -826,6 +888,7 @@ def evaluate(observation: GuardObservation, now: datetime) -> GuardReport:
             heartbeat_at=heartbeat,
             heartbeat_age_seconds=max(age, 0),
             details=_details(file),
+            stopping=state is GuardState.ACTIVE and stop_since is not None,
         ),
         _notices(file, observation.own_id),
         frozenset(
@@ -865,17 +928,19 @@ class RealSourceGuard:
         paths: GuardPaths | None = None,
         interval: float = READ_INTERVAL_SECONDS,
         clock: Callable[[], datetime] = _utc_now,
+        stops: StopWindow | None = None,
     ) -> None:
         self._paths = paths or GuardPaths()
         self._interval = interval
         self._clock = clock
+        self._stops = stops or StopWindow()
         self._observation = NOT_READ
         self._logged: str | None = None
         self._hold = HoldNoticeDelay()
 
     def report(self) -> GuardReport:
         now = self._clock()
-        report = evaluate(self._observation, now)
+        report = evaluate(self._observation, now, self._stops.since)
         return with_hold_notice(report, self._hold.confirmed(report.hold_candidates, now))
 
     async def refresh(self) -> None:

@@ -45,7 +45,12 @@ function StateLines({ guard, source }: { guard: SourceGuardStatus; source: strin
   switch (guard.state) {
     case "active":
       // Ohne laufendes Alter des Herzschlags (D1): Es steht unter Einstellungen → Wächter.
-      lines.push(t("guard.active", { count: guard.details?.allowed.length ?? 0 }));
+      // Während eines offenen stop schreibt der Wächter keinen Status (ab v0.5.5, Konzept 3.6).
+      lines.push(
+        guard.stopping
+          ? t("guard.stopping", { seconds: guard.details?.limits.stop_timeout_seconds ?? 0 })
+          : t("guard.active", { count: guard.details?.allowed.length ?? 0 }),
+      );
       break;
     case "not_mounted":
       lines.push(t("guard.notMounted"));

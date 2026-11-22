@@ -1,5 +1,5 @@
 #!/bin/bash
-# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 4 (Konzept 3.6).
+# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 5 (Konzept 3.6).
 #
 # Ablage auf Klein: /boot/config/twinraid/source-guard.sh, Konfiguration daneben in
 # source-guard.conf (Vorlage: host-scripts/source-guard.conf.example). Gestartet wird
@@ -33,6 +33,12 @@
 # guard.sh sync check erneut, und der Abstand zwischen zwei Snapshots ist einstellbar
 # (min_snapshot_interval_minutes, 5–1440, Standard 30); er steht in limits im Status.
 # TwinRaid 0.5.2 nimmt Protokoll 3 nicht an: erst TwinRaid 0.5.3, dann Version 4.
+# Version 5 (TwinRaid v0.5.5) hat Protokoll 4: Der Snapshot eines Jobs, der nie gesendet wurde,
+# ist vorläufig. Der Wächter verwirft ihn am Ende des Jobs selbst, nur nach festen Bedingungen
+# (Konzept 3.6, „Vorläufige Snapshots“), und er zählt nicht für den Abstand zwischen Snapshots.
+# Danach gilt eine feste Pause von 10 s (too_soon_probe). Der Status nennt beide Grenzen und
+# den neuesten eigenen Snapshot je Dataset. TwinRaid 0.5.4 nimmt Protokoll 4 nicht an: erst
+# TwinRaid 0.5.5, dann Version 5.
 #
 # Ins Syslog (Kennung twinraid-source-guard) kommen nur feste Texte, Codes, Zahlen
 # und geprüfte Container-Namen, nie der Inhalt der Auftragsdatei.
@@ -41,8 +47,8 @@ export LC_ALL=C
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 
-readonly VERSION=4
-readonly PROTOCOL=3
+readonly VERSION=5
+readonly PROTOCOL=4
 readonly CONF=/boot/config/twinraid/source-guard.conf
 readonly BASE_DIR=/run/twinraid-source-guard
 # Andere Schreibweise desselben Ordners: auf Unraid ist /var/run ein Link auf /run.
@@ -98,6 +104,9 @@ readonly CREATED_BY=twinraid:created-by
 readonly HOLD_TAG=twinraid-base
 readonly SNAPSHOT_MINUTE=60
 readonly SNAPSHOT_LIMIT=50
+# Pause nach dem Ende eines Jobs, dessen vorläufigen Snapshot der Wächter verworfen hat, in
+# Sekunden nach Laufzeit (ab Version 5); fest, nicht in source-guard.conf.
+readonly PROBE_PAUSE=10
 readonly PREPARE_LIMIT=1800
 readonly CONFIRM_LIMIT=1800
 readonly SEND_LIMIT=43200
@@ -1187,6 +1196,7 @@ DS_COMPRESSION=()
 # Ab Version 2: eigene Snapshots (Anzahl, ältester), Basis mit Hold, eigenes Lesezeichen.
 DS_SNAPSHOTS=()
 DS_OLDEST=()
+DS_NEWEST=()
 DS_BASE_GUID=()
 DS_BASE_CREATED=()
 DS_BOOKMARK=()
@@ -1273,6 +1283,7 @@ refresh_zfs() {
   DS_COMPRESSION=()
   DS_SNAPSHOTS=()
   DS_OLDEST=()
+  DS_NEWEST=()
   DS_BASE_GUID=()
   DS_BASE_CREATED=()
   DS_BOOKMARK=()
@@ -1298,6 +1309,7 @@ refresh_zfs() {
     DS_COMPRESSION+=("")
     DS_SNAPSHOTS+=("")
     DS_OLDEST+=("")
+    DS_NEWEST+=("")
     DS_BASE_GUID+=("")
     DS_BASE_CREATED+=("")
     DS_BOOKMARK+=("")
@@ -1310,6 +1322,9 @@ refresh_zfs() {
         if own_snapshots "${POOL}/${ds}"; then
           DS_SNAPSHOTS[-1]="${#OS_NAMES[@]}"
           DS_OLDEST[-1]="${OS_CREATED[0]:-}"
+          if ((${#OS_CREATED[@]} > 0)); then
+            DS_NEWEST[-1]="${OS_CREATED[${#OS_CREATED[@]} - 1]}"
+          fi
           find_held_base "${POOL}/${ds}"
           DS_BASE_GUID[-1]="${BASE_GUID}"
           DS_BASE_CREATED[-1]="${BASE_CREATED}"
@@ -1385,6 +1400,12 @@ JOB_CONFIRMED=0
 JOB_SEND_READY=""
 JOB_CONFIRM_REASONS=()
 JOB_BLOCKERS=()
+# Ab Version 5, nur in private/job, nie im Status: Laufzeit beim Anlegen des Snapshots, GUID
+# des Snapshots je Dataset (parallel zu JD_NAME) und sein Zustand: pending (vorläufig), sent
+# (send angenommen), discarded (verworfen) oder kept (bleibt, zählt für den Abstand).
+JOB_CREATED_UP=0
+JOB_GUIDS=()
+JOB_SNAP_STATE=""
 readonly JD_FIELDS=(name mode base_guid base_type problem deleted modified added renamed
   referenced base_referenced size sent result)
 JD_NAME=()
@@ -1401,8 +1422,12 @@ JD_BASE_REFERENCED=()
 JD_SIZE=()
 JD_SENT=()
 JD_RESULT=()
-# Laufzeit beim letzten Snapshot dieses Systemstarts (Mindestabstand); 0: noch keiner.
+# Laufzeit beim Anlegen des letzten behaltenen Snapshots dieses Systemstarts (Mindestabstand);
+# 0: noch keiner. Bis Version 4 zählte jeder Snapshot, ab Version 5 nur ein gesendeter oder
+# einer, der nicht verworfen werden durfte.
 LAST_SNAPSHOT_UP=0
+# Laufzeit beim Ende des letzten Jobs mit vorläufigem Snapshot (Pause, ab Version 5); 0: keiner.
+LAST_DISCARD_UP=0
 # Letzte tägliche Aufbewahrung in Laufzeit.
 LAST_RETENTION_UP=0
 CHILD_PID=""
@@ -1440,6 +1465,9 @@ clear_job() {
   JOB_SEND_READY=""
   JOB_CONFIRM_REASONS=()
   JOB_BLOCKERS=()
+  JOB_CREATED_UP=0
+  JOB_GUIDS=()
+  JOB_SNAP_STATE=""
   for field in "${JD_FIELDS[@]}"; do
     # shellcheck disable=SC2178 # Namensreferenz auf eine der Listen JD_*.
     local -n jd_ref="JD_${field^^}"
@@ -1459,6 +1487,8 @@ save_job() {
   text+="reason ${JOB_REASON:--}"$'\n'"snapshot ${JOB_SNAPSHOT}"$'\n'"created ${JOB_CREATED}"$'\n'
   text+="deadline ${JOB_DEADLINE}"$'\n'"confirmed ${JOB_CONFIRMED}"$'\n'"send_ready ${JOB_SEND_READY:--}"$'\n'
   text+="confirm_reasons ${JOB_CONFIRM_REASONS[*]:--}"$'\n'"blockers ${JOB_BLOCKERS[*]:--}"$'\n'
+  text+="created_up ${JOB_CREATED_UP}"$'\n'"guids ${JOB_GUIDS[*]:--}"$'\n'
+  text+="snapshot_state ${JOB_SNAP_STATE:-kept}"$'\n'
   for i in "${!JD_NAME[@]}"; do
     line="dataset"
     for field in "${JD_FIELDS[@]}"; do
@@ -1524,6 +1554,22 @@ load_job_from() {
           JOB_CONFIRM_REASONS=("${values[@]+"${values[@]}"}")
         fi
         ;;
+      created_up) [[ "${rest}" =~ ^[0-9]{1,12}$ ]] && JOB_CREATED_UP="${rest}" ;;
+      guids)
+        read -r -a words <<<"${rest}"
+        values=()
+        for code in "${words[@]}"; do
+          [[ "${code}" == - ]] && continue
+          [[ "${code}" =~ ${GUID_RE} ]] || { clear_job && return 1; }
+          values+=("${code}")
+        done
+        JOB_GUIDS=("${values[@]+"${values[@]}"}")
+        ;;
+      snapshot_state)
+        case "${rest}" in
+          pending | sent | discarded | kept) JOB_SNAP_STATE="${rest}" ;;
+        esac
+        ;;
       dataset)
         read -r -a words <<<"${rest}"
         if ((${#words[@]} != ${#JD_FIELDS[@]})); then
@@ -1551,6 +1597,13 @@ load_job_from() {
   if ((JOB_ID == 0)) || [[ -z "${JOB_STATE}" || -z "${JOB_SNAPSHOT}" ]]; then
     clear_job
     return 1
+  fi
+  # Ein Job von Version 4 (ohne diese Zeilen) oder ohne passende GUIDs ist nie vorläufig:
+  # Ohne GUID wird nie gelöscht.
+  if [[ -z "${JOB_SNAP_STATE}" ]] ||
+    { [[ "${JOB_SNAP_STATE}" == pending ]] &&
+      { ((${#JOB_GUIDS[@]} != ${#JD_NAME[@]} || JOB_CREATED_UP == 0)); }; }; then
+    JOB_SNAP_STATE=kept
   fi
 }
 
@@ -1903,6 +1956,10 @@ stop_stale_child() {
 # Übernimmt das Ergebnis eines beendeten Kindprozesses.
 adopt_child() {
   local id="${JOB_ID}" before="${JOB_STATE}" fallback=prepare_failed valid=1
+  # Zustand des Snapshots führt nur die Hauptschleife (send setzt ihn vor dem Start des
+  # Kindprozesses); der Kindprozess gibt ihn nie zurück (ab Version 5).
+  local created_up="${JOB_CREATED_UP}" snap_state="${JOB_SNAP_STATE}"
+  local -a guids=("${JOB_GUIDS[@]+"${JOB_GUIDS[@]}"}")
   if [[ "${before}" == sending ]]; then
     fallback=send_failed
   fi
@@ -1923,6 +1980,9 @@ adopt_child() {
     JOB_STATE=failed
     JOB_RESULT="${fallback}"
   fi
+  JOB_CREATED_UP="${created_up}"
+  JOB_SNAP_STATE="${snap_state}"
+  JOB_GUIDS=("${guids[@]+"${guids[@]}"}")
   now
   case "${JOB_STATE}" in
     prepared | awaiting_confirm) JOB_DEADLINE=$((UP + CONFIRM_LIMIT)) ;;
@@ -2365,11 +2425,20 @@ run_child() {
 # --- Aufträge snapshot, prepare, confirm, send, close -------------------------------------
 
 order_snapshot() {
-  local name ds out used available stamp
-  local -a snapshots=()
+  local name ds out used available stamp i
+  local -a snapshots=() guids=()
   if job_is_open; then
     RESULT=job_open
     return 0
+  fi
+  # Ein vorläufiger Snapshot des vorigen Jobs wird zuerst verworfen; geht das nicht, zählt
+  # er als behalten (ab Version 5).
+  if [[ "${JOB_SNAP_STATE}" == pending ]]; then
+    discard_job_snapshot
+    if [[ "${JOB_SNAP_STATE}" == pending ]]; then
+      keep_job_snapshot kept
+      save_job
+    fi
   fi
   if ! zfs_ready; then
     RESULT=zfs_unavailable
@@ -2390,6 +2459,10 @@ order_snapshot() {
   if ((LAST_SNAPSHOT_UP > 0 && LAST_SNAPSHOT_UP <= UP &&
     UP - LAST_SNAPSHOT_UP < MIN_SNAPSHOT_INTERVAL * SNAPSHOT_MINUTE)); then
     RESULT=too_soon
+    return 0
+  fi
+  if ((LAST_DISCARD_UP > 0 && LAST_DISCARD_UP <= UP && UP - LAST_DISCARD_UP < PROBE_PAUSE)); then
+    RESULT=too_soon_probe
     return 0
   fi
   out="$(zfs_call "${ZFS}" list -H -p -o used,available -- "${POOL}" 2>/dev/null)" || out=""
@@ -2419,21 +2492,143 @@ order_snapshot() {
     RESULT=snapshot_failed
     return 0
   fi
-  LAST_SNAPSHOT_UP="${UP}"
-  write_atomic "${PRIVATE_DIR}/last_snapshot" "${UP}" 0600 || true
+  # GUID je Dataset gleich nach dem Anlegen (ab Version 5): Nur genau dieser Snapshot darf
+  # später verworfen werden. Fehlt eine, ist der Snapshot nie vorläufig.
+  for name in "${DATASETS[@]}"; do
+    out=""
+    if own_snapshots "${POOL}/${name}"; then
+      for i in "${!OS_NAMES[@]}"; do
+        if [[ "${OS_NAMES[i]}" == "${SNAPSHOT_PREFIX}${stamp}" ]]; then
+          out="${OS_GUIDS[i]}"
+        fi
+      done
+    fi
+    [[ -n "${out}" ]] && guids+=("${out}")
+  done
   clear_job
   JOB_ID="${O_SEQ}"
   JOB_STATE=snapshot
   JOB_SNAPSHOT="${SNAPSHOT_PREFIX}${stamp}"
   JOB_CREATED="${NOW}"
+  JOB_CREATED_UP="${UP}"
   # Ohne prepare, send oder close schließt der Wächter den Job nach CONFIRM_LIMIT.
   JOB_DEADLINE=$((UP + CONFIRM_LIMIT))
   for name in "${DATASETS[@]}"; do
     JD_NAME+=("${name}")
   done
+  if ((${#guids[@]} == ${#DATASETS[@]})); then
+    JOB_GUIDS=("${guids[@]}")
+    JOB_SNAP_STATE=pending
+  else
+    log "snapshot ${JOB_SNAPSHOT}: guid not readable, the snapshot is kept"
+    keep_job_snapshot kept
+  fi
   save_job
   log "snapshot ${JOB_SNAPSHOT} created for ${#DATASETS[@]} datasets (job ${JOB_ID})"
   RESULT=created
+}
+
+# Der Snapshot des Jobs bleibt (sent oder kept) und zählt ab seinem Anlegen für den Abstand.
+keep_job_snapshot() {
+  JOB_SNAP_STATE="$1"
+  if ((JOB_CREATED_UP > LAST_SNAPSHOT_UP)); then
+    LAST_SNAPSHOT_UP="${JOB_CREATED_UP}"
+    write_atomic "${PRIVATE_DIR}/last_snapshot" "${LAST_SNAPSHOT_UP}" 0600 || true
+  fi
+}
+
+# Verwirft den vorläufigen Snapshot eines beendeten Jobs (Konzept 3.6, „Vorläufige
+# Snapshots“, ab Version 5). Gelöscht wird je Dataset nur genau der Snapshot dieses Jobs:
+# Name und GUID aus dem Job, eigener Snapshot (twinraid:created-by=source-guard, Quelle
+# local), kein Hold, nicht die gehaltene Basis, kein Klon, nicht der neueste Snapshot eines
+# Spiegels auf Groß; nie mit -r, -R, -d oder -f und nie ein Lesezeichen. Was nicht gelöscht
+# werden darf, bleibt, unterliegt der Aufbewahrung und zählt für den Abstand. Ist die Liste
+# eines Datasets nicht lesbar, bleibt der Zustand pending; der nächste Durchgang versucht es
+# erneut. Setzt DISCARD_DONE, wenn sich etwas geändert hat.
+discard_job_snapshot() {
+  local i name ds snap guid j found reason clones discarded=0 kept=0 retry=0
+  local -a on_target=()
+  DISCARD_DONE=0
+  if job_is_open || [[ "${JOB_SNAP_STATE}" != pending ]]; then
+    return 0
+  fi
+  if [[ ! "${JOB_SNAPSHOT}" =~ ${SNAPNAME_RE} ]] || ((${#JOB_GUIDS[@]} != ${#JD_NAME[@]})); then
+    keep_job_snapshot kept
+    save_job
+    DISCARD_DONE=1
+    return 0
+  fi
+  if [[ "${CHECK_RESULT}" == ok ]]; then
+    parse_check
+    for name in "${!M_GUID[@]}"; do
+      [[ "${M_GUID[${name}]}" =~ ${GUID_RE} ]] && on_target+=("${M_GUID[${name}]}")
+    done
+  fi
+  for i in "${!JD_NAME[@]}"; do
+    name="${JD_NAME[i]}"
+    guid="${JOB_GUIDS[i]}"
+    ds="${POOL}/${name}"
+    snap="${ds}@${JOB_SNAPSHOT}"
+    if [[ ! "${name}" =~ ${SHARE_RE} || ! "${guid}" =~ ${GUID_RE} ]]; then
+      reason=guid
+    elif ! own_snapshots "${ds}"; then
+      # Nicht lesbar: ein eigener Snapshot dieses Namens könnte noch da sein.
+      retry=1
+      continue
+    else
+      found=-1
+      for j in "${!OS_NAMES[@]}"; do
+        [[ "${OS_NAMES[j]}" == "${JOB_SNAPSHOT}" ]] && found="${j}"
+      done
+      reason=""
+      if ((found < 0)); then
+        # Kein eigener Snapshot mit diesem Namen. Gibt es einen fremden, bleibt er.
+        if zfs_call "${ZFS}" list -H -o name -t snapshot -- "${snap}" >/dev/null 2>&1; then
+          reason=foreign
+        else
+          discarded=$((discarded + 1))
+          continue
+        fi
+      elif [[ "${OS_GUIDS[found]}" != "${guid}" ]]; then
+        reason=guid
+      else
+        find_held_base "${ds}"
+        if [[ "${BASE_GUID}" == "${guid}" ]]; then
+          reason=base
+        elif ((OS_HOLDS[found] != 0)); then
+          reason=hold
+        elif in_list "${guid}" "${on_target[@]+"${on_target[@]}"}"; then
+          reason=on_target
+        elif ! clones="$(zfs_call "${ZFS}" get -H -o value -- clones "${snap}" 2>/dev/null)" ||
+          [[ -n "${clones}" && "${clones}" != - ]]; then
+          reason=clone
+        elif zfs_call "${ZFS}" destroy -- "${snap}" >/dev/null 2>&1; then
+          discarded=$((discarded + 1))
+          continue
+        else
+          reason=destroy_failed
+        fi
+      fi
+    fi
+    kept=$((kept + 1))
+    log "dataset ${name}: provisional snapshot ${JOB_SNAPSHOT} kept (${reason})"
+  done
+  if ((retry && kept == 0)); then
+    log_limited discard_retry "job ${JOB_ID}: provisional snapshot not readable, trying again"
+    return 0
+  fi
+  now
+  LAST_DISCARD_UP="${UP}"
+  write_atomic "${PRIVATE_DIR}/last_discard" "${UP}" 0600 || true
+  if ((kept > 0 || retry)); then
+    keep_job_snapshot kept
+  else
+    JOB_SNAP_STATE=discarded
+  fi
+  save_job
+  log "job ${JOB_ID}: provisional snapshot ${JOB_SNAPSHOT} discarded on ${discarded} datasets, kept on $((kept + retry))"
+  DISCARD_DONE=1
+  STATUS_DIRTY=1
 }
 
 order_prepare() {
@@ -2474,9 +2669,15 @@ order_send() {
     RESULT=wrong_state
   elif [[ "${JOB_SEND_READY}" != true ]]; then
     RESULT=not_ready
-  elif ! start_child send; then
-    RESULT=wrong_state
   else
+    # Ab hier ist der Snapshot nie mehr vorläufig, gleich wie das Senden endet (ab Version 5),
+    # und er zählt für den Abstand. Gespeichert, bevor der Kindprozess den Job liest.
+    keep_job_snapshot sent
+    save_job
+    if ! start_child send; then
+      RESULT=wrong_state
+      return 0
+    fi
     now
     JOB_STATE=sending
     JOB_DEADLINE=$((UP + SEND_LIMIT))
@@ -2862,6 +3063,26 @@ write_status() {
   else
     json+=',"run_allowed_at":null'
   fi
+  # Ab Version 5 (Protokoll 4): Ende des Abstands ab dem letzten behaltenen Snapshot und Ende
+  # der Pause nach einem verworfenen Snapshot, nach Laufzeit gerechnet, als Uhrzeit.
+  WAIT=0
+  if ((LAST_SNAPSHOT_UP > 0 && LAST_SNAPSHOT_UP <= UP)); then
+    WAIT=$((LAST_SNAPSHOT_UP + MIN_SNAPSHOT_INTERVAL * SNAPSHOT_MINUTE - UP))
+  fi
+  if ((WAIT > 0)); then
+    json+=',"snapshot_allowed_at":'"$((NOW + WAIT))"
+  else
+    json+=',"snapshot_allowed_at":null'
+  fi
+  WAIT=0
+  if ((LAST_DISCARD_UP > 0 && LAST_DISCARD_UP <= UP)); then
+    WAIT=$((LAST_DISCARD_UP + PROBE_PAUSE - UP))
+  fi
+  if ((WAIT > 0)); then
+    json+=',"probe_allowed_at":'"$((NOW + WAIT))"
+  else
+    json+=',"probe_allowed_at":null'
+  fi
   if ((LAST_RUN)); then
     list=""
     for i in "${!LAST_RUN_IDS[@]}"; do
@@ -2902,6 +3123,8 @@ write_status() {
     item+=',"snapshots":'"${JSON}"
     json_number "${DS_OLDEST[i]:-}"
     item+=',"oldest_snapshot_at":'"${JSON}"
+    json_number "${DS_NEWEST[i]:-}"
+    item+=',"newest_snapshot_at":'"${JSON}"
     if [[ "${DS_BASE_GUID[i]:-}" =~ ${GUID_RE} && "${DS_BASE_CREATED[i]:-}" =~ ^[0-9]{1,12}$ ]]; then
       item+=',"base":{"guid":"'"${DS_BASE_GUID[i]}"'","created_at":'"${DS_BASE_CREATED[i]}"'}'
     else
@@ -2991,6 +3214,12 @@ run_guard() {
       LAST_SNAPSHOT_UP="${value}"
     fi
   fi
+  if [[ -f "${PRIVATE_DIR}/last_discard" ]]; then
+    value="$(<"${PRIVATE_DIR}/last_discard")"
+    if [[ "${value}" =~ ^[0-9]{1,12}$ ]]; then
+      LAST_DISCARD_UP="${value}"
+    fi
+  fi
   trap on_term TERM INT
   log "started (version ${VERSION})"
   while ((STOP_REQUESTED == 0)); do
@@ -3043,6 +3272,16 @@ run_guard() {
     fi
     if [[ -z "${LAYOUT_ERROR}" ]]; then
       handle_request
+    fi
+    # Ein beendeter Job mit vorläufigem Snapshot (close, prepare_failed, job_timeout,
+    # interrupted vor dem Senden, auch nach einem Neustart): verwerfen (ab Version 5). Danach
+    # gleich den ZFS-Teil neu lesen, damit Anzahl und neuester Snapshot im Status stimmen.
+    if [[ "${JOB_SNAP_STATE}" == pending && "${ZFS_STATE}" == ok ]] && ! job_is_open; then
+      discard_job_snapshot
+      if ((DISCARD_DONE)); then
+        refresh_zfs
+        next_zfs=$((NOW + ZFS_INTERVAL))
+      fi
     fi
     now
     if ((STATUS_DIRTY || NOW >= next_status)); then

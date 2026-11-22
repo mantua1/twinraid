@@ -1,4 +1,4 @@
-"""Status des Wächters (Protokoll 2) und Einbindungen für Tests (Konzept 3.6).
+"""Status des Wächters (Protokoll 4, protocol_3() für Protokoll 3) und Einbindungen für Tests.
 
 STATUS entspricht dem, was write_status in source-guard.sh schreibt: Lauf offen, letzter
 Lauf, ZFS in Ordnung, letztes check von Groß, ein vorbereiteter Job.
@@ -19,11 +19,12 @@ OTHER_ID = "b" * 64
 GUID = "1234567890123456789"
 SNAPSHOT = "twinraid-20261019T115900Z"
 
-# Wie write_status in source-guard.sh (Protokoll 2): Lauf offen, letzter Lauf, ZFS in
-# Ordnung, letztes check von Groß, ein vorbereiteter Job.
+# Wie write_status in source-guard.sh (Version 5, Protokoll 4): Lauf offen, letzter Lauf, ZFS
+# in Ordnung, letztes check von Groß, ein vorbereiteter Job. protocol_3() macht daraus den
+# Status von Version 4.
 STATUS: dict[str, Any] = {
-    "protocol": 2,
-    "version": 2,
+    "protocol": 4,
+    "version": 5,
     "heartbeat_at": HEARTBEAT,
     "started_at": HEARTBEAT - 3600,
     "instance": "0123456789abcdef",
@@ -45,6 +46,7 @@ STATUS: dict[str, Any] = {
         "heartbeat_timeout_seconds": 120,
         "stop_timeout_seconds": 60,
         "min_run_interval_minutes": 30,
+        "min_snapshot_interval_minutes": 30,
         "max_deletions": 1000,
         "snapshot_keep_days": 7,
         "snapshot_reserve_percent": 15,
@@ -104,6 +106,8 @@ STATUS: dict[str, Any] = {
         "stopped": [{"name": "twinraid-testcontainer", "id": OTHER_ID}],
     },
     "run_allowed_at": None,
+    "snapshot_allowed_at": HEARTBEAT + 600,
+    "probe_allowed_at": None,
     "last_run": {
         "opened_at": HEARTBEAT - 7200,
         "closed_at": HEARTBEAT - 7000,
@@ -121,6 +125,7 @@ STATUS: dict[str, Any] = {
                 "compression": "on",
                 "snapshots": 4,
                 "oldest_snapshot_at": HEARTBEAT - 500000,
+                "newest_snapshot_at": HEARTBEAT - 1200,
                 "base": {"guid": GUID, "created_at": HEARTBEAT - 90000},
                 "bookmark": True,
             },
@@ -131,6 +136,7 @@ STATUS: dict[str, Any] = {
                 "compression": "lz4",
                 "snapshots": 1,
                 "oldest_snapshot_at": HEARTBEAT - 60,
+                "newest_snapshot_at": HEARTBEAT - 60,
                 "base": None,
                 "bookmark": False,
             },
@@ -186,6 +192,19 @@ STATUS: dict[str, Any] = {
     },
     "seq_exhausted": False,
 }
+
+
+def protocol_3(interval: Any = 10) -> dict[str, Any]:  # noqa: ANN401 - beliebiger JSON-Wert
+    """Status von Version 4 (Protokoll 3): ohne die drei Felder von Protokoll 4."""
+    data = copy.deepcopy(STATUS)
+    data["protocol"] = 3
+    data["version"] = 4
+    data["limits"]["min_snapshot_interval_minutes"] = interval
+    del data["snapshot_allowed_at"]
+    del data["probe_allowed_at"]
+    for item in data["zfs"]["datasets"]:
+        del item["newest_snapshot_at"]
+    return data
 
 
 def raw(data: dict[str, Any]) -> bytes:

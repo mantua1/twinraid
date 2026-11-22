@@ -49,6 +49,8 @@ _TEST_TIMES = {
     # Ab Version 2; die Fristen des Jobs kürzt ein Test bei Bedarf selbst.
     "SNAPSHOT_MINUTE": "0",
     "CHECK_TIMEOUT": "5",
+    # Ab Version 5: Pause nach einem verworfenen Snapshot; die Tests dazu setzen sie selbst.
+    "PROBE_PAUSE": "0",
 }
 _TOOLS = (
     "docker",

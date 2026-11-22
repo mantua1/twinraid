@@ -383,9 +383,11 @@ def test_snapshot_needs_existing_datasets(host: Host, conf: str, result: str) ->
 
 def test_snapshot_needs_the_gap(make: Callable[..., Host]) -> None:
     # Standard 30 Minuten; im Test ist eine Minute 20 s lang (nur in der Kopie des Skripts).
+    # Ab Version 5 zählt nur ein behaltener Snapshot, hier ein gesendeter
+    # (test_source_guard_discard.py prüft den verworfenen).
     host = started(make(SNAPSHOT_MINUTE="20"))
-    assert host.send("snapshot")["result"] == "created"
-    assert host.send("close")["result"] == "closed"
+    prepared(host)
+    assert sent(host)["result"] == "ok"
     assert host.send("snapshot")["result"] == "too_soon"
     # Der Abstand gilt auch nach einem Neustart des Wächters (private/last_snapshot).
     host.stop_run(host.processes[-1])
@@ -396,12 +398,15 @@ def test_snapshot_needs_the_gap(make: Callable[..., Host]) -> None:
 def test_snapshot_interval_from_the_config(make: Callable[..., Host]) -> None:
     """Ab Version 4 (F17): min_snapshot_interval_minutes, im Status unter limits."""
     host = make(SNAPSHOT_MINUTE="1")
-    host.configure(DEFAULT_CONF + "min_snapshot_interval_minutes 5\n")
+    host.configure(CONF + "min_snapshot_interval_minutes 5\n")
     started(host)
     assert host.status()["limits"]["min_snapshot_interval_minutes"] == 5
     assert host.send("snapshot")["result"] == "created"
     first = time.monotonic()
-    assert host.send("close")["result"] == "closed"
+    # Ab Version 5 zählt nur ein behaltener Snapshot: send macht ihn dazu.
+    assert host.send("prepare")["result"] == "preparing"
+    job_of(host, lambda j: j["state"] == "prepared")
+    assert sent(host)["result"] == "ok"
     assert host.send("snapshot")["result"] == "too_soon"
     # reset-run-interval hebt nur die Pause zwischen Läufen auf, nie diesen Abstand.
     assert host.command("reset-run-interval").returncode == 0
@@ -409,13 +414,15 @@ def test_snapshot_interval_from_the_config(make: Callable[..., Host]) -> None:
     time.sleep(max(0.0, 5.3 - (time.monotonic() - first)))
     assert host.send("snapshot")["result"] == "created"
     second = time.monotonic()
-    assert host.send("close")["result"] == "closed"
+    assert host.send("prepare")["result"] == "preparing"
+    job_of(host, lambda j: j["state"] == "prepared")
+    assert sent(host)["result"] == "ok"
     # Ein neuer Wert gilt nach dem Neustart, gerechnet ab dem gespeicherten letzten Snapshot.
-    host.configure(DEFAULT_CONF + "min_snapshot_interval_minutes 30\n")
+    host.configure(CONF + "min_snapshot_interval_minutes 30\n")
     host.stop_run(host.processes[-1])
     host.start_run()
     status = host.wait_status(lambda s: s["limits"]["min_snapshot_interval_minutes"] == 30)
-    assert status["protocol"] == 3
+    assert status["protocol"] == 4
     time.sleep(max(0.0, 5.3 - (time.monotonic() - second)))
     assert host.send("snapshot")["result"] == "too_soon"
 
@@ -466,8 +473,14 @@ def test_snapshot_limit_counts_only_own_snapshots(host: Host) -> None:
 
     host.update_zfs(fill)
     started(host)
-    # 48 eigene und die Basis: der 50. wird angelegt, der 51. nicht.
+    # 48 eigene und die Basis: der 50. wird angelegt. Verworfen zählt er nicht mit (ab
+    # Version 5); behalten (hier wegen eines Holds) ist der 51. zu viel.
     assert host.send("snapshot")["result"] == "created"
+    assert host.send("close")["result"] == "closed"
+    wait_until(lambda: len(host.zfs()["snapshots"]) == 52)
+    assert host.send("snapshot")["result"] == "created"
+    job = host.status()["job"]
+    host.update_zfs(lambda z: z["snapshots"][new_name(job)].update(holds=["somebody"]))
     assert host.send("close")["result"] == "closed"
     assert host.send("snapshot")["result"] == "snapshot_limit"
 
@@ -1279,8 +1292,8 @@ def test_close(running: Host) -> None:
     assert running.send("close")["result"] == "closed"
     job = running.status()["job"]
     assert (job["state"], job["result"], job["deadline"]) == ("closed", "closed", None)
-    # Der Snapshot bleibt und läuft nach snapshot_keep_days ab.
-    assert new_name(job) in running.zfs()["snapshots"]
+    # Ab Version 5 verwirft der Wächter den nie gesendeten Snapshot (Konzept 3.6).
+    wait_until(lambda: new_name(job) not in running.zfs()["snapshots"])
     assert running.send("close")["result"] == "no_job"
     next_second()
     assert running.send("snapshot")["result"] == "created"
@@ -1768,7 +1781,11 @@ def test_zfs_is_called_only_with_fixed_arguments() -> None:
         'send -L -c -e -v -P "${increment[@]+"${increment[@]}"}"',
     ]
     destroys = [line for line in lines if " destroy " in line]
-    assert destroys == ['if zfs_call "${ZFS}" destroy -- "${snap}" >/dev/null 2>&1; then']
+    # Aufbewahrung und, ab Version 5, Verwerfen eines vorläufigen Snapshots.
+    assert destroys == [
+        'if zfs_call "${ZFS}" destroy -- "${snap}" >/dev/null 2>&1; then',
+        'elif zfs_call "${ZFS}" destroy -- "${snap}" >/dev/null 2>&1; then',
+    ]
     recursive = [line for line in lines if " -r " in line]
     assert len(recursive) == 1
     assert " get -H -p -r -t snapshot " in recursive[0]

@@ -1,6 +1,8 @@
 """Simulierter Wächter (Konzept 6.4): Standard, Fehler und Rundlauf."""
 
+import asyncio
 import os
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -223,14 +225,23 @@ async def _no_sleep(_seconds: float) -> None:
     return None
 
 
-def _job_guard(tmp_path: Path, now: list[datetime], ticks: list[float]) -> MockSourceGuard:
+def _job_guard(
+    tmp_path: Path,
+    now: list[datetime],
+    ticks: list[float],
+    sleep: Callable[[float], Awaitable[None]] = _no_sleep,
+) -> MockSourceGuard:
     return MockSourceGuard(
         tmp_path,
         monotonic=lambda: ticks[0],
         clock=lambda: now[0],
-        sleep=_no_sleep,
+        sleep=sleep,
         datasets=SHARES,
     )
+
+
+def _fault(tmp_path: Path, name: str) -> None:
+    set_flag(fault_flag(tmp_path, name), True)
 
 
 def _details(guard: MockSourceGuard) -> GuardDetails:
@@ -252,8 +263,8 @@ async def _prepared(guard: MockSourceGuard, ticks: list[float]) -> GuardJob:
 async def test_datasets_follow_the_shares(tmp_path: Path) -> None:
     details = _details(_job_guard(tmp_path, [NOW], [0.0]))
     assert [item.name for item in details.zfs.datasets] == list(SHARES)
-    # Version 4 des Wächters (Protokoll 3, ab v0.5.3).
-    assert details.version == 4
+    # Version 5 des Wächters (Protokoll 4, ab v0.5.5).
+    assert (details.version, details.protocol) == (5, 4)
     assert (details.target_configured, details.target_key, details.target_known_host) == (
         True,
         True,
@@ -567,14 +578,79 @@ async def test_post_writes_without_waiting(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_snapshot_interval_of_five_minutes(tmp_path: Path) -> None:
+    """Ab v0.5.5 zählt nur ein gesendeter Snapshot für den Abstand (Konzept 6.4)."""
     now, ticks = [NOW], [0.0]
     guard = _job_guard(tmp_path, now, ticks)
-    assert await guard.order(GuardOrder.SNAPSHOT) is GuardOrderResult.CREATED
-    assert await guard.order(GuardOrder.CLOSE) is GuardOrderResult.CLOSED
-    now[0] = NOW + timedelta(minutes=4, seconds=59)
+    job = await _prepared(guard, ticks)
+    assert await guard.order(GuardOrder.SEND) is GuardOrderResult.SENDING
+    now[0] = job.created_at + timedelta(seconds=40)
+    ticks[0] += 40
+    assert _details(guard).snapshot_allowed_at == job.created_at + timedelta(minutes=5)
+    now[0] = job.created_at + timedelta(minutes=4, seconds=59)
     assert await guard.order(GuardOrder.SNAPSHOT) is GuardOrderResult.TOO_SOON
-    now[0] = NOW + timedelta(minutes=5)
+    now[0] = job.created_at + timedelta(minutes=5)
     assert await guard.order(GuardOrder.SNAPSHOT) is GuardOrderResult.CREATED
+    assert _details(guard).snapshot_allowed_at is None
+
+
+@pytest.mark.anyio
+async def test_dry_run_snapshot_is_discarded(tmp_path: Path) -> None:
+    """Ab v0.5.5: Probelauf verwirft seinen Snapshot; danach 10 s Pause, kein Abstand."""
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    before = _details(guard).zfs.datasets[0]
+    job = await _prepared(guard, ticks)
+    assert _details(guard).zfs.datasets[0].newest_snapshot_at == job.created_at
+    assert await guard.order(GuardOrder.CLOSE) is GuardOrderResult.CLOSED
+    details = _details(guard)
+    after = details.zfs.datasets[0]
+    assert (after.snapshots, after.newest_snapshot_at) == (
+        before.snapshots,
+        before.newest_snapshot_at,
+    )
+    assert details.snapshot_allowed_at is None
+    assert details.probe_allowed_at == (now[0] + timedelta(seconds=10)).replace(microsecond=0)
+    now[0] += timedelta(seconds=9)
+    assert await guard.order(GuardOrder.SNAPSHOT) is GuardOrderResult.TOO_SOON_PROBE
+    now[0] += timedelta(seconds=1)
+    assert await guard.order(GuardOrder.SNAPSHOT) is GuardOrderResult.CREATED
+
+
+@pytest.mark.anyio
+async def test_discard_refused_keeps_the_snapshot(tmp_path: Path) -> None:
+    now, ticks = [NOW], [0.0]
+    guard = _job_guard(tmp_path, now, ticks)
+    _fault(tmp_path, "discard-refused")
+    job = await _prepared(guard, ticks)
+    assert await guard.order(GuardOrder.CLOSE) is GuardOrderResult.CLOSED
+    details = _details(guard)
+    assert {item.snapshots for item in details.zfs.datasets} == {11}
+    assert details.snapshot_allowed_at == job.created_at + timedelta(minutes=5)
+
+
+@pytest.mark.anyio
+async def test_slow_stop_reports_stopping(tmp_path: Path) -> None:
+    now, ticks = [NOW], [0.0]
+    sleeps: list[float] = []
+    release = asyncio.Event()
+
+    async def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        await release.wait()
+
+    guard = _job_guard(tmp_path, now, ticks, sleep=sleep)
+    _fault(tmp_path, "slow-stop")
+    await guard.order(GuardOrder.BEGIN)
+    task = asyncio.create_task(guard.order(GuardOrder.STOP, "twinraid-testcontainer"))
+    for _ in range(100):
+        if sleeps:
+            break
+        await asyncio.sleep(0)
+    assert sleeps == [60.0]
+    assert guard.report().status.stopping is True
+    release.set()
+    assert await task is GuardOrderResult.STOPPED
+    assert guard.report().status.stopping is False
 
 
 @pytest.mark.anyio

@@ -180,25 +180,13 @@ wait_field() {
   return 1
 }
 
-# Abstand zwischen zwei Snapshots (ab v0.5.3): Der Wächter im Test rechnet ohne Minuten
-# (SNAPSHOT_MINUTE 0), TwinRaid aus job.created_at in echten Minuten. Den Zeitpunkt des
-# letzten Snapshots im Job als root zurückstellen, wie es nach 31 Minuten wäre; der Wächter
-# liest den Job beim Neustart.
-age_snapshot() {
-  local job="${BASE}/private/job" created
-  [[ -f "${job}" ]] || return 0
-  created="$(awk '$1 == "created" {print $2}' "${job}")"
-  [[ "${created}" =~ ^[0-9]+$ ]] || return 0
-  sed -i "s/^created ${created}\$/created $((created - 1860))/" "${job}"
-  /bin/bash "${SOURCE_GUARD}" restart >/dev/null
-}
-
-# Vor jedem Lauf: Pause des Wächters aufheben (nur root auf Klein kann das), den
-# Mindestabstand von 10 min auf Groß zurückstellen, wie es nach 11 Minuten wäre, und den
-# Abstand zwischen Snapshots wie nach 31 Minuten.
+# Vor jedem Lauf: Pause des Wächters aufheben (nur root auf Klein kann das) und den
+# Mindestabstand von 10 min auf Groß zurückstellen, wie es nach 11 Minuten wäre. Den Abstand
+# zwischen Snapshots rechnet der Wächter im Test ohne Minuten (SNAPSHOT_MINUTE 0); ab
+# Protokoll 4 meldet er ihn selbst, also gilt dann keiner. Die Pause von 10 s nach einem
+# verworfenen Snapshot gilt wie auf Klein; das Warten auf den freien Button deckt sie ab.
 next_run() {
   local newest
-  age_snapshot
   /bin/bash "${SOURCE_GUARD}" reset-run-interval >/dev/null
   newest="$(zfs list -H -t snapshot -d 1 -o name -s createtxg -- "${MIRROR}" 2>/dev/null | tail -1)"
   if [[ -n "${newest}" ]]; then
@@ -475,6 +463,31 @@ fi
 expect_contains "changed test data in the newest snapshot on Groß" \
   "$(bash "${TESTDATA}" verify-latest "${MIRROR}" 2>&1 || true)" "Keine Abweichung (Lauf 1)."
 
+echo "== Probelauf, dann sofort Sync (ab v0.5.5)"
+next_run
+own_before="$(own_snapshot_count "${KLEIN}/twinraidtest")"
+expect_equal "dry run accepted" "$(post /api/actions/sync_dry_run)" "202"
+wait_done 120
+expect_equal "dry run" "$(outcome)" "dry_run:dry_run_success:null"
+expect_equal "snapshot of the dry run discarded" "$(own_snapshot_count "${KLEIN}/twinraidtest")" \
+  "${own_before}"
+if [[ "$(guard_field probe_allowed_at)" =~ ^[0-9]+$ ]]; then
+  pass "guard reports the pause"
+else
+  fail "guard reports no pause: $(guard_field probe_allowed_at)"
+fi
+# Der Worker liest den Status im Takt von 5 s; die Pause dauert 10 s.
+wait_field actions.availability.sync_start source_guard_probe_too_soon 10 || true
+expect_equal "dry run is locked in the pause too" "$(field actions.availability.sync_dry_run)" \
+  "source_guard_probe_too_soon"
+expect_equal "the discarded snapshot does not count" "$(field sync.snapshot_allowed_at)" "null"
+wait_field actions.availability.sync_start null 30 || true
+start_sync "sync right after the dry run"
+wait_done 300
+expect_equal "sync right after the dry run" "$(outcome)" "sync:success:null"
+expect_equal "the sent snapshot stays" "$(own_snapshot_count "${KLEIN}/twinraidtest")" \
+  "$((own_before + 1))"
+
 echo "== Löschungen über max_deletions: abgelehnt"
 rm -r "${DATA}/viele"
 next_run
@@ -570,7 +583,7 @@ echo "== Historie und Aktionslog"
 refresh
 expect_equal "history, newest first" \
   "$(python3 -c 'import json,sys; print(" ".join(e["result"] for e in json.load(open(sys.argv[1]))["sync"]["history"]))' "${WORK}/api-status.json")" \
-  "source_guard_refused cancelled success deletions_declined success success"
+  "source_guard_refused cancelled success deletions_declined success dry_run_success success success"
 sync_log="$(docker exec "${APP}" twinraid-admin show-sync-log 2>&1)"
 expect_contains "show-sync-log lists the runs" "${sync_log}" "deletions_declined"
 expect_contains "show-sync-log names stopped containers" "${sync_log}" "2 containers stopped"

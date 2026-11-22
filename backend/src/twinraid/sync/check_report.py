@@ -22,8 +22,6 @@ GIB = 1024**3
 _NAME_WIDTH = 24
 # Standard des Abstands zwischen Snapshots; darunter ist es ein Testwert (Konzept 3.6, F17).
 _DEFAULT_INTERVAL = 30
-# Ab Version 4 des Wächters (Protokoll 3) steht der Abstand in source-guard.conf.
-_INTERVAL_VERSION = 4
 
 
 def _gib(value: int | None) -> str:
@@ -127,11 +125,9 @@ def _interval(status: StatusSnapshot) -> list[str]:
     if details is None:
         return []
     minutes = details.limits.min_snapshot_interval_minutes
-    if details.version < _INTERVAL_VERSION:
-        lines = [f"Interval between snapshots: {minutes} min (fixed)"]
-    else:
-        lines = [f"Interval between snapshots: {minutes} min"]
-    if details.version >= _INTERVAL_VERSION and minutes < _DEFAULT_INTERVAL:
+    # Ab v0.5.5 kommt jeder angenommene Status von Version 4 oder 5 (Protokoll 3 oder 4).
+    lines = [f"Interval between snapshots: {minutes} min"]
+    if minutes < _DEFAULT_INTERVAL:
         lines.append(
             f"  Note: test value active: interval between snapshots {minutes} min "
             f"(default {_DEFAULT_INTERVAL}); remove min_snapshot_interval_minutes from "
@@ -144,9 +140,9 @@ def _interval(status: StatusSnapshot) -> list[str]:
 
 
 def _source_snapshots(item: GuardDataset, details: GuardDetails) -> str:
-    """Klein: eigene Snapshots aus dem ZFS-Teil und dem Job (Konzept 4.1, Kachel Sync)."""
-    job = details.job
-    newest = _when(job.created_at) if job is not None else "-"
+    """Klein: eigene Snapshots aus dem ZFS-Teil (Konzept 4.1, Kachel Sync); der neueste ab
+    Protokoll 4 vom Wächter, sonst aus dem Job (integrations/source_guard.py)."""
+    newest = _when(item.newest_snapshot_at) if item.newest_snapshot_at is not None else "-"
     base = f"held {_when(item.base_created_at)}" if item.base_created_at is not None else "none"
     return (
         f"    Klein: {_count(item.snapshots)} own, newest {newest}, "

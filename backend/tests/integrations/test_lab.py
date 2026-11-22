@@ -216,6 +216,8 @@ def test_fault_names_are_fixed(tmp_path: Path) -> None:
         "vm-device-busy",
         "vm-memory-low",
         "arc-unlimited",
+        "discard-refused",
+        "slow-stop",
     )
     for name in ("../etc", "api-forbidden"):
         with pytest.raises(ValueError, match="unknown fault"):

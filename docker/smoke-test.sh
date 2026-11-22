@@ -430,26 +430,25 @@ expect_contains "action log records the dry run" \
   "$(docker exec "${main}" twinraid-admin show-action-log 2>&1)" "sync_dry_run  dashboard: dry_run_success"
 expect_contains "audit log lists the dry run" "$(https_get -b "${JAR}" "${BASE}/api/audit")" \
   '"action":"sync_dry_run","result":"requested"'
-# Ab v0.5.3: Zwischen zwei Snapshots liegen in der Simulation 5 min (Konzept 6.4); der Sync
-# direkt nach dem Probelauf ist gesperrt, mit Uhrzeit und Hinweis auf den Testwert.
-expect_equal "sync right after the dry run is refused" \
+# Ab v0.5.5: Der Snapshot des Probelaufs wird verworfen und zählt nicht für den Abstand
+# (5 min in der Simulation, Konzept 6.4). Direkt danach sperrt nur die Pause von 10 s.
+expect_equal "sync right after the dry run waits for the pause" \
   "$(status_of -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/actions/sync_start")" "409"
 interval_status="$(https_get -b "${JAR}" "${BASE}/api/status")"
-expect_contains "the snapshot interval blocks the sync" "${interval_status}" '"sync_start":"source_guard_snapshot_too_soon"'
-expect_contains "status names the next snapshot" "${interval_status}" '"snapshot_allowed_at":"'
+expect_contains "the pause blocks the sync" "${interval_status}" '"sync_start":"source_guard_probe_too_soon"'
+expect_contains "status names the end of the pause" "${interval_status}" '"probe_allowed_at":"'
+expect_contains "the discarded snapshot does not count" "${interval_status}" '"snapshot_allowed_at":null'
 expect_contains "notice for the test value" "${interval_status}" '"source_snapshot_interval_test"'
-# Ein Neustart des Workers beginnt die Simulation neu (ohne letzten Snapshot).
-docker exec "${main}" /command/s6-svc -r /run/service/twinraid-worker
-worker_back="no"
-for _ in $(seq 1 60); do
+pause_over="no"
+for _ in $(seq 1 30); do
   sleep 1
   interval_status="$(https_get -b "${JAR}" "${BASE}/api/status" || true)"
   if [[ "${interval_status}" == *'"sync_start":null'* ]]; then
-    worker_back="yes"
+    pause_over="yes"
     break
   fi
 done
-expect_equal "sync is available after the worker restarted" "${worker_back}" "yes"
+expect_equal "sync is available after the pause, without the interval" "${pause_over}" "yes"
 # Sync mit dem simulierten Wächter (Konzept 4.3 und 6.4, ab v0.5.2): Container-Phase,
 # prepare und Senden mit 25 MiB/s, drei Shares mit je 350 MiB.
 expect_equal "sync is accepted" \
@@ -550,7 +549,7 @@ else
   fail "stop took ${duration}s, exit ${code}"
 fi
 
-# --- 13a. Rechte zurückgesetzt und nach Anleitung repariert (docs/EINRICHTUNG.md, Abschnitt 21, „Rechte des Datenordners zurückgesetzt“) ---
+# --- 13a. Rechte zurückgesetzt und nach Anleitung repariert (docs/EINRICHTUNG.md, Abschnitt 22, „Rechte des Datenordners zurückgesetzt“) ---
 # Wie Unraid "New Permissions": alles nobody:users, Verzeichnisse 0777, Dateien 0666.
 on_data() {
   docker run --rm --network none --entrypoint sh \

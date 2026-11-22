@@ -186,7 +186,7 @@ describe("sync texts", () => {
 
   it("tell the user which guard to copy after a protocol change", () => {
     expect(german.get("guard.statusProblems.protocol_mismatch")).toContain(
-      "source-guard.sh Version 2",
+      "source-guard.sh Version 5",
     );
   });
 });

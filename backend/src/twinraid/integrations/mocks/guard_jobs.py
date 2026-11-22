@@ -11,6 +11,11 @@ wie mit Version 4 des Wächters. Fehler mit twinraid-admin mock-fault: sync-dele
 sync-empty-source, sync-target-refused, target-exists, target-clone, sync-send-error (die
 letzte Share scheitert beim Senden), sync-slow (1 MiB/s) und sync-first-run (alle Spiegel
 absent, vollständiger Strom ohne Zählungen).
+
+Ab v0.5.5 (Protokoll 4, Konzept 6.4): Der Snapshot eines Jobs, der vor dem Senden endet
+(Probelauf, Abbruch, Frist), wird verworfen; Anzahl und neuester Snapshot auf Klein bleiben
+dann, danach gilt eine Pause von 10 s. Der Abstand zwischen zwei Snapshots zählt ab dem
+letzten gesendeten. Mit mock-fault discard-refused bleibt der Snapshot und zählt.
 """
 
 import time
@@ -65,6 +70,8 @@ MIRROR_OLDEST = timedelta(days=29)
 OWN_SNAPSHOTS = 10
 OWN_OLDEST = timedelta(days=6)
 SHARE_SIZE = 350 * MIB
+# Pause nach einem verworfenen Snapshot, fest wie im Wächter (ab Version 5).
+PROBE_PAUSE = timedelta(seconds=10)
 
 
 @dataclass(frozen=True)
@@ -130,6 +137,14 @@ class MockJobs:
         # Eigene Snapshots auf Klein und Snapshots der Spiegel auf Groß (Anzahl, älteste).
         self.own_snapshots: dict[str, int] = dict.fromkeys(datasets, OWN_SNAPSHOTS)
         self.oldest_own = now.replace(microsecond=0) - OWN_OLDEST
+        # Neuester eigener Snapshot auf Klein, zuerst die Basis von gestern (Protokoll 4).
+        self.newest_own = now.replace(microsecond=0) - timedelta(days=1)
+        self._newest_before = self.newest_own
+        # Snapshot des Jobs: pending (vorläufig), sent, discarded oder kept (ab v0.5.5).
+        self._snap_state: str | None = None
+        # Anlegen des letzten behaltenen Snapshots und Ende der Pause nach dem Verwerfen.
+        self._last_kept: datetime | None = None
+        self._probe_until: datetime | None = None
         self.mirror_snapshots: dict[str, int] = dict.fromkeys(datasets, MIRROR_SNAPSHOTS)
         self._mirror_oldest = now.replace(microsecond=0) - MIRROR_OLDEST
         self._prepare_until: float | None = None
@@ -144,6 +159,34 @@ class MockJobs:
             )
             for name, running in self.containers.items()
         )
+
+    def snapshot_allowed_at(self, now: datetime) -> datetime | None:
+        """Ende des Abstands ab dem letzten behaltenen Snapshot (wie der Wächter, ab v0.5.5)."""
+        if self._last_kept is None:
+            return None
+        allowed_at = self._last_kept + timedelta(minutes=self.timings.snapshot_interval_minutes)
+        return allowed_at if allowed_at > now else None
+
+    def probe_allowed_at(self, now: datetime) -> datetime | None:
+        """Ende der Pause nach einem verworfenen Snapshot."""
+        until = self._probe_until
+        return until if until is not None and until > now else None
+
+    def _settle(self, now: datetime) -> None:
+        """Ein beendeter Job ohne Senden: Snapshot verwerfen (oder mit discard-refused
+        behalten), danach die Pause (Konzept 3.6, „Vorläufige Snapshots“)."""
+        job = self.job
+        if job is None or job.open or self._snap_state != "pending":
+            return
+        if self._fault("discard-refused"):
+            self._snap_state = "kept"
+            self._last_kept = job.created_at
+        else:
+            self._snap_state = "discarded"
+            for name in self._datasets:
+                self.own_snapshots[name] -= 1
+            self.newest_own = self._newest_before
+        self._probe_until = (now + PROBE_PAUSE).replace(microsecond=0)
 
     def will_stop(self, name: str) -> bool:
         """stop hält diesen Container jetzt an (dauert dann stop_seconds)."""
@@ -163,6 +206,10 @@ class MockJobs:
         job = self.job
         if job is None:
             return
+        self._advance_job(job, now)
+        self._settle(now)
+
+    def _advance_job(self, job: GuardJob, now: datetime) -> None:
         if (
             job.state is GuardJobState.PREPARING
             and self._prepare_until is not None
@@ -187,6 +234,7 @@ class MockJobs:
         self.last_seq += 1
         now = self._clock()
         result = self._result(order, container, now)
+        self._settle(now)
         self.last_order = GuardLastOrder(seq=self.last_seq, order=order, result=result, at=now)
         return result
 
@@ -223,11 +271,15 @@ class MockJobs:
             case GuardOrder.SNAPSHOT:
                 if open_job:
                     return GuardOrderResult.JOB_OPEN
-                interval = timedelta(minutes=self.timings.snapshot_interval_minutes)
-                if job is not None and now - job.created_at < interval:
+                if self.snapshot_allowed_at(now) is not None:
                     return GuardOrderResult.TOO_SOON
+                if self.probe_allowed_at(now) is not None:
+                    return GuardOrderResult.TOO_SOON_PROBE
                 for name in self._datasets:
                     self.own_snapshots[name] += 1
+                self._newest_before = self.newest_own
+                self.newest_own = now.replace(microsecond=0)
+                self._snap_state = "pending"
                 stamp = now.strftime("%Y%m%dT%H%M%SZ")
                 self.job = GuardJob(
                     id=self.last_seq,
@@ -272,6 +324,9 @@ class MockJobs:
                     return GuardOrderResult.WRONG_STATE
                 if job.send_ready is not True:
                     return GuardOrderResult.NOT_READY
+                # Ab hier bleibt der Snapshot und zählt für den Abstand.
+                self._snap_state = "sent"
+                self._last_kept = job.created_at
                 slow = self._fault("sync-slow")
                 self._send_rate = self.timings.slow_send_rate if slow else self.timings.send_rate
                 self._send_started = self._monotonic()

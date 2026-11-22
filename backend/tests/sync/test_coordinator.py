@@ -339,6 +339,7 @@ async def test_simulated_guard_offline_ends_the_dry_run(tmp_path: Path) -> None:
     ("answer", "outcome", "reason"),
     [
         (GuardOrderResult.TOO_SOON, ActionOutcome.TOO_SOON, None),
+        (GuardOrderResult.TOO_SOON_PROBE, ActionOutcome.TOO_SOON_PROBE, None),
         (GuardOrderResult.SNAPSHOT_LOW_SPACE, ActionOutcome.SNAPSHOT_LOW_SPACE, None),
         (GuardOrderResult.SNAPSHOT_LIMIT, ActionOutcome.SNAPSHOT_LIMIT, None),
         (GuardOrderResult.JOB_OPEN, ActionOutcome.SOURCE_GUARD_REFUSED, GuardOrderResult.JOB_OPEN),

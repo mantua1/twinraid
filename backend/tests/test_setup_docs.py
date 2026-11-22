@@ -32,6 +32,10 @@ RELEASE_0_5_2 = {
     "source-guard.sh": "2cbccdfba70f8372799512f1b75e568abd71140c03f4d582af90b99294db0bd7",
     "testdata.sh": "c151d3421085cf2857640377d98ed0b7520c340adc950b6bac6ba725449d39de",
 }
+# Abschnitt 17 gilt für v0.5.3; v0.5.4 ändert keine Skripte, v0.5.5 nur source-guard.sh
+# (Version 5). Den Stand von v0.5.3/v0.5.4 lädt auch der Rückweg in 20.4.
+RELEASE_0_5_3_GUARD = "97f0eefda626f7623d780b5263b04fa752db091ff14c0908bd4e2d71ba1e4756"
+HEADER_0_5_3_GUARD = "# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 4 (Konzept 3.6)."
 HEADERS_0_5_2 = {
     "guard.sh": "# TwinRaid: SSH-Wächter auf Unraid Groß, Version 3 (Konzept 3.5, 3.7 und 5.6).",
     "source-guard.sh": (
@@ -201,9 +205,12 @@ def _section(number: int) -> str:
 
 
 def _before_sync() -> str:
-    """Abschnitte 1 bis 15 und 18 bis 23 ohne den Rückweg auf 0.5.0: Stand v0.5.1."""
+    """Abschnitte 1 bis 15, 18, 19 und 21 bis 24 ohne den Rückweg auf 0.5.0: Stand v0.5.1."""
     return (
-        SETUP.replace(_rollback_section(), "").replace(_section(16), "").replace(_section(17), "")
+        SETUP.replace(_rollback_section(), "")
+        .replace(_section(16), "")
+        .replace(_section(17), "")
+        .replace(_section(20), "")
     )
 
 
@@ -217,6 +224,17 @@ def _rollback_0_5_2() -> str:
 def _section_17_update() -> str:
     """Abschnitt 17 ohne den Rückweg auf 0.5.2: Stand v0.5.3."""
     return _section(17).replace(_rollback_0_5_2(), "")
+
+
+def _rollback_0_5_4() -> str:
+    """20.4: zurück auf 0.5.4, mit source-guard.sh aus v0.5.4 (gleich v0.5.3)."""
+    section = _section(20)
+    return section[section.index("### 20.4 ") :]
+
+
+def _section_20_update() -> str:
+    """Abschnitt 20 ohne den Rückweg auf 0.5.4: Stand v0.5.5."""
+    return _section(20).replace(_rollback_0_5_4(), "")
 
 
 def _sha256(name: str) -> str:
@@ -239,6 +257,10 @@ def test_scripts_are_taken_from_the_release_of_each_section() -> None:
     assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _section_17_update())) == {"v0.5.3"}
     # v0.5.4 ändert keine Skripte; Abschnitt 18 lädt nichts.
     assert "mantua1/twinraid/v" not in _section(18)
+    # v0.5.5 ändert nur source-guard.sh; der Rückweg holt die Version aus v0.5.4.
+    assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _section_20_update())) == {"v0.5.5"}
+    assert set(re.findall(r"/host-scripts/(\S+)", _section(20))) == {"source-guard.sh"}
+    assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _rollback_0_5_4())) == {"v0.5.4"}
     assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _rollback_0_5_2())) == {"v0.5.2"}
     assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _before_sync())) == {"v0.5.1"}
     assert set(re.findall(r"mantua1/twinraid/(v[0-9.]+)/", _rollback_section())) == {"v0.5.0"}
@@ -260,11 +282,12 @@ def test_section_16_loads_the_scripts_of_0_5_2(name: str) -> None:
 
 @pytest.mark.parametrize("name", ["source-guard.sh", "testdata.sh"])
 def test_section_17_loads_the_scripts_of_this_version(name: str) -> None:
-    """Herunterladen und Kopieren prüfen beide dieselbe SHA-256, die der Datei im Repo.
+    """Herunterladen und Kopieren prüfen beide dieselbe SHA-256, die der Datei aus v0.5.3.
 
-    v0.5.4 ändert die Skripte nicht; die Datei im Repo ist also noch die von v0.5.3."""
+    testdata.sh ist seither unverändert; source-guard.sh ändert sich mit v0.5.5."""
     documented = re.findall(rf"([0-9a-f]{{64}})  /tmp/{re.escape(name)}", _section_17_update())
-    assert documented == [_sha256(name)] * 2
+    expected = RELEASE_0_5_3_GUARD if name == "source-guard.sh" else _sha256(name)
+    assert documented == [expected] * 2
 
 
 def test_section_17_rolls_back_to_the_guard_of_0_5_2() -> None:
@@ -278,9 +301,46 @@ def test_section_17_rolls_back_to_the_guard_of_0_5_2() -> None:
 
 
 def test_section_17_names_the_header_of_the_guard() -> None:
+    assert f"Die zweite Zeile lautet `{HEADER_0_5_3_GUARD}`" in _section(17)
+
+
+def test_section_20_loads_the_guard_of_this_version() -> None:
+    """Version 5 aus v0.5.5 mit der SHA-256 der Datei im Repo; der Rückweg Version 4."""
+    update = re.findall(r"([0-9a-f]{64})  /tmp/source-guard\.sh", _section_20_update())
+    assert update == [_sha256("source-guard.sh")] * 2
+    rollback = re.findall(r"([0-9a-f]{64})  /tmp/source-guard\.sh", _rollback_0_5_4())
+    assert rollback == [RELEASE_0_5_3_GUARD] * 2
+    assert "Rückweg beschrieben, bis 1.0 nicht auf den Servern geprüft." in _rollback_0_5_4()
     header = (SCRIPTS / "source-guard.sh").read_text(encoding="utf-8").splitlines()[1]
-    assert "Version 4" in header
-    assert f"Die zweite Zeile lautet `{header}`" in _section(17)
+    assert "Version 5" in header
+    assert f"Die zweite Zeile lautet `{header}`" in _section(20)
+
+
+def test_section_20_waits_for_the_pause_of_the_guard() -> None:
+    """Die Pause nach einem verworfenen Snapshot steht im Wächter und in der Anleitung."""
+    guard = (SCRIPTS / "source-guard.sh").read_text(encoding="utf-8")
+    match = re.search(r"^readonly PROBE_PAUSE=(\d+)$", guard, flags=re.M)
+    assert match is not None
+    assert f"Pause von {match[1]} Sekunden" in _section(20)
+
+
+def test_every_restart_of_the_guard_in_section_20_checks_run_and_job() -> None:
+    restarts = [b for b in _blocks(_section(20)) if "source-guard.sh restart" in b]
+    assert len(restarts) == 1
+    assert "grep -q '\"run\":null'" in restarts[0]
+    assert '"state":"(closed|done|failed)"' in restarts[0]
+    assert "Kasten aus 20.2, Punkt 2 (Neustart mit Prüfung)" in _rollback_0_5_4()
+
+
+def test_blocks_in_section_20_that_change_something_check_the_server() -> None:
+    checked = 0
+    for block in _blocks(_section(20)):
+        if not any(change in block for change in _CHANGES) and "zfs list" not in block:
+            continue
+        first = block.splitlines()[0]
+        assert first in (f"if {ON_KLEIN}; then", f"if {ON_KLEIN} &&"), first
+        checked += 1
+    assert checked >= 6
 
 
 def test_test_value_of_the_interval_matches_the_guard() -> None:
@@ -592,7 +652,8 @@ def test_status_after_a_restart_waits_for_the_new_guard() -> None:
         # status mit dem Ergebnis nur, wenn der neue Stand da ist.
         shown = after[after.index('if [ -n "$NEU" ] && [ "$NEU" != "$ALT" ]; then') :]
         assert "source-guard.sh status" in shown.split("else")[0]
-    assert waiting == 4
+    # Ab v0.5.5 kommt der Kasten in 20.2 dazu.
+    assert waiting == 5
 
 
 # --- Echte Shares (Abschnitt 19, Konzept 10.2) ---

@@ -68,6 +68,10 @@ FAULTS = (
     "vm-device-busy",
     "vm-memory-low",
     "arc-unlimited",
+    # Ab v0.5.5: Der Snapshot eines Probelaufs darf nicht gelöscht werden; stop braucht die
+    # vollen stop_timeout_seconds (Konzept 6.4).
+    "discard-refused",
+    "slow-stop",
 )
 # Name der weiteren VM bei mock-fault other-vm (und vm-device-busy, die das Gerät belegt).
 MOCK_OTHER_VM = "Test-VM"

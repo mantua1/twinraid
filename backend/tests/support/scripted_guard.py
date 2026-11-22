@@ -184,6 +184,10 @@ class ScriptedGuard:
     release: asyncio.Event = field(default_factory=asyncio.Event)
     # Abstand zwischen zwei Snapshots in limits (ab v0.5.3).
     snapshot_interval: int = 30
+    # Ab v0.5.5: Protokoll 4 meldet beide Grenzen selbst (Konzept 3.6, „Protokoll 4“).
+    protocol: int = 3
+    snapshot_allowed_at: datetime | None = None
+    probe_allowed_at: datetime | None = None
     # Wird bei jedem observe aufgerufen (etwa um den Wächter mitten im Lauf zu ändern).
     on_observe: Callable[[ScriptedGuard], None] | None = None
     orders: list[GuardOrder] = field(default_factory=list)
@@ -194,7 +198,8 @@ class ScriptedGuard:
     def details(self) -> GuardDetails:
         now = datetime.now(UTC).replace(microsecond=0)
         return GuardDetails(
-            version=2,
+            version=5 if self.protocol == 4 else 4,
+            protocol=self.protocol,
             started_at=now - timedelta(hours=1),
             allowed=self.allowed,
             run=self.run,
@@ -223,6 +228,8 @@ class ScriptedGuard:
             target_known_host=True,
             target_check=self.check,
             job=self.job,
+            snapshot_allowed_at=self.snapshot_allowed_at,
+            probe_allowed_at=self.probe_allowed_at,
         )
 
     def report(self) -> GuardReport:

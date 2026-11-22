@@ -322,7 +322,8 @@
       "self_dataset_missing": "appdata wird gespiegelt, aber das eigene Dataset mainpool/appdata/twinraid fehlt (Test Z4 in docs/EINRICHTUNG.md)",
       "source_guard_too_soon": "der Wächter auf {{source}} hält die Pause zwischen zwei Läufen ein",
       "target_clone_active": "auf {{target}} besteht laut letzter Prüfung ein Klon eines Spiegels",
-      "source_guard_snapshot_too_soon": "seit dem letzten Snapshot auf {{source}} ist der Mindestabstand noch nicht vergangen"
+      "source_guard_snapshot_too_soon": "seit dem letzten Snapshot auf {{source}} ist der Mindestabstand noch nicht vergangen",
+      "source_guard_probe_too_soon": "der Snapshot eines Probelaufs auf {{source}} wurde gerade verworfen; in wenigen Sekunden wieder möglich"
     },
     "outcomes": {
       "success": "erfolgreich",
@@ -358,6 +359,7 @@
       "source_guard_lost": "Der Wächter hat nicht rechtzeitig geantwortet oder ist neu gestartet.",
       "source_guard_refused": "Der Wächter hat abgelehnt.",
       "too_soon": "Zu kurz nach dem letzten Snapshot; der Wächter lässt einen neuen erst nach dem eingestellten Abstand zu.",
+      "too_soon_probe": "Zu kurz nach dem Ende eines Probelaufs; der Wächter lässt einen neuen Snapshot erst nach einer kurzen Pause zu.",
       "snapshot_low_space": "Zu wenig Platz auf mainpool für einen neuen Snapshot (Reserve laut source-guard.conf).",
       "snapshot_limit": "Zu viele eigene Snapshots (höchstens 50 je Dataset); ältere laufen nach snapshot_keep_days ab.",
       "prepare_failed": "Die Prüfung auf dem Quellserver ist fehlgeschlagen; Einzelheiten im Syslog (twinraid-source-guard).",
@@ -470,7 +472,7 @@
       "too_large": "status.json ist größer als 64 KiB.",
       "bad_json": "status.json ist kein gültiges JSON.",
       "schema": "status.json hat nicht den erwarteten Aufbau.",
-      "protocol_mismatch": "Der Wächter spricht ein anderes Protokoll; source-guard.sh Version 2 nach /boot/config/twinraid/ kopieren und mit source-guard.sh restart neu starten.",
+      "protocol_mismatch": "Der Wächter spricht ein anderes Protokoll; source-guard.sh Version 5 nach /boot/config/twinraid/ kopieren und mit source-guard.sh restart neu starten.",
       "heartbeat_future": "Der Herzschlag liegt in der Zukunft; die Uhrzeit des Servers prüfen."
     },
     "run_one": "{{count}} Container angehalten ({{names}}), spätestens wieder an um {{time}}.",
@@ -548,12 +550,12 @@
       "datasetNoBase": "noch keine Basis",
       "datasetBookmark": "mit Lesezeichen",
       "snapshotInterval": "Abstand zwischen Snapshots",
-      "snapshotIntervalValue": "{{minutes}} min",
-      "snapshotIntervalFixed": "{{minutes}} min (fest)"
+      "snapshotIntervalValue": "{{minutes}} min"
     },
     "active_one": "Wächter: aktiv · {{count}} Container freigegeben",
     "active_other": "Wächter: aktiv · {{count}} Container freigegeben",
-    "activeHint": "Status wird alle 5 s geprüft."
+    "activeHint": "Status wird alle 5 s geprüft.",
+    "stopping": "Wächter: Container wird angehalten (bis zu {{seconds}} s)"
   },
   "sync": {
     "schedule": "Zeitplan aus (ab Phase 6).",
@@ -652,12 +654,13 @@
       "run_open": "auf {{source}} ist noch ein Lauf offen",
       "no_job": "der Job ist verschwunden",
       "wrong_state": "der Job ist in einem anderen Zustand",
-      "not_supported": "source-guard.sh ist zu alt (Version 2 kopieren)",
+      "not_supported": "source-guard.sh ist zu alt (Version 5 kopieren)",
       "config_invalid": "source-guard.conf ist ungültig",
       "misconfigured": "der Wächter ist falsch eingerichtet",
       "request_not_a_file": "die Auftragsdatei ist unbrauchbar",
       "docker_unavailable": "Docker ist auf {{source}} nicht erreichbar",
       "too_soon": "die Pause zwischen zwei Läufen gilt noch",
+      "too_soon_probe": "die kurze Pause nach einem verworfenen Snapshot gilt noch",
       "no_run": "der Totmannschalter des Wächters hat den Lauf beendet, weil TwinRaid sich nicht rechtzeitig gemeldet hat; die Container laufen wieder",
       "stop_failed": "docker stop ist für einen Container fehlgeschlagen",
       "not_allowed": "ein Container steht nicht in der Erlaubnisliste des Wächters (allow) oder in deny",
