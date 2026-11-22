@@ -245,6 +245,46 @@ describe("pause and snapshot interval", () => {
     );
   });
 
+  it("releases both buttons when the pause after a dry run ends, without a new status", async () => {
+    clockAt("2026-10-13T12:00:00Z");
+    const { tile } = await openDashboard({
+      ...status("online", { probe_allowed_at: "2026-10-13T12:00:08Z" }),
+      actions: actionsSnapshot({
+        sync_dry_run: "source_guard_probe_too_soon",
+        sync_start: "source_guard_probe_too_soon",
+      }),
+    });
+    const dryRun = within(tile).getByRole("button", { name: "Nur Probelauf" });
+    const start = within(tile).getByRole("button", { name: "Jetzt synchronisieren" });
+    expect(dryRun).toBeDisabled();
+    expect(start).toBeDisabled();
+    expect(within(tile).getByTestId("action-hint")).toHaveTextContent(
+      "Nur Probelauf, Jetzt synchronisieren: der Snapshot eines Probelaufs auf Unraid Klein wurde gerade verworfen; in wenigen Sekunden wieder möglich",
+    );
+    // Keine Zeile „Nächster Snapshot“: Der verworfene Snapshot zählt nicht für den Abstand.
+    expect(within(tile).queryByTestId("next-snapshot")).toBeNull();
+    vi.setSystemTime(new Date("2026-10-13T12:00:08Z"));
+    await waitFor(
+      () => {
+        expect(dryRun).toBeEnabled();
+        expect(start).toBeEnabled();
+      },
+      { timeout: 3000 },
+    );
+  });
+
+  it("keeps other reasons after the pause after a dry run", async () => {
+    clockAt("2026-10-13T12:00:20Z");
+    const { tile } = await openDashboard({
+      ...status("online", { probe_allowed_at: "2026-10-13T12:00:08Z" }),
+      actions: actionsSnapshot({
+        sync_dry_run: "levels_mismatch",
+        sync_start: "levels_mismatch",
+      }),
+    });
+    expect(within(tile).getByRole("button", { name: "Nur Probelauf" })).toBeDisabled();
+  });
+
   it("shows both lines when both limits apply", async () => {
     clockAt("2026-10-13T12:00:00Z");
     const { tile } = await openDashboard(
@@ -261,15 +301,12 @@ describe("pause and snapshot interval", () => {
 
 describe("snapshots of both sides", () => {
   const withNewest = {
-    job: {
-      created_at: "2026-10-13T11:55:00Z",
-      datasets: [{ name: "twinraidtest" }],
-    },
     zfs: {
       ...GUARD_DETAILS.zfs,
       datasets: [
         dataset("twinraidtest", true, {
           snapshots: 10,
+          newest_snapshot_at: "2026-10-13T11:55:00Z",
           oldest_snapshot_at: "2026-10-07T11:00:00Z",
           base_created_at: "2026-10-13T11:00:00Z",
           bookmark: true,

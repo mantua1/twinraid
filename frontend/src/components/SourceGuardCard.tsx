@@ -87,14 +87,10 @@ export function SourceGuardCard({ guard, name, target, children }: SourceGuardCa
             </dd>
             <dt className="font-medium">{t("guard.settings.snapshotInterval")}</dt>
             <dd data-testid="guard-snapshot-interval">
-              {/* Bis Version 3 (Protokoll 2) gilt fest 30 min, ab Version 4 der Wert aus dem Status. */}
-              {details.version >= 4
-                ? t("guard.settings.snapshotIntervalValue", {
-                    minutes: details.limits.min_snapshot_interval_minutes,
-                  })
-                : t("guard.settings.snapshotIntervalFixed", {
-                    minutes: details.limits.min_snapshot_interval_minutes,
-                  })}
+              {/* Ab v0.5.5 kommt jeder Status von Version 4 oder 5 mit dem Wert aus limits. */}
+              {t("guard.settings.snapshotIntervalValue", {
+                minutes: details.limits.min_snapshot_interval_minutes,
+              })}
             </dd>
             <dt className="font-medium">{t("guard.settings.maxDeletions")}</dt>
             <dd>{new Intl.NumberFormat(language).format(details.limits.max_deletions)}</dd>

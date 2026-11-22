@@ -73,6 +73,7 @@ export function dataset(
     compression: present === true ? "on" : null,
     snapshots: null,
     oldest_snapshot_at: null,
+    newest_snapshot_at: null,
     base_created_at: null,
     bookmark: null,
     base_hold_missing: false,
@@ -82,7 +83,8 @@ export function dataset(
 
 /** Aktiver Wächter auf Klein mit einem freigegebenen Container (Konzept 3.6). */
 export const GUARD_DETAILS: GuardDetails = {
-  version: 2,
+  version: 5,
+  protocol: 4,
   started_at: "2026-10-13T08:00:00Z",
   allowed: [{ name: "twinraid-testcontainer", state: "running" }],
   run: null,
@@ -123,6 +125,7 @@ export const GUARD_ACTIVE: SourceGuardStatus = {
   heartbeat_at: "2026-10-13T12:00:00Z",
   heartbeat_age_seconds: 4,
   details: GUARD_DETAILS,
+  stopping: false,
 };
 
 /** Kein Probelauf bisher; die Ebenen passen auf Klein (Konzept 4.3). */
@@ -139,6 +142,7 @@ export const SYNC_IDLE: SyncStatus = {
   history: [],
   preview: { containers: ["twinraid-testcontainer"], wake: false },
   snapshot_allowed_at: null,
+  probe_allowed_at: null,
 };
 
 /** Laufender Lauf; ohne Angaben ein Probelauf im Schritt preparing. */

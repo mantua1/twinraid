@@ -11,14 +11,11 @@ interface SyncSnapshotsProps {
 
 function SourceSide({
   dataset,
-  newest,
   keepDays,
   language,
   name,
 }: {
   dataset: GuardDataset | undefined;
-  // Zeitpunkt des Snapshots im Job, solange der Job im Status steht.
-  newest: string | null;
   keepDays: number | null;
   language: string | undefined;
   name: string;
@@ -28,8 +25,10 @@ function SourceSide({
   const lines: string[] = [];
   if (dataset?.snapshots != null) {
     lines.push(t("sync.snapshots.count", { count: dataset.snapshots }));
-    if (newest !== null) {
-      lines.push(t("sync.snapshots.newest", { time: time(newest) }));
+    // Ab v0.5.5 meldet der Worker den neuesten Snapshot je Dataset; ein verworfener
+    // Snapshot eines Probelaufs erscheint so nicht (Konzept 4.1).
+    if (dataset.newest_snapshot_at !== null) {
+      lines.push(t("sync.snapshots.newest", { time: time(dataset.newest_snapshot_at) }));
     }
     if (dataset.oldest_snapshot_at !== null) {
       lines.push(t("sync.snapshots.oldest", { time: time(dataset.oldest_snapshot_at) }));
@@ -139,10 +138,6 @@ export function SyncSnapshots({ status, names }: SyncSnapshotsProps) {
   return (
     <div className="flex flex-col gap-1" data-testid="sync-snapshots">
       {shares.map((share) => {
-        const job = details?.job ?? null;
-        const newest = job?.datasets.some((dataset) => dataset.name === share)
-          ? job.created_at
-          : null;
         return (
           <details key={share} className="text-sm" data-testid="snapshots-share">
             <summary className="cursor-pointer font-medium">
@@ -151,7 +146,6 @@ export function SyncSnapshots({ status, names }: SyncSnapshotsProps) {
             <div className="mt-2 grid gap-3 sm:grid-cols-2">
               <SourceSide
                 dataset={details?.zfs.datasets.find((dataset) => dataset.name === share)}
-                newest={newest}
                 keepDays={details?.limits.snapshot_keep_days ?? null}
                 language={language}
                 name={names.source}

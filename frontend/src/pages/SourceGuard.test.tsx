@@ -41,6 +41,15 @@ function guardState(source: HTMLElement) {
 }
 
 describe("tile Klein", () => {
+  it("names a container stop instead of active while a stop is open (v0.5.5)", async () => {
+    const { source } = await openDashboard({ status: withGuard({ stopping: true }) });
+    const state = guardState(source);
+    expect(state).toHaveAttribute("data-state", "active");
+    expect(state).toHaveTextContent("Wächter: Container wird angehalten (bis zu 60 s)");
+    expect(state).not.toHaveTextContent("freigegeben");
+    expect(state).not.toHaveClass("text-destructive");
+  });
+
   it("shows an active guard with its allowed containers", async () => {
     const { source } = await openDashboard();
     const state = guardState(source);
@@ -318,9 +327,8 @@ describe("tile Sync", () => {
 
 describe("settings", () => {
   it.each([
-    [2, 30, "30 min (fest)"],
-    [3, 30, "30 min (fest)"],
     [4, 5, "5 min"],
+    [5, 30, "30 min"],
   ])("shows the snapshot interval of guard version %i", async (version, minutes, text) => {
     const { user } = await openDashboard({
       status: withDetails({

@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
 import type { ActionName, StatusSnapshot, SyncReport, SyncShareReport } from "@/api/types";
@@ -232,7 +233,25 @@ export function SyncTile({
       ? roundUpToMinute(details.run_allowed_at)
       : null;
   const snapshotEnd = sync?.snapshot_allowed_at != null ? new Date(sync.snapshot_allowed_at) : null;
-  const now = useNow(pauseEnd !== null || snapshotEnd !== null);
+  // Pause von 10 s nach einem verworfenen Snapshot (ab v0.5.5): Ist sie der Grund, sperrt
+  // sonst nichts (der Worker prüft sie zuletzt), und die Buttons werden mit ihrem Ende frei,
+  // ohne auf den nächsten Status zu warten. Maßgeblich bleibt der Worker.
+  const probeEnd = sync?.probe_allowed_at != null ? new Date(sync.probe_allowed_at) : null;
+  const now = useNow(pauseEnd !== null || snapshotEnd !== null || probeEnd !== null);
+  const probeOver = probeEnd !== null && probeEnd <= now;
+  const statusActions = status?.actions ?? null;
+  const actionsSnapshot = useMemo(() => {
+    if (statusActions === null || !probeOver) {
+      return statusActions;
+    }
+    const availability = { ...statusActions.availability };
+    for (const name of ["sync_dry_run", "sync_start"] as const) {
+      if (availability[name] === "source_guard_probe_too_soon") {
+        availability[name] = null;
+      }
+    }
+    return { ...statusActions, availability };
+  }, [statusActions, probeOver]);
   const nextSync = pauseEnd !== null && pauseEnd > now ? formatTime(language, pauseEnd) : null;
   const nextSnapshot =
     snapshotEnd !== null && snapshotEnd > now ? formatTime(language, snapshotEnd) : null;
@@ -365,7 +384,7 @@ export function SyncTile({
         </p>
         <ActionPanel
           actions={actions}
-          snapshot={status?.actions ?? null}
+          snapshot={actionsSnapshot}
           onRun={onRun}
           blockerValues={blockerValues}
         />
