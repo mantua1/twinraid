@@ -527,7 +527,9 @@ probe="$(job snapshot)"
 probe_id="$(job id)"
 own_list() { { own_snapshots "${KLEIN}/twinraidtest"; own_snapshots "${KLEIN}/dokumente"; } | xargs; }
 own_before="$(own_list)"
-base_before="$(status_field zfs.datasets.0.base)"
+# Gehaltene Snapshots direkt aus ZFS: status.json liest seinen ZFS-Teil nur alle 30 s neu.
+held_list() { zfs list -H -t snapshot -o name,userrefs -- "${KLEIN}/twinraidtest" "${KLEIN}/dokumente" | awk -F'\t' '$2 > 0 {print $1}' | xargs; }
+base_before="$(held_list)"
 marks_before="$(zfs list -H -t bookmark -o name,guid -- "${KLEIN}/twinraidtest" "${KLEIN}/dokumente")"
 order close closed
 # Das Verwerfen läuft in derselben Runde wie close; der Status nennt danach die Pause.
@@ -540,7 +542,7 @@ expect_contains "discard in the syslog" "$(cat "${WORK}/syslog-klein.log")" \
   "job ${probe_id}: provisional snapshot ${probe} discarded on 2 datasets, kept on 0"
 expect_equal "own snapshots as before" "$(own_list)" \
   "$(tr ' ' '\n' <<<"${own_before}" | grep -v -- "@${probe}\$" | xargs)"
-expect_equal "held base unchanged" "$(status_field zfs.datasets.0.base)" "${base_before}"
+expect_equal "held base unchanged" "$(held_list)" "${base_before}"
 expect_equal "bookmarks unchanged" \
   "$(zfs list -H -t bookmark -o name,guid -- "${KLEIN}/twinraidtest" "${KLEIN}/dokumente")" \
   "${marks_before}"
