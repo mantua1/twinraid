@@ -118,6 +118,10 @@ class AutoShutdown:
             self._mark(AutoShutdownKind.AFTER_PLAY)
 
     def _mark(self, kind: AutoShutdownKind) -> None:
+        if not self._enabled():
+            # Ohne actions.shutdown zeigt die Kachel Groß kein Herunterfahren (Konzept 4.2).
+            logger.info("automatic shutdown not planned (%s): actions.shutdown is off", kind.value)
+            return
         self._marks[kind] = _Mark(kind, self._clock())
         self._since = None
         logger.info("automatic shutdown of the target planned: %s", kind.value)

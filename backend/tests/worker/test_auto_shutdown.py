@@ -322,10 +322,21 @@ async def test_keep_target_on(auto: Auto) -> None:
 
 
 async def test_keep_target_on_needs_no_enablement(tmp_path: Path) -> None:
-    auto = Auto(tmp_path, _config(actions={"shutdown": False}), mode=RunMode.REAL)
+    """„Groß anlassen“ braucht keine eigene Freischaltung (Konzept 4.2)."""
+    auto = Auto(tmp_path, _config(actions={"shutdown": True}), mode=RunMode.REAL)
     auto.auto.mark_after_play()
     availability = auto.setup.actions.availability(auto.setup.monitor.current())
     assert availability[ActionName.AUTO_SHUTDOWN_CANCEL] is None
+    assert availability[ActionName.VM_START] is ActionBlocker.NOT_ENABLED
+
+
+def test_no_mark_without_the_shutdown_switch(tmp_path: Path) -> None:
+    """Ohne actions.shutdown zeigt die Kachel Groß kein Herunterfahren (Konzept 4.2)."""
+    auto = Auto(tmp_path, _config(actions={"shutdown": False}), mode=RunMode.REAL).auto
+    auto.mark_after_play()
+    auto.mark_after_sync()
+    assert not auto.offered()
+    assert auto.snapshot(_status()) is None
 
 
 def test_both_marks_use_the_longer_delay(tmp_path: Path) -> None:
