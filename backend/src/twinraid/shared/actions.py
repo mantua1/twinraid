@@ -23,6 +23,9 @@ class ActionName(StrEnum):
     # Probelauf ab v0.5.1, echter Sync ab v0.5.2 (Konzept 4.3).
     SYNC_DRY_RUN = "sync_dry_run"
     SYNC_START = "sync_start"
+    # „Groß anlassen“ (ab v0.6.0, Konzept 4.2): löscht ein vorgemerktes automatisches
+    # Herunterfahren; braucht keine Freischaltung, weil es nur weniger erlaubt.
+    AUTO_SHUTDOWN_CANCEL = "auto_shutdown_cancel"
 
 
 # Aktionen der Ressource „Sync“ (Konzept 4.2); die übrigen betreffen Groß und die VM.
@@ -158,6 +161,11 @@ class ActionOutcome(StrEnum):
     CONTAINER_RESTART_FAILED = "container_restart_failed"
     SEND_FAILED = "send_failed"
     TARGET_MODIFIED = "target_modified"
+    # Zeitplan ab v0.6.0 (Konzept 4.8): Termin ausgelassen (reason: die letzte Sperre),
+    # Termin verpasst, geplanter Lauf brauchte eine Freigabe von Löschungen (Konzept 4.3).
+    SCHEDULE_SKIPPED = "schedule_skipped"
+    SCHEDULE_MISSED = "schedule_missed"
+    CONFIRMATION_REQUIRED = "confirmation_required"
     # Der Worker wurde beendet, während die Aktion lief (nur im Aktionslog).
     INTERRUPTED = "interrupted"
     INTERNAL_ERROR = "internal_error"
@@ -167,8 +175,11 @@ class Trigger(StrEnum):
     """Wer eine Aktion ausgelöst hat (Aktionslog, Konzept 5.3)."""
 
     DASHBOARD = "dashboard"
-    # Teil einer anderen Aktion, z. B. das Wecken beim VM-Start.
+    # Teil einer anderen Aktion, z. B. das Wecken beim VM-Start; ab v0.6.0 auch das
+    # automatische Herunterfahren (Konzept 4.2).
     AUTOMATIC = "automatic"
+    # Geplanter Lauf (ab v0.6.0, Konzept 4.8).
+    SCHEDULE = "schedule"
 
 
 class RunningAction(StrictModel):
@@ -181,6 +192,8 @@ class ActionResult(StrictModel):
     action: ActionName
     outcome: ActionOutcome
     finished_at: datetime
+    # Ab v0.6.0: automatic beim automatischen Herunterfahren (Konzept 4.2).
+    trigger: Trigger = Trigger.DASHBOARD
 
 
 class ResourceActivity(StrictModel):

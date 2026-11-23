@@ -48,7 +48,17 @@ def test_login_is_required(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["vm_reboot", "sync_cancel", "sync_confirm_deletions", "VM_START", "vm_start;rm"]
+    "name",
+    [
+        "vm_reboot",
+        "sync_cancel",
+        "sync_confirm_deletions",
+        "VM_START",
+        "vm_start;rm",
+        # Abgelehnt in E29: Termine nur über twinraid.yaml auslassen.
+        "schedule_skip_next",
+        "schedule_skip_cancel",
+    ],
 )
 def test_only_fixed_actions_exist(tmp_path: Path, name: str) -> None:
     worker = FakeWorker()

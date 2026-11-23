@@ -118,6 +118,8 @@ def test_status_from_worker(tmp_path: Path) -> None:
     assert body.pop("source_guard")["state"] == "not_mounted"
     assert body.pop("target_zfs") is None
     assert body.pop("sync")["running"] is None
+    assert body.pop("schedule")["enabled"] is False
+    assert body.pop("auto_shutdown") is None
     assert body == {
         "source": unknown,
         "target": unknown,

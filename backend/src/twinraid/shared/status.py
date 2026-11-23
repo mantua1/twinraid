@@ -5,6 +5,7 @@ from enum import StrEnum
 
 from twinraid.shared.actions import ActionsSnapshot
 from twinraid.shared.base import StrictModel
+from twinraid.shared.schedule import AutoShutdownStatus, ScheduleStatus
 from twinraid.shared.source_guard import SourceGuardStatus
 from twinraid.shared.sync import SyncStatus
 
@@ -138,3 +139,7 @@ class StatusSnapshot(ResourceStatus):
     source_guard: SourceGuardStatus
     # Probelauf und Sync (Konzept 4.3, ab v0.5.1).
     sync: SyncStatus
+    # Ab v0.6.0: Zeitplan (Konzept 4.8) und vorgemerktes Herunterfahren von Groß (Konzept 4.2);
+    # None, wenn nichts vorgemerkt ist.
+    schedule: ScheduleStatus
+    auto_shutdown: AutoShutdownStatus | None = None

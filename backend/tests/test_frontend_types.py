@@ -11,6 +11,7 @@ import pytest
 
 from tests.conftest import REPO_ROOT
 from twinraid.shared.actions import ActionBlocker, ActionName, ActionOutcome, ActionStep
+from twinraid.shared.schedule import AutoShutdownKind, AutoShutdownReason, ScheduleLimit
 from twinraid.shared.source_guard import (
     GuardBlocker,
     GuardCheckResult,
@@ -65,6 +66,10 @@ def _frontend_list(name: str) -> list[str]:
         ("GUARD_CONFIRM_REASONS", GuardConfirmReason),
         ("GUARD_DATASET_PROBLEMS", GuardDatasetProblem),
         ("SYNC_STEPS", SyncStep),
+        # Ab v0.6.0 (Konzept 4.2 und 4.8).
+        ("SCHEDULE_LIMITS", ScheduleLimit),
+        ("AUTO_SHUTDOWN_KINDS", AutoShutdownKind),
+        ("AUTO_SHUTDOWN_REASONS", AutoShutdownReason),
     ],
 )
 def test_lists_match(name: str, enum: type[StrEnum]) -> None:

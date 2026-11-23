@@ -16,6 +16,7 @@ from twinraid.shared.actions import ActionBlocker, ActionName, ActionsSnapshot
 from twinraid.shared.addresses import configured, resolve_addresses
 from twinraid.shared.mode import RunMode
 from twinraid.shared.passwords import VerifyOutcome
+from twinraid.shared.schedule import ScheduleStatus
 from twinraid.shared.source_guard import GuardState, SourceGuardStatus
 from twinraid.shared.status import UNKNOWN, StatusSnapshot
 from twinraid.shared.sync import SyncLevels, SyncPreview, SyncStatus
@@ -38,6 +39,22 @@ BASE_URL = "https://192.168.10.20:8443"
 CLIENT_IP = "192.168.20.5"
 
 
+# Zeitplan aus wie im Worker ohne eingeschalteten Zeitplan (ab v0.6.0).
+SCHEDULE_OFF = ScheduleStatus(
+    enabled=False,
+    permitted=True,
+    timezone="Europe/Berlin",
+    days=("sun",),
+    time="03:00",
+    wake=False,
+    shutdown=False,
+    shutdown_delay_minutes=5,
+    play_shutdown=False,
+    play_delay_minutes=15,
+    next_terms=(),
+)
+
+
 def unknown_status(password_set: bool = True, job_running: bool = False) -> StatusSnapshot:
     return StatusSnapshot(
         source=UNKNOWN,
@@ -52,6 +69,7 @@ def unknown_status(password_set: bool = True, job_running: bool = False) -> Stat
             levels=SyncLevels(configured=(), source=None, target=None, target_checked_at=None),
             preview=SyncPreview(containers=(), wake=False),
         ),
+        schedule=SCHEDULE_OFF,
     )
 
 

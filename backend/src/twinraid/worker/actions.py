@@ -99,6 +99,16 @@ class StatusSource(Protocol):
     async def check_once(self) -> ResourceStatus: ...
 
 
+class AutoShutdownMarks(Protocol):
+    """Vormerkungen des automatischen Herunterfahrens (worker/auto_shutdown.py, ab v0.6.0)."""
+
+    def offered(self) -> bool: ...
+
+    def cancel(self) -> bool: ...
+
+    def mark_after_play(self) -> None: ...
+
+
 class SyncActions(Protocol):
     """Probelauf und Sync (sync/coordinator.py, ab v0.5.1): eigene Ressource „Sync“."""
 
@@ -116,6 +126,9 @@ class _Run:
     # Diese Aktion hat Groß geweckt: Groß gilt bis zur Bereitschaft als „Startet …“.
     woke: bool = False
     held: frozenset[Resource] = field(default_factory=frozenset)
+    # Ab v0.6.0: automatisches Herunterfahren mit der Aktion, die Groß geweckt hat.
+    trigger: Trigger = Trigger.DASHBOARD
+    part_of: ActionName | None = None
 
     def public(self) -> RunningAction:
         return RunningAction(action=self.action, step=self.step, started_at=self.started_at)
@@ -160,9 +173,14 @@ class ActionCoordinator:
         self._tasks: set[asyncio.Task[None]] = set()
         # Probelauf und Sync (ab v0.5.1); ohne ihn sind die Sync-Aktionen nicht verfügbar.
         self._sync: SyncActions | None = None
+        # Automatisches Herunterfahren (ab v0.6.0).
+        self._auto: AutoShutdownMarks | None = None
 
     def attach_sync(self, sync: SyncActions) -> None:
         self._sync = sync
+
+    def attach_auto_shutdown(self, auto: AutoShutdownMarks) -> None:
+        self._auto = auto
 
     # --- Freischaltung und Verfügbarkeit ---
 
@@ -210,6 +228,10 @@ class ActionCoordinator:
         return {name: self._blocker(name, status) for name in ActionName}
 
     def _blocker(self, name: ActionName, status: ResourceStatus) -> ActionBlocker | None:
+        if name is ActionName.AUTO_SHUTDOWN_CANCEL:
+            # „Groß anlassen“: ohne Freischaltung, nur solange etwas vorgemerkt ist (4.2).
+            offered = self._auto is not None and self._auto.offered()
+            return None if offered else ActionBlocker.NOT_OFFERED
         if name in SYNC_ACTIONS:
             if self._sync is None:
                 return ActionBlocker.NOT_ENABLED
@@ -276,8 +298,10 @@ class ActionCoordinator:
                     (self.forced_shutdown_until(status) is None, ActionBlocker.NOT_OFFERED),
                     *other_vms,
                 ]
-            case ActionName.SYNC_DRY_RUN | ActionName.SYNC_START:  # pragma: no cover
-                checks = []  # über self._sync, siehe _blocker
+            case (
+                ActionName.SYNC_DRY_RUN | ActionName.SYNC_START | ActionName.AUTO_SHUTDOWN_CANCEL
+            ):  # pragma: no cover
+                checks = []  # über self._sync bzw. self._auto, siehe _blocker
             case ActionName.VM_STOP | ActionName.VM_FORCE_STOP:
                 force = name is ActionName.VM_FORCE_STOP
                 available_at = self.force_available_at()
@@ -368,6 +392,11 @@ class ActionCoordinator:
             if self._sync is None:  # pragma: no cover - availability lehnt dann schon ab
                 return ActionBlocker.NOT_ENABLED
             return await self._sync.request(name)
+        if name is ActionName.AUTO_SHUTDOWN_CANCEL:
+            if self._auto is None or not self._auto.cancel():
+                return ActionBlocker.NOT_OFFERED
+            self._log.record(new_action_id(), name, Trigger.DASHBOARD, ActionOutcome.SUCCESS)
+            return None
         # Jede neue Aktion beendet das Angebot; die erzwungene Variante verbraucht es.
         self._forced_shutdown_until = None
         resources = _RESOURCES[name]
@@ -378,6 +407,29 @@ class ActionCoordinator:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return None
+
+    def start_automatic_shutdown(self, part_of: ActionName) -> bool:
+        """Automatisches Herunterfahren (Konzept 4.2, ab v0.6.0): derselbe Ablauf wie
+        „Groß herunterfahren“, Auslöser automatic. False, wenn Groß oder die VM belegt ist."""
+        resources = _RESOURCES[ActionName.SHUTDOWN_TARGET]
+        if any(resource in self._running for resource in resources):
+            return False
+        self._forced_shutdown_until = None
+        run = _Run(
+            new_action_id(),
+            ActionName.SHUTDOWN_TARGET,
+            self._clock(),
+            ActionStep.SHUTTING_DOWN,
+            held=resources,
+            trigger=Trigger.AUTOMATIC,
+            part_of=part_of,
+        )
+        for resource in resources:
+            self._running[resource] = run
+        task = asyncio.create_task(self._execute(run))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return True
 
     # --- Für den Probelauf (sync/coordinator.py) ---
 
@@ -450,20 +502,24 @@ class ActionCoordinator:
                 await task
 
     async def _execute(self, run: _Run) -> None:
-        self._log.record(run.id, run.action, Trigger.DASHBOARD, STARTED)
+        self._log.record(run.id, run.action, run.trigger, STARTED, run.part_of)
         outcome = ActionOutcome.SUCCESS
         try:
             await self._sequence(run)
         except ActionError as failure:
             outcome = failure.outcome
         except asyncio.CancelledError:
-            self._log.record(run.id, run.action, Trigger.DASHBOARD, ActionOutcome.INTERRUPTED)
+            self._log.record(
+                run.id, run.action, run.trigger, ActionOutcome.INTERRUPTED, run.part_of
+            )
             raise
         except Exception:  # Eine Aktion darf den Worker nie beenden.
             logger.exception("action %s failed unexpectedly", run.action.value)
             outcome = ActionOutcome.INTERNAL_ERROR
-        self._log.record(run.id, run.action, Trigger.DASHBOARD, outcome)
-        result = ActionResult(action=run.action, outcome=outcome, finished_at=self._clock())
+        self._log.record(run.id, run.action, run.trigger, outcome, run.part_of)
+        result = ActionResult(
+            action=run.action, outcome=outcome, finished_at=self._clock(), trigger=run.trigger
+        )
         for resource in run.held:
             self._last[resource] = result
         if run.action is ActionName.SHUTDOWN_TARGET and outcome is ActionOutcome.VM_STOP_TIMEOUT:
@@ -486,6 +542,8 @@ class ActionCoordinator:
                 await self._stop_vm(run)
             case ActionName.VM_FORCE_STOP:
                 await self._force_stop_vm(run)
+            case ActionName.SHUTDOWN_TARGET if run.trigger is Trigger.AUTOMATIC:
+                await self._automatic_shutdown(run)
             case ActionName.SHUTDOWN_TARGET:
                 await self._shutdown_target(run)
             case ActionName.SHUTDOWN_TARGET_FORCE_VM:
@@ -539,6 +597,9 @@ class ActionCoordinator:
                 run.step, run.woke = ActionStep.WAKING, True
                 await self._control.wake()
                 await self._wait_until_ready(run, deadline, need_vm=False)
+            if self._auto is not None:
+                # Herunterfahren nach dem Spielen (Konzept 4.2, ab v0.6.0).
+                self._auto.mark_after_play()
         state = await self._wait_until_ready(run, deadline, need_vm=True)
         if state is None or state in _VM_RUNNING:
             return
@@ -594,6 +655,14 @@ class ActionCoordinator:
             # „VM zuerst herunterfahren?“ (Entscheidung E10): Bleibt sie an, bricht der Ablauf ab.
             async with self._part(run, ActionName.VM_STOP):
                 await self._stop_vm(run)
+        await self._power_off(run)
+
+    async def _automatic_shutdown(self, run: _Run) -> None:
+        """Automatisches Herunterfahren: Die Gaming-VM muss SHUTOFF melden; TwinRaid fährt
+        sie dafür nie selbst herunter (Konzept 4.2). Sonst wie „Groß herunterfahren“."""
+        await self._ensure_no_other_vms()
+        if await self._control.vm_state() != "SHUTOFF":
+            raise ActionError(ActionOutcome.VM_RUNNING)
         await self._power_off(run)
 
     async def _shutdown_target_force_vm(self, run: _Run) -> None:

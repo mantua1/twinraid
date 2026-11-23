@@ -416,6 +416,8 @@ export const ACTION_NAMES = [
   // Probelauf ab v0.5.1, Sync ab v0.5.2 (Konzept 4.3).
   "sync_dry_run",
   "sync_start",
+  // Ab v0.6.0: „Groß anlassen“ (Konzept 4.2).
+  "auto_shutdown_cancel",
 ] as const;
 export type ActionName = (typeof ACTION_NAMES)[number];
 
@@ -505,6 +507,10 @@ export const ACTION_OUTCOMES = [
   "container_restart_failed",
   "send_failed",
   "target_modified",
+  // Ab v0.6.0: Zeitplan (Konzept 4.8).
+  "schedule_skipped",
+  "schedule_missed",
+  "confirmation_required",
   "interrupted",
   "internal_error",
 ] as const;
@@ -516,10 +522,15 @@ export interface RunningAction {
   started_at: string;
 }
 
+// Wer eine Aktion ausgelöst hat (Aktionslog, Konzept 5.3); schedule ab v0.6.0.
+export type Trigger = "dashboard" | "automatic" | "schedule";
+
 export interface ActionResult {
   action: ActionName;
   outcome: ActionOutcome;
   finished_at: string;
+  // Ab v0.6.0: automatic beim automatischen Herunterfahren (Konzept 4.2).
+  trigger: Trigger;
 }
 
 export interface ResourceActivity {
@@ -561,7 +572,13 @@ export type SyncStep = (typeof SYNC_STEPS)[number];
 
 // Grund zu einem Ergebnis: Eintrag aus blockers, Ergebnis von check, eines Auftrags oder
 // der Grund aus dem Job (ab v0.5.2).
-export type SyncReason = GuardBlocker | GuardCheckResult | GuardOrderResult | GuardJobReason;
+// Ab v0.6.0 bei schedule_skipped auch die letzte Sperre (Konzept 4.8).
+export type SyncReason =
+  | GuardBlocker
+  | GuardCheckResult
+  | GuardOrderResult
+  | GuardJobReason
+  | ActionBlocker;
 
 export type SyncKind = "dry_run" | "sync";
 
@@ -592,6 +609,9 @@ export interface SyncRun {
   job_id: string;
   step: SyncStep;
   started_at: string;
+  // Ab v0.6.0: geplanter Lauf mit seinem Termin (Konzept 4.8).
+  trigger: Trigger;
+  scheduled_for: string | null;
   // Ab v0.5.2: nach einem Neustart übernommene Übertragung, angehaltene Container,
   // Freigabe, Fortschritt und ein angeforderter Abbruch.
   adopted: boolean;
@@ -676,7 +696,7 @@ export interface SyncHistoryShare {
 export interface SyncHistoryEntry {
   id: string;
   kind: SyncKind;
-  trigger: "dashboard" | "automatic";
+  trigger: Trigger;
   started_at: string;
   finished_at: string;
   result: ActionOutcome;
@@ -685,6 +705,8 @@ export interface SyncHistoryEntry {
   containers_stopped: number;
   adopted: boolean;
   shares: SyncHistoryShare[];
+  // Ab v0.6.0: Termin eines geplanten Laufs (UTC); ältere Zeilen haben das Feld nicht.
+  scheduled_for?: string | null;
 }
 
 export interface SyncStatus {
@@ -728,6 +750,74 @@ export interface StatusSnapshot {
   target_zfs: TargetZfs | null;
   // Probelauf, letztes Ergebnis, Bericht und die drei Ebenen (ab v0.5.1).
   sync: SyncStatus;
+  // Ab v0.6.0: Zeitplan (Konzept 4.8) und vorgemerktes Herunterfahren (Konzept 4.2).
+  schedule: ScheduleStatus;
+  auto_shutdown: AutoShutdownStatus | null;
+}
+
+// Zeitplan und automatisches Herunterfahren (ab v0.6.0); Spiegel von
+// backend/src/twinraid/shared/schedule.py.
+export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
+
+export const SCHEDULE_LIMITS = [
+  "min_run_interval_minutes",
+  "min_snapshot_interval_minutes",
+  "min_interval_minutes",
+] as const;
+export type ScheduleLimit = (typeof SCHEDULE_LIMITS)[number];
+
+export interface ScheduleWaiting {
+  term: string;
+  reason: ActionBlocker;
+  next_attempt_at: string;
+  until: string;
+}
+
+export interface ScheduleLast {
+  scheduled_for: string;
+  outcome: ActionOutcome;
+  reason: SyncReason | null;
+  finished_at: string;
+}
+
+export interface ScheduleStatus {
+  enabled: boolean;
+  // Im Modus real braucht der Zeitplan actions.sync.
+  permitted: boolean;
+  timezone: string;
+  days: Weekday[];
+  time: string;
+  wake: boolean;
+  shutdown: boolean;
+  shutdown_delay_minutes: number;
+  play_shutdown: boolean;
+  play_delay_minutes: number;
+  // Die nächsten drei Termine (UTC); leer, wenn der Zeitplan aus ist.
+  next_terms: string[];
+  waiting: ScheduleWaiting | null;
+  last: ScheduleLast | null;
+  shortest_gap_minutes: number | null;
+  conflicts: { limit: ScheduleLimit; minutes: number }[];
+}
+
+export const AUTO_SHUTDOWN_KINDS = ["after_sync", "after_play"] as const;
+export type AutoShutdownKind = (typeof AUTO_SHUTDOWN_KINDS)[number];
+
+export const AUTO_SHUTDOWN_REASONS = [
+  "vm_running",
+  "vm_unknown",
+  "other_vms_running",
+  "busy",
+  "sync_running",
+  "not_enabled",
+] as const;
+export type AutoShutdownReason = (typeof AUTO_SHUTDOWN_REASONS)[number];
+
+export interface AutoShutdownStatus {
+  kinds: AutoShutdownKind[];
+  // Zeitpunkt des Herunterfahrens, solange alle Bedingungen gelten; sonst der Grund.
+  at: string | null;
+  reason: AutoShutdownReason | null;
 }
 
 export interface AppInfo {

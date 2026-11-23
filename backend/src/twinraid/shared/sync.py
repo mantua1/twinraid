@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
-from twinraid.shared.actions import ActionOutcome, Trigger
+from twinraid.shared.actions import ActionBlocker, ActionOutcome, Trigger
 from twinraid.shared.base import StrictModel
 from twinraid.shared.ipc import JobId
 from twinraid.shared.source_guard import (
@@ -49,8 +49,8 @@ class SyncStep(StrEnum):
 # Grund zu einem Ergebnis: bei target_refused ein Eintrag aus blockers oder der Grund aus
 # dem Job, bei target_check_failed das Ergebnis von check, bei source_guard_refused das
 # Ergebnis des Auftrags, bei send_failed der Grund aus dem Job. Alle Listen stammen aus
-# source-guard.sh.
-SyncReason = GuardBlocker | GuardCheckResult | GuardOrderResult | GuardJobReason
+# source-guard.sh. Ab v0.6.0 bei schedule_skipped die letzte Sperre (Konzept 4.8).
+SyncReason = GuardBlocker | GuardCheckResult | GuardOrderResult | GuardJobReason | ActionBlocker
 
 
 class SyncConfirmation(StrictModel):
@@ -84,6 +84,9 @@ class SyncRun(StrictModel):
     job_id: JobId
     step: SyncStep
     started_at: datetime
+    # Ab v0.6.0: schedule bei einem geplanten Lauf, mit seinem Termin (Konzept 4.8).
+    trigger: Trigger = Trigger.DASHBOARD
+    scheduled_for: datetime | None = None
     # Nach einem Neustart von TwinRaid übernommene Übertragung (ab v0.5.2).
     adopted: bool = False
     containers_stopped: int = 0
@@ -187,6 +190,9 @@ class SyncHistoryEntry(StrictModel):
     containers_stopped: int
     adopted: bool
     shares: tuple[SyncHistoryShare, ...]
+    # Ab v0.6.0: Termin eines geplanten Laufs in UTC, auch bei einem nachgeholten
+    # (Konzept 5.3); ältere Zeilen haben das Feld nicht.
+    scheduled_for: datetime | None = None
 
 
 class SyncPreview(StrictModel):

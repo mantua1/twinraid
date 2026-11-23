@@ -46,6 +46,8 @@ class AuditAction(StrEnum):
     # Ab v0.5.1 (Konzept 5.3): Probelauf und Sync, dazu twinraid-admin sync-check.
     SYNC_DRY_RUN = "sync_dry_run"
     SYNC_START = "sync_start"
+    # Ab v0.6.0: „Groß anlassen“ (Konzept 5.3).
+    AUTO_SHUTDOWN_CANCEL = "auto_shutdown_cancel"
     SYNC_CANCEL = "sync_cancel"
     SYNC_CONFIRM_DELETIONS = "sync_confirm_deletions"
     CLI_SYNC_CHECK = "cli_sync_check"

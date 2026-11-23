@@ -10,6 +10,7 @@ from twinraid.config import TwinRaidConfig
 from twinraid.integrations.control import ActionControl, RealControl
 from twinraid.integrations.guard_orders import GuardChannel, RealGuardChannel
 from twinraid.integrations.mocks.lab import MockLab
+from twinraid.integrations.mocks.schedule_tour import ScheduleTour
 from twinraid.integrations.mocks.source_guard import MockSourceGuard
 from twinraid.integrations.source_guard import RealSourceGuard, SourceGuardSource, StopWindow
 from twinraid.integrations.ssh import GuardKey, SshPower, SshTarget
@@ -18,6 +19,7 @@ from twinraid.integrations.vm_watch import VmWatch
 from twinraid.integrations.wol import WolTarget
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.mode import RunMode
+from twinraid.shared.schedule import AutoShutdownStatus, ScheduleStatus
 
 # Any: Rückgabetypen von Coroutinen, die der Worker nur als Aufgabe startet.
 BackgroundTask = Callable[[], Coroutine[Any, Any, None]]
@@ -42,6 +44,13 @@ def _nothing() -> None:
     """Simulationsmodus: Es gibt keine Statusverbindung, die warten könnte."""
 
 
+def no_tour(
+    schedule: ScheduleStatus, auto: AutoShutdownStatus | None
+) -> tuple[ScheduleStatus, AutoShutdownStatus | None]:
+    """Modus real: Zeitplan und Vormerkung bleiben, wie sie sind."""
+    return schedule, auto
+
+
 @dataclass(frozen=True)
 class Integrations:
     """Status für den Monitor und Aktionen für die Abläufe des Workers."""
@@ -61,6 +70,11 @@ class Integrations:
     status_changed: asyncio.Event | None = None
     # Beendet jede Wartezeit der Statusverbindung (twinraid-admin trust-host-key, ab v0.4.4).
     retry_status_now: Callable[[], None] = _nothing
+    # Rundlauf der Simulation für Zeitplan und Vormerkung (ab v0.6.0, nur Anzeige).
+    schedule_tour: Callable[
+        [ScheduleStatus, AutoShutdownStatus | None],
+        tuple[ScheduleStatus, AutoShutdownStatus | None],
+    ] = no_tour
 
 
 def build_integrations(
@@ -73,7 +87,14 @@ def build_integrations(
     if mode is RunMode.MOCK:
         lab = MockLab(mock_flag_dir)
         mock_guard = MockSourceGuard(mock_flag_dir, datasets=tuple(config.sync.shares))
-        return Integrations(lab, lab, lab.tour_active, mock_guard, mock_guard)
+        return Integrations(
+            lab,
+            lab,
+            lab.tour_active,
+            mock_guard,
+            mock_guard,
+            schedule_tour=ScheduleTour(mock_flag_dir),
+        )
     watch = target_watch(config, paths)
     control = RealControl(config, watch, target_ssh(config, paths), wol)
     # Geteilt: Während eines offenen stop gilt der Wächter länger als aktiv (Konzept 3.6).
