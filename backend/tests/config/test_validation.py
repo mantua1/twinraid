@@ -105,6 +105,21 @@ INVALID_CASES: list[tuple[str, object, str]] = [
     ("sync.schedule.timezone", "MEZ", "unknown time zone"),
     ("sync.schedule.timezone", 1, "valid string"),
     ("sync.schedule.timezone", _DELETE, "sync.schedule.timezone: required key is missing"),
+    # --- Wartezeiten des automatischen Herunterfahrens (ab v0.6.0, Konzept 6.3) ---
+    ("sync.schedule.shutdown_delay_minutes", 0, "greater than or equal to 1"),
+    ("sync.schedule.shutdown_delay_minutes", 61, "less than or equal to 60"),
+    ("sync.schedule.shutdown_delay_minutes", "5", "valid integer"),
+    ("sync.schedule.shutdown_delay_minutes", 5.5, "valid integer"),
+    ("sync.schedule.notify_success", "yes", "valid boolean"),
+    ("gaming_vm.shutdown_target_after.enabled", 1, "valid boolean"),
+    ("gaming_vm.shutdown_target_after.delay_minutes", 0, "greater than or equal to 1"),
+    ("gaming_vm.shutdown_target_after.delay_minutes", 241, "less than or equal to 240"),
+    ("gaming_vm.shutdown_target_after.delay_minutes", True, "valid integer"),
+    (
+        "gaming_vm.shutdown_target_after.after_minutes",
+        5,
+        "gaming_vm.shutdown_target_after.after_minutes: unknown key",
+    ),
     # --- Web ---
     ("web.port", 0, "greater than or equal to 1"),
     ("web.port", 70000, "less than or equal to 65535"),
@@ -237,15 +252,80 @@ def test_single_addresses_and_networks_can_be_mixed(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("path", [EXAMPLE_CONFIG, REPO_ROOT / "config.dev.yaml"])
-def test_example_has_no_warnings_except_the_schedule(path: Path) -> None:
-    """Beispiel- und Entwicklungskonfiguration nutzen keine entfallenen Schlüssel (6.2)."""
+def test_example_has_no_warnings(path: Path) -> None:
+    """Beispiel- und Entwicklungskonfiguration nutzen keine entfallenen Schlüssel (6.2).
+
+    Ab v0.6.0 wird der Zeitplan ausgeführt; im Simulationsmodus gibt es keine Warnung.
+    """
     config = load_config(path)
     assert config.sync.appdata_share is None
     assert config.sync.exclude is None
-    assert config.warnings() == [
-        "sync.schedule.enabled is true, but schedules are carried out only from phase 6 on; "
-        "the schedule is not run."
+    assert config.warnings() == []
+
+
+def test_missing_enablements_warn_only_in_real_mode() -> None:
+    """Zeitplan und automatisches Herunterfahren ohne Freischaltung (Konzept 4.2, ab v0.6.0).
+
+    Der Container startet trotzdem; das Startlog warnt nur im Modus real.
+    """
+    config = load_config(EXAMPLE_CONFIG)
+    assert config.warnings(real_mode=True) == [
+        "sync.schedule.enabled is true, but actions.sync is not enabled; "
+        "the schedule is not run.",
+        "sync.schedule.wake_target is true, but actions.wake is not enabled; "
+        "a scheduled run is skipped while the target is off.",
+        "sync.schedule.shutdown_after is true, but actions.shutdown is not enabled; "
+        "the target is not shut down after a scheduled run.",
     ]
+
+
+def test_play_shutdown_without_enablement_warns(tmp_path: Path) -> None:
+    data = _example()
+    data["gaming_vm"]["shutdown_target_after"] = {"enabled": True, "delay_minutes": 20}
+    data["sync"]["schedule"]["enabled"] = False
+    data["actions"].update(sync=True, wake=True)
+    config = _load(tmp_path, data)
+    assert config.warnings(real_mode=True) == [
+        "gaming_vm.shutdown_target_after.enabled is true, but actions.shutdown is not "
+        "enabled; the target is not shut down after playing."
+    ]
+    data["actions"]["shutdown"] = True
+    assert _load(tmp_path, data).warnings(real_mode=True) == []
+
+
+def test_enabled_schedule_without_warnings(tmp_path: Path) -> None:
+    data = _example()
+    data["actions"].update(sync=True, wake=True, shutdown=True)
+    assert _load(tmp_path, data).warnings(real_mode=True) == []
+    # Ohne Wecken und Herunterfahren braucht der Zeitplan nur actions.sync.
+    data["actions"].update(wake=False, shutdown=False)
+    data["sync"]["schedule"].update(wake_target=False, shutdown_after=False)
+    assert _load(tmp_path, data).warnings(real_mode=True) == []
+
+
+def test_new_schedule_keys_are_optional(tmp_path: Path) -> None:
+    """shutdown_delay_minutes, notify_success und shutdown_target_after (Konzept 6.2)."""
+    data = _example()
+    for key in ("shutdown_delay_minutes", "notify_success"):
+        data["sync"]["schedule"].pop(key, None)
+    data["gaming_vm"].pop("shutdown_target_after", None)
+    config = _load(tmp_path, data)
+    assert config.sync.schedule.shutdown_delay_minutes == 5
+    assert config.sync.schedule.notify_success is False
+    assert config.gaming_vm.shutdown_target_after.enabled is False
+    assert config.gaming_vm.shutdown_target_after.delay_minutes == 15
+    data["gaming_vm"]["shutdown_target_after"] = {"enabled": True}
+    assert _load(tmp_path, data).gaming_vm.shutdown_target_after.delay_minutes == 15
+
+
+@pytest.mark.parametrize(("delay", "play"), [(1, 1), (60, 240)])
+def test_delay_limits_are_accepted(tmp_path: Path, delay: int, play: int) -> None:
+    data = _example()
+    data["sync"]["schedule"]["shutdown_delay_minutes"] = delay
+    data["gaming_vm"]["shutdown_target_after"] = {"enabled": True, "delay_minutes": play}
+    config = _load(tmp_path, data)
+    assert config.sync.schedule.shutdown_delay_minutes == delay
+    assert config.gaming_vm.shutdown_target_after.delay_minutes == play
 
 
 def test_removed_keys_of_older_configs_only_warn(tmp_path: Path) -> None:

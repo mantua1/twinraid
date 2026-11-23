@@ -49,6 +49,9 @@ DEFAULT_SESSION_IDLE_MINUTES = 10
 # Port der Weboberfläche; passt zum Unraid-Template (Konzept 6.3).
 DEFAULT_WEB_PORT = 8443
 DEFAULT_SSH_PORT = 22
+# Wartezeiten vor dem automatischen Herunterfahren (Konzept 4.2 und 6.2, ab v0.6.0).
+DEFAULT_SYNC_SHUTDOWN_DELAY_MINUTES = 5
+DEFAULT_PLAY_DELAY_MINUTES = 15
 
 
 Weekday = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -130,22 +133,45 @@ class ServersConfig(StrictModel):
         return self
 
 
+class ShutdownAfterPlayConfig(StrictModel):
+    """Groß herunterfahren, wenn TwinRaid es für „VM starten“ geweckt hat (Konzept 4.2, ab v0.6.0).
+
+    Die Wartezeit zählt ab SHUTOFF der Gaming-VM.
+    """
+
+    enabled: StrictBool = False
+    delay_minutes: Annotated[StrictInt, Field(ge=1, le=240)] = DEFAULT_PLAY_DELAY_MINUTES
+
+
 class GamingVmConfig(StrictModel):
     display_name: DisplayText
     # Optional (ab v0.4.3): Abgleich mit dem Namen der VM aus power.conf auf Groß (Konzept 3.5).
     unraid_vm_name: VmName | None = None
     shutdown_timeout_minutes: Minutes
+    # Optional (ab v0.6.0): automatisches Herunterfahren nach dem Spielen (Konzept 4.2).
+    shutdown_target_after: ShutdownAfterPlayConfig = Field(
+        default_factory=ShutdownAfterPlayConfig
+    )
 
 
 class ScheduleConfig(StrictModel):
-    """Zeitplan für den Sync (Konzept 4.8). Die Uhrzeit gilt in der angegebenen Zeitzone."""
+    """Zeitplan für den Sync (Konzept 4.8, ab v0.6.0 ausgeführt).
+
+    Die Uhrzeit gilt in der angegebenen Zeitzone.
+    """
 
     enabled: StrictBool
     timezone: TimeZoneName
     days: Weekdays
     time: TimeOfDay
     wake_target: StrictBool
+    # Nur wenn der Lauf Groß geweckt hat; Wartezeit davor shutdown_delay_minutes (Konzept 4.2).
     shutdown_after: StrictBool
+    shutdown_delay_minutes: Annotated[StrictInt, Field(ge=1, le=60)] = (
+        DEFAULT_SYNC_SHUTDOWN_DELAY_MINUTES
+    )
+    # Auch Erfolge melden; wirkt erst ab v0.6.1 (Entscheidung E31).
+    notify_success: StrictBool = False
 
 
 class SyncConfig(StrictModel):
@@ -182,7 +208,7 @@ class SyncConfig(StrictModel):
         return self
 
     def warnings(self) -> list[str]:
-        """Hinweise für das Startlog: entfallene Schlüssel und der Zeitplan (Konzept 6.3, 4.8)."""
+        """Hinweise für das Startlog zu entfallenen Schlüsseln (Konzept 6.3)."""
         notes: list[str] = []
         if self.appdata_share is not None:
             notes.append("sync.appdata_share is ignored since v0.5.1; remove it.")
@@ -194,11 +220,6 @@ class SyncConfig(StrictModel):
         for name in ("exclude", "protect_on_target"):
             if getattr(self, name) is not None:
                 notes.append(f"sync.{name} (empty) is ignored since v0.5.1; remove it.")
-        if self.schedule.enabled:
-            notes.append(
-                "sync.schedule.enabled is true, but schedules are carried out only from "
-                "phase 6 on; the schedule is not run."
-            )
         return notes
 
 
@@ -224,6 +245,41 @@ class TwinRaidConfig(StrictModel):
     sync: SyncConfig
     actions: ActionsConfig = Field(default_factory=ActionsConfig)
 
-    def warnings(self) -> list[str]:
-        """Hinweise für das Startlog; sie verhindern den Start nicht."""
-        return self.sync.warnings()
+    def warnings(self, real_mode: bool = False) -> list[str]:
+        """Hinweise für das Startlog; sie verhindern den Start nicht.
+
+        Im Modus real zusätzlich, wenn Zeitplan oder automatisches Herunterfahren
+        eingeschaltet sind, ihnen aber eine Freischaltung in actions fehlt (Konzept 4.2).
+        """
+        notes = self.sync.warnings()
+        if real_mode:
+            notes.extend(self.missing_enablements())
+        return notes
+
+    def missing_enablements(self) -> list[str]:
+        """Eingeschaltet, aber nicht freigeschaltet (Konzept 4.2, ab v0.6.0)."""
+        schedule = self.sync.schedule
+        actions = self.actions
+        notes: list[str] = []
+        if schedule.enabled:
+            if not actions.sync:
+                notes.append(
+                    "sync.schedule.enabled is true, but actions.sync is not enabled; "
+                    "the schedule is not run."
+                )
+            if schedule.wake_target and not actions.wake:
+                notes.append(
+                    "sync.schedule.wake_target is true, but actions.wake is not enabled; "
+                    "a scheduled run is skipped while the target is off."
+                )
+            if schedule.shutdown_after and not actions.shutdown:
+                notes.append(
+                    "sync.schedule.shutdown_after is true, but actions.shutdown is not "
+                    "enabled; the target is not shut down after a scheduled run."
+                )
+        if self.gaming_vm.shutdown_target_after.enabled and not actions.shutdown:
+            notes.append(
+                "gaming_vm.shutdown_target_after.enabled is true, but actions.shutdown is "
+                "not enabled; the target is not shut down after playing."
+            )
+        return notes

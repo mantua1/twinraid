@@ -45,12 +45,21 @@ def test_fails_with_invalid_config(
     assert "sync.shares[2]: share 'system' must never be synced" in capsys.readouterr().err
 
 
-def test_logs_warnings_of_the_configuration(capsys: pytest.CaptureFixture[str]) -> None:
-    """Der Zeitplan der Beispielkonfiguration läuft erst ab Phase 6 (Konzept 4.8)."""
+def test_schedule_without_enablement_warns_in_real_mode(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Zeitplan ohne actions.sync: der Container startet, das Startlog warnt (Konzept 4.2)."""
+    monkeypatch.setenv("TWINRAID_MODE", "real")
     assert main() == 0
     err = capsys.readouterr().err
     assert "WARNING" in err
-    assert "the schedule is not run" in err
+    assert "actions.sync is not enabled; the schedule is not run" in err
+
+
+def test_no_schedule_warning_in_mock_mode(capsys: pytest.CaptureFixture[str]) -> None:
+    """Im Simulationsmodus läuft der Zeitplan ab v0.6.0 (Konzept 6.4)."""
+    assert main() == 0
+    assert "the schedule is not run" not in capsys.readouterr().err
 
 
 def test_fails_with_a_non_empty_exclude(
