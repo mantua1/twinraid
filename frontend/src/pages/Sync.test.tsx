@@ -70,9 +70,8 @@ describe("buttons", () => {
     const start = within(sync).getByRole("button", { name: "Jetzt synchronisieren" });
     expect(start).toBeEnabled();
     expect(within(sync).queryByTestId("action-hint")).not.toBeInTheDocument();
-    expect(within(sync).getByTestId("sync-schedule")).toHaveTextContent(
-      "Zeitplan aus (ab Phase 6).",
-    );
+    // Ab v0.6.0 zeigt die Kachel den Zeitplan (Schedule.test.tsx).
+    expect(within(sync).getByTestId("schedule-next")).toHaveTextContent("Nächster geplanter Lauf:");
     expect(within(sync).getByText("Noch kein Lauf.")).toBeInTheDocument();
     await user.click(dryRun);
     expect(server.actions).toEqual(["sync_dry_run"]);

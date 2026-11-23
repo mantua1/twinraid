@@ -1044,3 +1044,25 @@ async def test_real_source_guard_uses_the_open_stop(tmp_path: Path) -> None:
     assert (status.state, status.stopping) == (GuardState.ACTIVE, True)
     stops.close()
     assert guard.report().status.state is GuardState.INACTIVE
+
+
+async def test_reader_closes_an_answered_stop(tmp_path: Path) -> None:
+    """Ab v0.6.0: Der Leser beendet einen beantworteten stop erst mit einem Status, dessen
+    Herzschlag nicht älter ist als die Antwort (Konzept 3.6, „Während docker stop“)."""
+    stops = StopWindow()
+    paths = guard_paths(tmp_path)
+    old = int(NOW.timestamp()) - 50
+    paths.status_file.write_bytes(raw(changed("heartbeat_at", old)))
+    guard = RealSourceGuard(paths, clock=lambda: NOW, stops=stops)
+    await guard.refresh()
+    stops.open(NOW - timedelta(seconds=40))
+    stops.answered(NOW - timedelta(seconds=1))
+    # Noch der alte Status: aktiv mit „Container wird angehalten“, nicht „nicht aktiv“.
+    await guard.refresh()
+    status = guard.report().status
+    assert (status.state, status.stopping) == (GuardState.ACTIVE, True)
+    paths.status_file.write_bytes(raw(changed("heartbeat_at", int(NOW.timestamp()) - 1)))
+    await guard.refresh()
+    assert stops.since is None
+    status = guard.report().status
+    assert (status.state, status.stopping) == (GuardState.ACTIVE, False)

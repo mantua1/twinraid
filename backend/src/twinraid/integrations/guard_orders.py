@@ -170,12 +170,18 @@ class RealGuardChannel:
         reply_seconds: float | None = None,
     ) -> GuardOrderResult:
         async with self._lock:
+            answered: datetime | None = None
             try:
                 seq, instance = await self._write(order, container)
-                return await self._reply(order, seq, instance, reply_seconds)
+                result, answered = await self._reply(order, seq, instance, reply_seconds)
+                return result
             finally:
-                # Offen bis zur Antwort oder bis das Warten endet, auch bei einem Abbruch.
-                self._stops.close()
+                if order is GuardOrder.STOP and answered is not None:
+                    # Offen, bis auch der Leser im Takt von 5 s so weit ist (ab v0.6.0).
+                    self._stops.answered(answered)
+                else:
+                    # Offen bis zur Antwort oder bis das Warten endet, auch bei einem Abbruch.
+                    self._stops.close()
 
     async def post(self, order: GuardOrder) -> None:
         async with self._lock:
@@ -208,16 +214,18 @@ class RealGuardChannel:
 
     async def _reply(
         self, order: GuardOrder, seq: int, instance: str, reply_seconds: float | None
-    ) -> GuardOrderResult:
+    ) -> tuple[GuardOrderResult, datetime | None]:
+        """Ergebnis und Herzschlag des Status, in dem die Antwort stand."""
         wait = self._timings.reply_seconds if reply_seconds is None else reply_seconds
         deadline = self._monotonic() + wait
         while True:
             await self._sleep(self._timings.poll_seconds)
-            details = active_details(await self.observe())
+            report = await self.observe()
+            details = active_details(report)
             if details.instance != instance:
                 raise GuardOrderError(ActionOutcome.SOURCE_GUARD_LOST)
             last = details.last_order
             if last is not None and last.seq == seq and last.order is order:
-                return last.result
+                return last.result, report.status.heartbeat_at
             if details.last_seq > seq or self._monotonic() >= deadline:
                 raise GuardOrderError(ActionOutcome.SOURCE_GUARD_LOST)

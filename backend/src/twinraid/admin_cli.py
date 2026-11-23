@@ -578,7 +578,13 @@ def cmd_show_sync_log(context: Context, args: argparse.Namespace) -> int:
         return 0
     for entry in entries:
         why = f" ({entry.reason.value})" if entry.reason is not None else ""
-        extras = [f"started {entry.started_at.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}"]
+        # Ab v0.6.0 mit Auslöser und, bei einem geplanten Lauf, dem Termin (Konzept 5.3).
+        extras = [
+            f"by {entry.trigger.value}",
+            f"started {entry.started_at.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}",
+        ]
+        if entry.scheduled_for is not None:
+            extras.insert(1, f"term {entry.scheduled_for.astimezone(UTC):%Y-%m-%dT%H:%M:%SZ}")
         if entry.woke_target:
             extras.append("woke the target")
         if entry.containers_stopped:

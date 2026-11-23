@@ -107,9 +107,14 @@ class Setup:
         await self.settle()
 
     def availability(self) -> dict[ActionName, ActionBlocker | None]:
-        """Groß und VM; den Probelauf prüft tests/sync/test_coordinator.py."""
+        """Groß und VM; den Probelauf prüft tests/sync/test_coordinator.py, „Groß anlassen“
+        tests/worker/test_auto_shutdown.py."""
         availability = self.actions.snapshot(self.monitor.current())[1].availability
-        return {name: blocker for name, blocker in availability.items() if name not in SYNC_ACTIONS}
+        return {
+            name: blocker
+            for name, blocker in availability.items()
+            if name not in SYNC_ACTIONS and name is not ActionName.AUTO_SHUTDOWN_CANCEL
+        }
 
     def last(self, resource: str) -> ActionOutcome | None:
         _, actions = self.actions.snapshot(self.monitor.current())

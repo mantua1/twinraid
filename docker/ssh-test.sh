@@ -247,6 +247,9 @@ replacements = {
     "  wake: false": "  wake: true",
     "  vm: false": "  vm: true",
     "  shutdown: false": "  shutdown: true",
+    # Herunterfahren nach dem Spielen mit 1 min Wartezeit (ab v0.6.0, Abschnitt 9b).
+    "    enabled: false             # Groß herunterfahren": "    enabled: true              # Groß herunterfahren",
+    "    delay_minutes: 15": "    delay_minutes: 1",
 }
 for old, new in replacements.items():
     assert old in text, old
@@ -579,6 +582,46 @@ run_action shutdown_target sync_running
 fake touch /state/release-lock
 expect_equal "Groß stayed on during the receive" "$(state poweroff.log | wc -l | tr -d ' ')" "2"
 
+# --- 9b. Herunterfahren nach dem Spielen (ab v0.6.0, Konzept 4.2, E30) -------------------------
+# Nur wenn „VM starten“ Groß geweckt hat; Wartezeit ab SHUTOFF der Gaming-VM, 1 min im Test.
+auto_done() {
+  admin show-action-log --lines 500 | grep -c "shutdown_target  automatic (part of vm_start): $1" || true
+}
+wait_for_status "the target is on before the play test" '"target":{"state":"online","reason":null}' 30
+expect_contains "nothing is planned while TwinRaid did not wake the target" "$(worker get_status)" \
+  '"auto_shutdown":null'
+run_action shutdown_target success
+wait_for_status "target is offline before the play test" '"target":{"state":"offline","reason":"unreachable"}'
+run_action vm_start success 120
+expect_contains "starting the VM woke the target" "$(admin show-action-log --lines 20)" \
+  "wake_target  automatic (part of vm_start): success"
+wait_for_status "the shutdown waits for the VM" \
+  '"auto_shutdown":{"kinds":["after_play"],"at":null,"reason":"vm_running"}' 20
+# „Groß anlassen“: Die Vormerkung ist weg, Groß bleibt an.
+expect_contains "keep the target on is accepted" "$(worker auto_shutdown_cancel)" '"ok":true'
+wait_for_status "nothing is planned after keep on" '"auto_shutdown":null' 20
+expect_contains "keep on is refused without a mark" "$(worker auto_shutdown_cancel)" \
+  '"blocked_by":"not_offered"'
+run_action vm_stop success
+run_action shutdown_target success
+wait_for_status "target is offline again" '"target":{"state":"offline","reason":"unreachable"}'
+# Zweite Runde: VM starten weckt Groß, VM aus, nach 1 min fährt TwinRaid Groß herunter.
+run_action vm_start success 120
+run_action vm_stop success
+wait_for_status "the delay runs once the VM is off" '"auto_shutdown":{"kinds":["after_play"],"at":"' 30
+# 1 min Wartezeit, bis zu 10 s bis zur nächsten Prüfung, dann das Ausschalten selbst.
+for _ in $(seq 1 180); do
+  [[ "$(auto_done success)" -ge 1 ]] && break
+  sleep 1
+done
+expect_equal "the target was shut down automatically" "$(auto_done success)" "1"
+expect_equal "guard.sh ran poweroff for it" "$(state poweroff.log | wc -l | tr -d ' ')" "5"
+wait_for_status "target is offline after the automatic shutdown" \
+  '"target":{"state":"offline","reason":"unreachable"}'
+expect_contains "no mark is left" "$(worker get_status)" '"auto_shutdown":null'
+run_action wake_target success
+wait_for_status "the VM is known again after the play test" "${OFF}"
+
 # --- 10. Einschränkungen der authorized_keys-Zeilen -------------------------------------------
 denied="$(ssh_sync "root@${target_ip}" id </dev/null 2>&1 || true)"
 expect_contains "key sync: guard.sh rejects other commands" "${denied}" "twinraid-guard: denied"
@@ -607,7 +650,7 @@ done
 fake sh -c 'rm -f /etc/ssh/ssh_host_* && ssh-keygen -A >/dev/null && kill -HUP 1'
 sleep 2
 run_action shutdown_target ssh_host_key_mismatch
-expect_equal "no poweroff with a changed host key" "$(state poweroff.log | wc -l | tr -d ' ')" "2"
+expect_equal "no poweroff with a changed host key" "$(state poweroff.log | wc -l | tr -d ' ')" "5"
 kill_watch
 wait_for_status "the status session refuses the changed host key" \
   '"vm":{"state":"unknown","reason":"ssh_host_key_mismatch"}' 40

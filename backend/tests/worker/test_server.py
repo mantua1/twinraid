@@ -94,6 +94,11 @@ async def test_get_status_before_the_first_check(server: WorkerServer) -> None:
     sync = response.result.pop("sync")
     assert isinstance(sync, dict)
     assert (sync["running"], sync["last"], sync["report"]) == (None, None, None)
+    # Ab v0.6.0: Zeitplan aus der Konfiguration, nichts vorgemerkt.
+    schedule = response.result.pop("schedule")
+    assert isinstance(schedule, dict)
+    assert (schedule["enabled"], schedule["waiting"]) == (True, None)
+    assert response.result.pop("auto_shutdown") is None
     assert response.result == {
         "source": unknown,
         "target": unknown,
@@ -107,6 +112,8 @@ async def test_get_status_before_the_first_check(server: WorkerServer) -> None:
     availability = actions["availability"]
     assert isinstance(availability, dict)
     assert availability.pop("shutdown_target_force_vm") == "not_offered"
+    # „Groß anlassen“ nur, solange ein Herunterfahren vorgemerkt ist (ab v0.6.0).
+    assert availability.pop("auto_shutdown_cancel") == "not_offered"
     assert set(availability.values()) == {"target_unknown"}
     assert actions["target"] == {"running": None, "last": None}
 

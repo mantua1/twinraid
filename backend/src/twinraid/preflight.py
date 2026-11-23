@@ -8,7 +8,7 @@ import os
 
 from twinraid.config import ConfigError, load_config
 from twinraid.shared.logs import configure_logging, log_mock_banner
-from twinraid.shared.mode import RunModeError, resolve_run_mode
+from twinraid.shared.mode import RunMode, RunModeError, resolve_run_mode
 from twinraid.shared.runtime import config_path
 
 logger = logging.getLogger("twinraid.preflight")
@@ -32,7 +32,7 @@ def main() -> int:
         logger.error("%s", exc.render())
         logger.error(_NOT_STARTING)
         return 1
-    for warning in config.warnings():
+    for warning in config.warnings(real_mode=mode is RunMode.REAL):
         logger.warning("%s", warning)
 
     log_mock_banner(logger, mode)

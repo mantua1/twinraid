@@ -10,6 +10,7 @@ from pydantic import JsonValue, ValidationError
 from twinraid.shared.actions import ActionBlocker, ActionName
 from twinraid.shared.ipc import (
     MAX_RESPONSE_BYTES,
+    AutoShutdownCancel,
     Command,
     ErrorCode,
     ErrorResponse,
@@ -75,6 +76,7 @@ _ACTION_COMMANDS: dict[ActionName, Command] = {
     ActionName.VM_FORCE_STOP: VmForceStop(command="vm_force_stop"),
     ActionName.SYNC_DRY_RUN: SyncDryRun(command="sync_dry_run"),
     ActionName.SYNC_START: SyncStart(command="sync_start"),
+    ActionName.AUTO_SHUTDOWN_CANCEL: AutoShutdownCancel(command="auto_shutdown_cancel"),
 }
 
 

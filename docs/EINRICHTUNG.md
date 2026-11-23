@@ -1,6 +1,6 @@
 # TwinRaid auf Unraid einrichten
 
-> **Stand: Version 0.5.5.** Diese Version zeigt den Status beider Server und der Gaming-VM an und kann Unraid Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Status und VM laufen über SSH und `guard.sh` auf Groß; einen API-Key von Unraid braucht TwinRaid seit 0.4.3 nicht mehr. Die Aktionen werden einzeln freigeschaltet (Abschnitt 11). Seit 0.5.0 gibt es den Wächter auf Klein (Abschnitt 12), die Vorbereitung von Groß für den Spiegel (Abschnitt 13) und das eigene Dataset für TwinRaid (Abschnitt 14). Seit 0.5.1 gibt es „Nur Probelauf“ mit `guard.sh` Version 3 und `source-guard.sh` Version 2 (Abschnitt 15). **Neu in 0.5.2** ist der echte Sync der Test-Share mit `source-guard.sh` Version 3 (Abschnitt 16): Container kurz anhalten, Löschungen freigeben, Fortschritt mit Restzeit, Abbrechen und eine Sync-Historie. **Neu in 0.5.3** (Abschnitt 17): die Snapshots beider Seiten in der Kachel **Sync**, ein Dialog vor „Jetzt synchronisieren“, „Nächster Snapshot frühestens um …“, `source-guard.sh` Version 4 mit einstellbarem Abstand zwischen Snapshots, `testdata.sh report` und `bulk` und die vollständige Anleitung für den Notbetrieb in [WIEDERHERSTELLUNG.md](WIEDERHERSTELLUNG.md). **Neu in 0.5.4** (Abschnitt 18): ein gelber Hinweis, wenn `twinraid.yaml` oder der Ordner `config` für andere beschreibbar ist oder nicht root gehört, und die Ergebnistabelle eines Syncs zeigt die Spiegel nach dem Senden. **Von 0.5.0 auf 0.5.1 genügt das Update nicht:** Vorher die Schlüssel `exclude` und `protect_on_target` aus `twinraid.yaml` entfernen, sonst startet der Container nicht, und die Reihenfolge aus Abschnitt 15 einhalten. Von 0.5.1 auf 0.5.2 genügt das Update für den bisherigen Betrieb; für den Sync folgen die Skripte in der Reihenfolge aus Abschnitt 16. Von 0.5.2 auf 0.5.3 genügt das Update ebenfalls; `source-guard.sh` Version 4 kommt erst danach, in der Reihenfolge aus Abschnitt 17. Von 0.5.3 auf 0.5.4 genügt das Update; danach die Rechte nach Abschnitt 18 prüfen. Echte Shares kommen nach Abschnitt 19 dazu. **Neu in 0.5.5** (Abschnitt 20): Der Snapshot eines Probelaufs wird verworfen, ein Sync ist danach sofort möglich, und ein langsames `docker stop` bricht den Sync nicht mehr ab; dafür kommt `source-guard.sh` Version 5, erst nach dem Update von TwinRaid. Wer von 0.4.2 kommt, beginnt mit Abschnitt 21. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
+> **Stand: Version 0.6.0.** Diese Version zeigt den Status beider Server und der Gaming-VM an und kann Unraid Groß wecken und herunterfahren sowie die Gaming-VM starten, herunterfahren und erzwingen. Status und VM laufen über SSH und `guard.sh` auf Groß; einen API-Key von Unraid braucht TwinRaid seit 0.4.3 nicht mehr. Die Aktionen werden einzeln freigeschaltet (Abschnitt 11). Seit 0.5.0 gibt es den Wächter auf Klein (Abschnitt 12), die Vorbereitung von Groß für den Spiegel (Abschnitt 13) und das eigene Dataset für TwinRaid (Abschnitt 14). Seit 0.5.1 gibt es „Nur Probelauf“ mit `guard.sh` Version 3 und `source-guard.sh` Version 2 (Abschnitt 15). **Neu in 0.5.2** ist der echte Sync der Test-Share mit `source-guard.sh` Version 3 (Abschnitt 16): Container kurz anhalten, Löschungen freigeben, Fortschritt mit Restzeit, Abbrechen und eine Sync-Historie. **Neu in 0.5.3** (Abschnitt 17): die Snapshots beider Seiten in der Kachel **Sync**, ein Dialog vor „Jetzt synchronisieren“, „Nächster Snapshot frühestens um …“, `source-guard.sh` Version 4 mit einstellbarem Abstand zwischen Snapshots, `testdata.sh report` und `bulk` und die vollständige Anleitung für den Notbetrieb in [WIEDERHERSTELLUNG.md](WIEDERHERSTELLUNG.md). **Neu in 0.5.4** (Abschnitt 18): ein gelber Hinweis, wenn `twinraid.yaml` oder der Ordner `config` für andere beschreibbar ist oder nicht root gehört, und die Ergebnistabelle eines Syncs zeigt die Spiegel nach dem Senden. **Von 0.5.0 auf 0.5.1 genügt das Update nicht:** Vorher die Schlüssel `exclude` und `protect_on_target` aus `twinraid.yaml` entfernen, sonst startet der Container nicht, und die Reihenfolge aus Abschnitt 15 einhalten. Von 0.5.1 auf 0.5.2 genügt das Update für den bisherigen Betrieb; für den Sync folgen die Skripte in der Reihenfolge aus Abschnitt 16. Von 0.5.2 auf 0.5.3 genügt das Update ebenfalls; `source-guard.sh` Version 4 kommt erst danach, in der Reihenfolge aus Abschnitt 17. Von 0.5.3 auf 0.5.4 genügt das Update; danach die Rechte nach Abschnitt 18 prüfen. Echte Shares kommen nach Abschnitt 19 dazu. **Neu in 0.5.5** (Abschnitt 20): Der Snapshot eines Probelaufs wird verworfen, ein Sync ist danach sofort möglich, und ein langsames `docker stop` bricht den Sync nicht mehr ab; dafür kommt `source-guard.sh` Version 5, erst nach dem Update von TwinRaid. **Neu in 0.6.0** (Abschnitt 21): Der Zeitplan läuft, und TwinRaid fährt Groß nach einem geplanten Sync oder nach dem Spielen selbst herunter, mit „Groß anlassen“; vor dem Update den Zeitplan in `twinraid.yaml` prüfen (21.2). Wer von 0.4.2 kommt, beginnt mit Abschnitt 22. Die Anleitung wird mit jeder Version erweitert und ist in Phase 7 fertig.
 
 Diese Anleitung führt Schritt für Schritt durch die Installation auf **Unraid Klein** (dem stromsparenden Server, der immer läuft). Am Ende:
 
@@ -39,10 +39,11 @@ Die Begriffe und Sicherheitsregeln stehen in [KONZEPT.md](KONZEPT.md).
 18. [Aufräumen nach 0.5.3 (ab 0.5.4)](#18-aufräumen-nach-053-ab-054)
 19. [Echte Share hinzufügen](#19-echte-share-hinzufügen)
 20. [Probelauf ohne Wartezeit (ab 0.5.5)](#20-probelauf-ohne-wartezeit-ab-055)
-21. [Von 0.4.2 auf 0.4.3 umstellen](#21-von-042-auf-043-umstellen)
-22. [Fehlerbilder und Abhilfe](#22-fehlerbilder-und-abhilfe)
-23. [Updates einspielen und Herkunft prüfen](#23-updates-einspielen-und-herkunft-prüfen)
-24. [Befehle der Admin-CLI](#24-befehle-der-admin-cli)
+21. [Zeitplan und automatisches Herunterfahren (ab 0.6.0)](#21-zeitplan-und-automatisches-herunterfahren-ab-060)
+22. [Von 0.4.2 auf 0.4.3 umstellen](#22-von-042-auf-043-umstellen)
+23. [Fehlerbilder und Abhilfe](#23-fehlerbilder-und-abhilfe)
+24. [Updates einspielen und Herkunft prüfen](#24-updates-einspielen-und-herkunft-prüfen)
+25. [Befehle der Admin-CLI](#25-befehle-der-admin-cli)
 
 ### So sind die Schritte zu lesen
 
@@ -141,7 +142,7 @@ drwxr-xr-x 1 root root 0 Oct 13 20:00 /mnt/user/appdata/twinraid/data
 
 Steht dort `nobody users` oder beginnt eine Zeile mit `drwxrwxrwx`, die beiden Befehle `chown` und `chmod` von oben wiederholen. Ist `config` oder `twinraid` für andere beschreibbar, startet TwinRaid zwar, könnte seine Konfiguration aber von anderen Programmen verändert bekommen; ab 0.5.4 zeigt die Kachel Klein dann einen Hinweis (Abschnitt 18). Den Ordner `twinraid` sieht TwinRaid selbst nicht; ihn prüft nur dieser Befehl.
 
-> **Vorsicht mit „New Permissions“ und „Docker Safe New Perms“.** Das Unraid-Werkzeug *Tools → New Permissions* und *Docker Safe New Perms* aus dem Plugin *Fix Common Problems* setzen Besitzer und Rechte auf `nobody:users` und Schreibrechte für alle zurück. *New Permissions* tut das für alle gewählten Shares und Datenträger, auch für `appdata`. *Docker Safe New Perms* lässt `appdata` normalerweise aus, aber nur, solange es in seinen Einstellungen ausgenommen ist. Erwischt eines der Werkzeuge den Datenordner von TwinRaid, startet der Container danach nicht mehr. Wie du das reparierst, steht in Abschnitt 22 unter „Rechte des Datenordners zurückgesetzt“.
+> **Vorsicht mit „New Permissions“ und „Docker Safe New Perms“.** Das Unraid-Werkzeug *Tools → New Permissions* und *Docker Safe New Perms* aus dem Plugin *Fix Common Problems* setzen Besitzer und Rechte auf `nobody:users` und Schreibrechte für alle zurück. *New Permissions* tut das für alle gewählten Shares und Datenträger, auch für `appdata`. *Docker Safe New Perms* lässt `appdata` normalerweise aus, aber nur, solange es in seinen Einstellungen ausgenommen ist. Erwischt eines der Werkzeuge den Datenordner von TwinRaid, startet der Container danach nicht mehr. Wie du das reparierst, steht in Abschnitt 23 unter „Rechte des Datenordners zurückgesetzt“.
 
 > **Hinweis zu `appdata`:** TwinRaid speichert eine kleine SQLite-Datenbank. Am zuverlässigsten liegt `appdata` auf einem Pool (z. B. Cache) mit der Share-Einstellung *Exclusive access*. Bei den Unraid-Standardeinstellungen ist das meist schon so.
 
@@ -186,7 +187,7 @@ chmod 644 /mnt/user/appdata/twinraid/config/twinraid.yaml
 ls -l /mnt/user/appdata/twinraid/config/twinraid.yaml
 ```
 
-Erwartet: Die Zeile beginnt mit `-rw-r--r--` und enthält `root root`. `nano` behält die Rechte der Datei; wer sie aber durch eine neue ersetzt (etwa mit `….neu` und `mv`), bekommt im Unraid-Terminal `-rw-rw-rw-`, und andere Programme auf Klein könnten die Konfiguration ändern. Ab 0.5.4 zeigt die Kachel Klein das als gelben Hinweis (Abschnitt 22, Fehlerbilder).
+Erwartet: Die Zeile beginnt mit `-rw-r--r--` und enthält `root root`. `nano` behält die Rechte der Datei; wer sie aber durch eine neue ersetzt (etwa mit `….neu` und `mv`), bekommt im Unraid-Terminal `-rw-rw-rw-`, und andere Programme auf Klein könnten die Konfiguration ändern. Ab 0.5.4 zeigt die Kachel Klein das als gelben Hinweis (Abschnitt 23, Fehlerbilder).
 
 > **Welche Netze eintragen?** Eine Router-Firewall wie die von UniFi filtert nur Verkehr **zwischen** Netzen, nicht **innerhalb** eines Netzes. Im Server-Netz, in dem TwinRaid selbst steht, stehen auch andere Container mit eigener IP und VMs direkt daneben. Die Router-Firewall sieht deren Zugriffe auf TwinRaid gar nicht. Trag im Server-Netz deshalb **nur einzelne Geräte als `/32`** ein, die TwinRaid wirklich aufrufen sollen (z. B. deinen Admin-PC). Andere Netze wie das Client-Netz kannst du **ganz** eintragen, weil dort die Firewall-Regel aus Schritt 6 den Zugriff regelt.
 >
@@ -236,7 +237,7 @@ Die zusätzlichen Docker-Parameter (*Extra Parameters*, nur in der *Advanced Vie
 **5.1 Log ansehen:** Reiter **Docker** → Symbol *TwinRaid* → **Logs**. Du solltest unter anderem sehen:
 
 - einen deutlichen Hinweis **SIMULATION MODE ACTIVE**,
-- `TLS address: 192.168.10.20 (detected on eth0)` mit deiner festen IP. Steht hier eine andere Adresse oder eine Warnung **PROBABLY THE WRONG NETWORK TYPE**, ist im Template nicht `Custom: br0` gewählt (siehe Abschnitt 22).
+- `TLS address: 192.168.10.20 (detected on eth0)` mit deiner festen IP. Steht hier eine andere Adresse oder eine Warnung **PROBABLY THE WRONG NETWORK TYPE**, ist im Template nicht `Custom: br0` gewählt (siehe Abschnitt 23).
 - `Generated the TwinRaid CA. Install its certificate once on your devices.`
 - `TLS CA SHA-256 fingerprint: …` und `TLS CA SHA-1 fingerprint (shown by Windows): …`
 - `No password is set. Run inside the container: twinraid-admin set-password`
@@ -272,7 +273,7 @@ Lass dieses Fenster offen oder notiere die Werte unter *CA certificate*. Du brau
 3. Den Befehl aus 1. wiederholen. Die MAC muss **gleich** geblieben sein.
 4. Zusätzlich einmal **Restart** (Symbol *TwinRaid* → **Restart**) und erneut vergleichen.
 
-Hat sich die MAC geändert, ist das Feld **Fixed MAC address** leer oder die Unraid-Version älter als 7.3. Ohne feste MAC vergibt Docker bei jedem Start eine neue. Wiederhole den Vergleich nach dem ersten echten Update (Abschnitt 23).
+Hat sich die MAC geändert, ist das Feld **Fixed MAC address** leer oder die Unraid-Version älter als 7.3. Ohne feste MAC vergibt Docker bei jedem Start eine neue. Wiederhole den Vergleich nach dem ersten echten Update (Abschnitt 24).
 
 ---
 
@@ -653,7 +654,7 @@ Alle Aktionen außer Wecken laufen über den Key „power“. Deshalb kommt er v
 | Ausgabe | `This host key was already confirmed.`, `OK: guard.sh answers (twinraid-guard 3 status ok).`, `OK: guard.sh answers (twinraid-guard 3 power ok).` und ab 0.4.4 `TwinRaid connects with the key 'status' right away.` |
 | Unraid Groß | nichts passiert; der Test verändert nichts |
 
-Meldet der Befehl einen Fehler, steht die Abhilfe dabei, zum Beispiel bei abgelehntem Key (`Users → root`), ausgeschaltetem SSH oder fehlendem `guard.sh`. Siehe auch Abschnitt 22.
+Meldet der Befehl einen Fehler, steht die Abhilfe dabei, zum Beispiel bei abgelehntem Key (`Users → root`), ausgeschaltetem SSH oder fehlendem `guard.sh`. Siehe auch Abschnitt 23.
 
 ### 11.7 Test 4: VM starten, herunterfahren und erzwingen
 
@@ -967,7 +968,7 @@ Dieser Test zeigt, dass Unraid einen leeren Pfad im Template auslässt und Docke
    ```
 
    Erwartet: `No such file or directory`.
-2. TwinRaid aktualisieren: Reiter **Docker** → bei *TwinRaid* **update ready** → **Update** (Abschnitt 23).
+2. TwinRaid aktualisieren: Reiter **Docker** → bei *TwinRaid* **update ready** → **Update** (Abschnitt 24).
 3. **Die zwei Einträge leer anlegen.** Wer TwinRaid neu installiert (Abschnitt 4), hat sie schon im Template; dann bei Punkt 4 weiter. Wer von 0.4.x kommt, ergänzt sie einmal von Hand, weil Unraid ein vorhandenes Template beim Update nicht erweitert: Reiter **Docker** → Symbol *TwinRaid* → **Edit** → unten **Add another Path, Port, Variable, Label or Device**:
 
    | Feld | Auftragsdatei | Status |
@@ -1524,7 +1525,7 @@ stat -c '%U:%G %a %n' \
 | `…/in/request` | `root:root 600` | Auftragsdatei des Wächters |
 | `…/state` | `root:root 755` | Status des Wächters |
 
-Weicht etwas ab, erst beheben (bei `data` und `secrets`: Abschnitt 22, „Rechte des Datenordners zurückgesetzt“).
+Weicht etwas ab, erst beheben (bei `data` und `secrets`: Abschnitt 23, „Rechte des Datenordners zurückgesetzt“).
 
 - **Gruppe von `data/secrets`:** Sie bleibt vom Anlegen im Container und erscheint auf dem Host oft als `UNKNOWN` (10001). Das ist unbedenklich; es zählen nur der Besitzer root und die Rechte `700`.
 - **`config` mit `777`:** Das funktioniert, richtig ist aber `755`. Unraid setzt `appdata` oft auf `777`, zum Beispiel über *New Permissions*. Korrigieren mit `chmod 755 /mnt/user/appdata/twinraid/config`.
@@ -1977,7 +1978,7 @@ Vor `vm-start` prüft `guard.sh`, ob genug Arbeitsspeicher frei ist. Der Test ze
 
 ### 15.13 Abschluss
 
-Die Ergebnisse von G10, K1, W9, 1, 2, 2b bis 2e, G8 und M1 bitte im Pull Request festhalten. `actions.sync_dry_run` kann eingeschaltet bleiben; der Probelauf schreibt nie nach Groß. Die Simulation ohne echte Server zeigt dasselbe: **Nur Probelauf** in der Kachel **Sync** und `twinraid-admin mock-fault` mit den Namen aus Abschnitt 24.
+Die Ergebnisse von G10, K1, W9, 1, 2, 2b bis 2e, G8 und M1 bitte im Pull Request festhalten. `actions.sync_dry_run` kann eingeschaltet bleiben; der Probelauf schreibt nie nach Groß. Die Simulation ohne echte Server zeigt dasselbe: **Nur Probelauf** in der Kachel **Sync** und `twinraid-admin mock-fault` mit den Namen aus Abschnitt 25.
 
 ---
 
@@ -2712,7 +2713,7 @@ Erwartet: kein Snapshot älter als 30 Tage, die drei neuesten immer da; im Syslo
 
 ### 16.19 Abschluss
 
-Die Ergebnisse von G11, W10, 3, 3b, 4, A1, 5a, 5c, 5e, 6a bis 6d, 7, 5d, 8a und 8b, falls gemacht auch A2, 8c, M1 und 5b, bitte im Pull Request festhalten, A3 später. `actions.sync` kann eingeschaltet bleiben, ebenso `stop_containers: true`. Bevor eine echte Share dazukommt, gilt die Merkliste aus dem Konzept (10.2). Die Simulation ohne echte Server zeigt dasselbe: **Jetzt synchronisieren** in der Kachel **Sync** und `twinraid-admin mock-fault` mit den Namen aus Abschnitt 24.
+Die Ergebnisse von G11, W10, 3, 3b, 4, A1, 5a, 5c, 5e, 6a bis 6d, 7, 5d, 8a und 8b, falls gemacht auch A2, 8c, M1 und 5b, bitte im Pull Request festhalten, A3 später. `actions.sync` kann eingeschaltet bleiben, ebenso `stop_containers: true`. Bevor eine echte Share dazukommt, gilt die Merkliste aus dem Konzept (10.2). Die Simulation ohne echte Server zeigt dasselbe: **Jetzt synchronisieren** in der Kachel **Sync** und `twinraid-admin mock-fault` mit den Namen aus Abschnitt 25.
 
 ---
 
@@ -3766,7 +3767,156 @@ Die Ergebnisse von Test 0, G13, W12, P1 und dem Rauchtest bitte im Pull Request 
 2. **TwinRaid 0.5.4:** Reiter **Docker** → Symbol *TwinRaid* → **Edit** → **Repository** `ghcr.io/mantua1/twinraid:0.5.4` → **Apply**.
 3. Zurück auf 0.5.5 mit **Repository** `ghcr.io/mantua1/twinraid:latest` → **Apply** und dann wie in 20.2, Punkt 2.
 
-## 21. Von 0.4.2 auf 0.4.3 umstellen
+## 21. Zeitplan und automatisches Herunterfahren (ab 0.6.0)
+
+Ab 0.6.0 führt TwinRaid den Zeitplan aus `twinraid.yaml` aus und kann Unraid Groß danach selbst herunterfahren (Konzept 4.2 und 4.8):
+
+- **Geplanter Lauf:** An den Tagen aus `days` zur Uhrzeit `time` in der Zeitzone `timezone` startet derselbe Sync wie mit **Jetzt synchronisieren**. Ist Groß aus, weckt TwinRaid es nur mit `wake_target: true` und `actions.wake`; sonst wird der Termin ausgelassen. Sperrt etwas (etwa die Pause des Wächters), versucht TwinRaid es alle 5 Minuten erneut, höchstens 60 Minuten lang. Braucht der Lauf eine Freigabe von Löschungen, endet er mit „Freigabe nötig“; die Gründe stehen im Bericht, und die Freigabe gibst du danach mit **Jetzt synchronisieren**. Ein Termin, den TwinRaid verpasst hat (Klein oder TwinRaid war aus), wird einmal nachgeholt, wenn er höchstens 6 Stunden zurückliegt.
+- **Herunterfahren nach dem geplanten Sync:** nur wenn der geplante Lauf Groß selbst geweckt hat und `shutdown_after: true` gilt, nach `shutdown_delay_minutes` (Standard 5).
+- **Herunterfahren nach dem Spielen:** nur wenn **Starten** in der Kachel der Gaming-VM Groß geweckt hat und `gaming_vm.shutdown_target_after.enabled: true` gilt, `delay_minutes` (Standard 15) nach dem Ausschalten der VM, gleich ob über TwinRaid oder in Windows.
+- **Beides** nur mit `actions.shutdown`, nur wenn die Gaming-VM aus ist, keine weitere VM läuft und kein Sync und keine andere Aktion läuft, und über denselben Ablauf wie **Herunterfahren** mit allen Prüfungen. Die Kachel **Unraid Groß** zeigt „Wird um hh:mm heruntergefahren (…)“ bzw., solange eine Bedingung fehlt, den Grund, dazu den Button **Unraid Groß anlassen**.
+- **Wer an Groß arbeitet, nachdem TwinRaid es für einen geplanten Lauf oder für die VM geweckt hat, drückt vorher „Groß anlassen“.** TwinRaid sieht nur die VMs; Arbeit in der WebGUI oder im Terminal von Groß bemerkt es nicht.
+- **Einen Termin auslassen** geht nur in `twinraid.yaml`: `enabled: false` oder den Tag aus `days` entfernen, dann TwinRaid neu starten. Einen Schalter in der Oberfläche gibt es nicht (Entscheidung E29). Ein Sync von Hand bleibt jederzeit möglich.
+
+Der Wächter, `guard.sh` und `testdata.sh` ändern sich nicht. **Testumfang** (CLAUDE.md): Test 0 für die Anzeige; auf den Servern S1 (zugleich der Rauchtest) und S2. Die Termine mit Zeitumstellung, jede Sperre mit ihren Neuversuchen, jede Bedingung des Herunterfahrens und jede manuelle Aktion prüft die CI mit nachgebauter Uhr, dazu einen geplanten Lauf gegen den echten Wächter und das Herunterfahren nach dem Spielen gegen ein nachgebautes Groß. S1 und S2 heißen in diesem Abschnitt „S1 (0.6.0)“ und „S2 (0.6.0)“, damit sie nicht mit den Tests S1 und S2 aus 17.7 und 17.8 verwechselt werden.
+
+### 21.1 Test 0: Simulation (am PC, etwa 10 Minuten)
+
+*Warum nicht in der CI:* Die CI prüft Termine, Sperren und Texte mit Tests. Wie die Kacheln im Browser aussehen und dass der Ablauf mit der echten Uhr des PCs ohne Eingriff durchläuft, zeigt nur der laufende Container.
+
+1. **Kopie der Konfiguration für den Test** (wie in 18.1; eine vorhandene Kopie bleibt). Im Repo-Hauptordner:
+
+   ```bash
+   [ -e ~/twinraid-test0.yaml ] || cp config.dev.yaml ~/twinraid-test0.yaml
+   sed -i 's/^  sync: false$/  sync: true/' ~/twinraid-test0.yaml
+   T=$(TZ=Europe/Berlin date -d '+5 minutes' +%H:%M)
+   sed -i -E "s/^    time: \"[0-9]{2}:[0-9]{2}\"$/    time: \"$T\"/" ~/twinraid-test0.yaml
+   sed -i -E 's/^    days: \[.*\]$/    days: [mon, tue, wed, thu, fri, sat, sun]/' ~/twinraid-test0.yaml
+   grep -q 'shutdown_delay_minutes' ~/twinraid-test0.yaml ||
+     sed -i 's/^    shutdown_after: true$/&\n    shutdown_delay_minutes: 1/' ~/twinraid-test0.yaml
+   grep -q 'shutdown_target_after' ~/twinraid-test0.yaml ||
+     sed -i 's/^  shutdown_timeout_minutes: 1$/&\n  shutdown_target_after:\n    enabled: true\n    delay_minutes: 1/' ~/twinraid-test0.yaml
+   chmod 644 ~/twinraid-test0.yaml
+   grep -n -A6 '^gaming_vm:' ~/twinraid-test0.yaml; grep -n -A8 '^  schedule:' ~/twinraid-test0.yaml
+   ```
+
+   `T` ist die Uhrzeit in 5 Minuten. Die beiden `sed -E` setzen Uhrzeit und Tage im Abschnitt `schedule`; die beiden Zeilen mit `grep -q … ||` fügen die Wartezeiten von 1 Minute nur ein, wenn sie noch fehlen. Erwartet: unter `gaming_vm:` die Zeilen `shutdown_target_after:`, `enabled: true`, `delay_minutes: 1`; unter `schedule:` `days: [mon, …, sun]`, `time: "…"` mit der Uhrzeit in 5 Minuten und `shutdown_delay_minutes: 1`.
+2. **Starten** (direkt nach Schritt 1, damit der Termin noch vor dir liegt) und anmelden:
+
+   ```bash
+   TWINRAID_LOCAL_CONFIG=~/twinraid-test0.yaml docker/run-local.sh
+   ```
+
+   Im zweiten Terminal: `docker logs twinraid-dev 2>&1 | grep 'Next scheduled run'`. Erwartet: `Next scheduled run: … <Uhrzeit aus Schritt 1> Europe/Berlin (… UTC); wakes the target: yes; shuts it down afterwards: yes`.
+3. **Anzeige vor dem Termin.** Kachel **Sync**: „Nächster geplanter Lauf: <Tag>, <Datum>, <Uhrzeit>“ und „Ist Unraid Groß aus, wird es geweckt und danach heruntergefahren.“ **Einstellungen → Zeitplan**: „eingeschaltet“, drei Termine (heute, morgen, übermorgen), Herunterfahren nach dem geplanten Sync „ja, 1 min …“, nach dem Spielen „ja, 1 min …“ und der Satz zum Auslassen.
+4. **Der geplante Lauf.** Zur Uhrzeit aus Schritt 1 (spätestens 10 Sekunden danach): Groß „Startet …“, in der Kachel **Sync** „Geplanter Lauf (Termin …)“, der Sync läuft durch. Danach in der Kachel **Sync** „Letzter geplanter Lauf (Termin …): erfolgreich“ und in der Kachel **Unraid Groß** „Wird um hh:mm heruntergefahren (nach dem geplanten Sync).“ mit dem Button **Unraid Groß anlassen**. Etwa eine Minute später fährt Groß herunter; in der Kachel steht dann „Automatisches Herunterfahren … erfolgreich“.
+5. **Herunterfahren nach dem Spielen, mit „Groß anlassen“.** Kachel **Gaming-VM** → **Starten** (Groß ist aus und wird geweckt). Erwartet in der Kachel **Unraid Groß**: „Wird heruntergefahren (nach dem Spielen), sobald die VM aus ist.“ **Unraid Groß anlassen** (ohne Dialog). Erwartet: Die Zeile und der Button verschwinden. VM **Herunterfahren** → bestätigen; Groß bleibt auch nach zwei Minuten an. Dann Groß **Herunterfahren** → bestätigen.
+6. **Noch einmal ohne „Groß anlassen“.** **Starten** in der Kachel **Gaming-VM**, warten, bis die VM läuft, dann VM **Herunterfahren** → bestätigen. Erwartet: „Wird um hh:mm heruntergefahren (nach dem Spielen).“, etwa eine Minute später ist Groß aus.
+7. **Rundlauf:** `docker exec twinraid-dev twinraid-admin mock-tour on`, die Kacheln zwei Minuten beobachten. Erwartet nacheinander: „Geplanter Lauf wartet: der Wächter auf Unraid Klein hält die Pause zwischen zwei Läufen ein, neuer Versuch um … (längstens bis …)“, „Letzter geplanter Lauf (…): Termin ausgelassen“ in Rot mit Grund, „Wird um … heruntergefahren (nach dem geplanten Sync).“ und „Wird heruntergefahren (nach dem Spielen), sobald die VM aus ist.“ Danach `… mock-tour off`.
+8. **Auslassen über `twinraid.yaml`:** Container mit Strg+C beenden, dann:
+
+   ```bash
+   sed -i '/^  schedule:$/,/^    shutdown_after:/ s/^    enabled: true$/    enabled: false/' ~/twinraid-test0.yaml
+   grep -n -A1 '^  schedule:' ~/twinraid-test0.yaml
+   ```
+
+   `sed` ändert nur die Zeile `enabled` im Abschnitt `schedule`, nicht die unter `shutdown_target_after`. Erwartet: `enabled: false` direkt unter `schedule:`. Neu starten wie in Schritt 2. Erwartet: Kachel **Sync** „Zeitplan aus.“, im Startlog `Schedule: off (sync.schedule.enabled is false).`, **Einstellungen → Zeitplan** „aus“ ohne Termine. Danach die Zeile mit `… s/^    enabled: false$/    enabled: true/' …` (sonst wie oben) zurückstellen.
+
+### 21.2 Vor dem Update: Zeitplan in `twinraid.yaml` prüfen
+
+**Wichtig:** Bis 0.5.5 hat TwinRaid den Zeitplan nur angezeigt („Zeitplan aus (ab Phase 6)“). Ab 0.6.0 führt es ihn aus. Steht in deiner `twinraid.yaml` noch der Zeitplan aus der Beispielkonfiguration (`enabled: true`, sonntags 03:00, `wake_target: true`, `shutdown_after: true`) und ist `actions.sync` freigeschaltet, läuft nach dem Update am nächsten Sonntag um 03:00 ein Sync, und Groß wird dafür geweckt und danach ausgeschaltet. Deshalb vor dem Update ansehen, was dort steht. Im Unraid-Terminal von **Klein**:
+
+```bash
+if [ -f /boot/config/twinraid/source-guard.sh ] && [ ! -f /boot/config/twinraid/guard.sh ]; then
+  grep -n -A8 '^  schedule:' /mnt/user/appdata/twinraid/config/twinraid.yaml
+  grep -n -A6 '^actions:' /mnt/user/appdata/twinraid/config/twinraid.yaml
+else
+  echo "Nichts getan: Das ist nicht Klein. Diesen Kasten im Unraid-Terminal von Klein einfügen."
+fi
+```
+
+Soll der Zeitplan erst nach den Tests laufen, die Zeile `enabled: true` unter `schedule:` jetzt auf `enabled: false` stellen. Zuerst eine Sicherung der Konfiguration; du brauchst sie, wenn 0.5.5 auf dem Rückweg mit der Datei nicht startet (21.6).
+
+> **Diesen Kasten allein einfügen.** Er legt die Sicherung nur an, wenn es sie noch nicht gibt, und nur auf Klein.
+
+```bash
+if [ -f /boot/config/twinraid/source-guard.sh ] && [ ! -f /boot/config/twinraid/guard.sh ]; then
+  cd /mnt/user/appdata/twinraid/config
+  [ -e twinraid.yaml.vor-0.6.0 ] || cp -p twinraid.yaml twinraid.yaml.vor-0.6.0
+  ls -l twinraid.yaml*
+else
+  echo "Nichts getan: Das ist nicht Klein. Diesen Kasten im Unraid-Terminal von Klein einfügen."
+fi
+```
+
+Dann mit `nano /mnt/user/appdata/twinraid/config/twinraid.yaml` die Zeile ändern (speichern mit Strg+O, Enter, beenden mit Strg+X). `nano` behält Besitzer und Rechte; zur Sicherheit danach den Kasten aus Abschnitt 3 („Rechte der Konfiguration“). Neue Schlüssel (`shutdown_delay_minutes`, `notify_success`, `gaming_vm.shutdown_target_after`) erst **nach** dem Update eintragen: TwinRaid 0.5.5 kennt sie nicht und startet mit ihnen nicht.
+
+### 21.3 Update
+
+1. Reiter **Docker** → bei *TwinRaid* **update ready** → **Update**. Skripte auf Klein und Groß bleiben, wie sie sind.
+2. **Container-Log** (Reiter **Docker** → Symbol *TwinRaid* → **Logs**): eine Zeile `Next scheduled run: …` mit dem nächsten Termin, oder `Schedule: off …`. Fehlt eine Freischaltung, warnt das Log (etwa `actions.sync is not enabled; the schedule is not run.`); der Container startet trotzdem.
+3. **Kachel Sync:** „Nächster geplanter Lauf: …“, „Zeitplan aus.“ oder „Zeitplan: nicht freigeschaltet …“, je nach `twinraid.yaml`. **Einstellungen → Zeitplan** zeigt dasselbe mit den nächsten drei Terminen.
+
+### 21.4 Test S1 (0.6.0): Geplanter Lauf mit Wecken und Herunterfahren (zugleich Rauchtest)
+
+*Warum nicht in der CI:* Die CI hat nur ein nachgebautes Groß ohne echtes Wake-on-LAN und ohne echtes Ausschalten. Echte Bootzeit, Uhr und Zeitzone des Containers auf Unraid, `poweroff` über `guard.sh` kurz nach einem Empfang (die Sperre `sync-running` muss dann wieder frei sein) und der ganze Ablauf ohne Eingriff mit echten Dauern gibt es nur auf den Servern. Die beiden `report` sind der Rauchtest nach „Testumfang“.
+
+**Voraussetzung:** `actions.sync`, `actions.wake` und `actions.shutdown` sind `true`. Groß ist aus, die Gaming-VM ebenfalls. Der letzte Sync liegt mindestens 30 Minuten zurück.
+
+1. **Termin in 7 Minuten eintragen.** Die jetzige Uhrzeit zeigt `date +%H:%M` im Unraid-Terminal von Klein (Zeitzone von Klein; steht `timezone` anders, entsprechend umrechnen). Mit `nano /mnt/user/appdata/twinraid/config/twinraid.yaml` im Abschnitt `schedule` setzen und die alten Werte notieren:
+
+   | Schlüssel | Wert für S1 |
+   |---|---|
+   | `enabled` | `true` |
+   | `days` | heutiger Tag, etwa `[mon]` |
+   | `time` | jetzt plus 7 Minuten, in Anführungszeichen, etwa `"14:37"` |
+   | `wake_target` | `true` |
+   | `shutdown_after` | `true` |
+   | `shutdown_delay_minutes` | `5` (neue Zeile unter `shutdown_after`) |
+
+2. **TwinRaid neu starten:** Reiter **Docker** → Symbol *TwinRaid* → **Restart**. Der Lauf beginnt frühestens 2 Minuten nach dem Start; deshalb 7 Minuten Vorlauf. Im **Log** `Next scheduled run: … wakes the target: yes; shuts it down afterwards: yes`, in der Kachel **Sync** „Nächster geplanter Lauf: …“.
+3. **Zum Termin nichts tun.** Erwartet nacheinander, ohne Eingriff: Groß „Startet …“ (Wake-on-LAN), „Geplanter Lauf (Termin …)“, Container kurz angehalten, Senden, Ende „erfolgreich“. Danach in der Kachel **Unraid Groß** „Wird um hh:mm heruntergefahren (nach dem geplanten Sync).“ mit **Unraid Groß anlassen**.
+4. **In den 5 Minuten Wartezeit (Rauchtest):** Im Unraid-Terminal von **Klein** und danach von **Groß** den Kasten aus 17.7 einfügen (`testdata.sh report source` bzw. `report target`). Nicht in der WebGUI von Groß arbeiten.
+5. **Groß fährt herunter.** Zur angezeigten Uhrzeit „Fährt herunter …“, danach „Offline“. In der Kachel steht „Automatisches Herunterfahren … erfolgreich“.
+6. **Aktionslog:** In der Konsole von TwinRaid (Reiter **Docker** → Symbol *TwinRaid* → **Console**) `twinraid-admin show-action-log --lines 20`.
+7. **Zeitplan zurückstellen:** die Werte aus Schritt 1 wieder eintragen (oder `enabled: false`), dann TwinRaid neu starten.
+
+| Prüfen | Erwartet |
+|---|---|
+| Schritt 3 | Groß geweckt, Sync „erfolgreich“, Kachel **Sync** „Letzter geplanter Lauf (Termin …): erfolgreich“ |
+| `report source` (Klein) | am Ende `Alles in Ordnung.` und `Exit: 0` |
+| `report target` (Groß) | am Ende `Alles in Ordnung.` und `Exit: 0` |
+| Schritt 5 | Groß aus, etwa 5 Minuten nach dem Ende des Syncs |
+| `show-action-log` | `sync_start  schedule: started`, `wake_target  automatic (part of sync_start): success`, `sync_start  schedule: success`, `shutdown_target  automatic (part of sync_start): success` |
+
+Scheitert das Herunterfahren (etwa `sync_running` oder `other_vms_running`), bleibt Groß an, und es gibt keinen zweiten Versuch; dann die Zeile aus dem Aktionslog in den PR kopieren.
+
+### 21.5 Test S2 (0.6.0): Herunterfahren nach dem Spielen
+
+*Warum nicht in der CI:* Dass Windows beim Herunterfahren aus dem Startmenü in libvirt als `SHUTOFF` ankommt und `vm-watch` das meldet, zeigt nur die echte VM; die CI hat ein nachgebautes `virsh`. Ebenso das echte Wecken beim Start der VM.
+
+1. Mit `nano /mnt/user/appdata/twinraid/config/twinraid.yaml` unter `gaming_vm:` eintragen (zwei Leerzeichen vor `shutdown_target_after`, vier vor den beiden Zeilen darunter):
+
+   ```yaml
+     shutdown_target_after:
+       enabled: true
+       delay_minutes: 5
+   ```
+
+   Dann TwinRaid neu starten (**Docker** → *TwinRaid* → **Restart**). **Einstellungen → Zeitplan**: Herunterfahren nach dem Spielen „ja, 5 min …“.
+2. Groß ist aus. Kachel **Gaming-VM** → **Starten**. Erwartet: Groß wird geweckt, die VM startet, und die Kachel **Unraid Groß** zeigt „Wird heruntergefahren (nach dem Spielen), sobald die VM aus ist.“
+3. Die VM kurz benutzen, dann **in Windows** über das Startmenü herunterfahren.
+4. Erwartet: VM „Offline“, in der Kachel **Unraid Groß** „Wird um hh:mm heruntergefahren (nach dem Spielen).“ (5 Minuten nach dem Ausschalten), danach Groß „Offline“ und „Automatisches Herunterfahren … erfolgreich“; im Aktionslog `shutdown_target  automatic (part of vm_start): success`.
+
+`shutdown_target_after` kann danach eingeschaltet bleiben; wer es nicht will, setzt `enabled: false` und startet TwinRaid neu.
+
+### 21.6 Abschluss und Rückweg auf 0.5.5
+
+Die Ergebnisse von Test 0, S1 (0.6.0) und S2 (0.6.0) bitte im Pull Request festhalten, wie immer nur mit „Klein“ und „Groß“.
+
+**Rückweg auf 0.5.5:** *Rückweg beschrieben, bis 1.0 nicht auf den Servern geprüft.* TwinRaid 0.5.5 lehnt die neuen Schlüssel als unbekannt ab und startet mit ihnen nicht. Deshalb zuerst `shutdown_delay_minutes`, `notify_success` und den ganzen Block `shutdown_target_after` mit `nano` aus `twinraid.yaml` entfernen, dann Reiter **Docker** → Symbol *TwinRaid* → **Edit** → **Repository** `ghcr.io/mantua1/twinraid:0.5.5` → **Apply**. 0.5.5 führt den Zeitplan nicht aus. Die Datei `/data/worker/schedule.json` stört 0.5.5 nicht. Zurück auf 0.6.0 mit **Repository** `ghcr.io/mantua1/twinraid:latest` → **Apply**.
+
+## 22. Von 0.4.2 auf 0.4.3 umstellen
 
 Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API-Key mehr. Die Umstellung dauert etwa zehn Minuten. Groß sollte dabei an sein. Der Abschnitt beschreibt den Stand von 0.4.3; wer gleich auf 0.5.1 geht, bekommt in Schritt 3 `guard.sh` Version 3 und liest in Schritt 6 entsprechend `twinraid-guard 3`.
 
@@ -3783,7 +3933,7 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 
 ---
 
-## 22. Fehlerbilder und Abhilfe
+## 23. Fehlerbilder und Abhilfe
 
 | Anzeige im Dashboard | Bedeutung | Abhilfe |
 |---|---|---|
@@ -3819,6 +3969,7 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 | Probelauf oder Sync: „Zu kurz nach dem Ende eines Probelaufs …“ (ab 0.5.5) | Der Auftrag kam in der Pause von 10 Sekunden an, etwa weil die Seite noch den alten Stand zeigte | Einige Sekunden warten und erneut starten |
 | Syslog von Klein: `provisional snapshot … kept (…)` (ab 0.5.5) | Der Wächter durfte den Snapshot eines Probelaufs nicht löschen; in Klammern der Grund (`hold`, `clone`, `foreign`, `guid`, `base`, `on_target`, `destroy_failed`) | Der Snapshot bleibt und läuft nach `snapshot_keep_days` ab; den Grund auf Klein ansehen (etwa einen Hold oder Klon von Hand) |
 | Kachel Klein: „Wächter: Container wird angehalten (bis zu … s)“ (ab 0.5.5) | `docker stop` läuft; der Wächter schreibt so lange keinen Status | Normal, bis zu `stop_timeout_seconds` |
+| Kachel Klein: „Wächter: Container wird angehalten (bis zu … s)“ steht bei jedem Sync fast die volle Zeit da; im Syslog von Klein endet der Stopp eines Containers erst nach `stop_timeout_seconds` | Ein Container reagiert nicht auf sein Stoppsignal und braucht für `docker stop` die vollen `stop_timeout_seconds`. Docker beendet ihn dann mit SIGKILL; der Snapshot ist für ihn nur absturzkonsistent, und der Lauf dauert länger | Das Stoppsignal des Containers ansehen: `docker inspect --type container --format '{{.Config.StopSignal}}' -- <Name>` im Unraid-Terminal von Klein (leer heißt SIGTERM). Passt es nicht zum Programm im Container, den Container in Unraid anpassen; sonst `stop_timeout_seconds` in `source-guard.conf` anheben (bis 600; `max_stop_minutes` muss für alle Container reichen) und `source-guard.sh restart`, oder den Container aus `allow` nehmen |
 | Button **Jetzt synchronisieren** grau: „der Wächter … hält die Pause zwischen zwei Läufen ein; frühestens um …“ | Nach jedem Lauf mit angehaltenen Containern gilt eine Pause von 30 Minuten | Bis zur genannten Uhrzeit warten; für Tests hebt root auf Klein sie mit `… reset-run-interval` auf |
 | Button **Jetzt synchronisieren** grau: „auf … besteht laut letzter Prüfung ein Klon eines Spiegels“ | Von einem Spiegel auf Groß gibt es einen Klon, etwa aus einem Notbetrieb; solange er besteht, nimmt `guard.sh` nichts an | Auf Groß ansehen: `zfs list -H -o name,origin -r mainpool \| grep twinraid-mirror`. Einen Klon nur löschen, wenn er nicht mehr gebraucht wird; danach ein Probelauf, damit TwinRaid den neuen Stand kennt |
 | Sync: „Die Löschungen wurden abgelehnt; nichts wurde gesendet.“ | Im Dialog wurde **Ablehnen** gewählt | Gewollt? Sonst nach 30 Minuten erneut synchronisieren und **Freigeben und senden** wählen (16.7) |
@@ -3830,6 +3981,14 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 | Sync: „Der Wächter hat abgelehnt.“ mit „Grund: der Totmannschalter …“ oder „docker stop ist … fehlgeschlagen“ | Die Container-Phase ist gescheitert; TwinRaid hat vor dem Snapshot abgebrochen und die angehaltenen Container wieder starten lassen | Container in Unraid prüfen; beim Totmannschalter das Syslog von Klein ansehen (`twinraid-source-guard`) |
 | Sync: „Wird abgebrochen … (wartet auf den Container)“ | Ein Abbruch wartet, bis `docker stop` oder der Neustart eines Containers fertig ist | Normal; höchstens `stop_timeout_seconds` plus 15 Sekunden |
 | Sync: „Übertragung läuft weiter (vor dem Neustart begonnen).“ | TwinRaid wurde während des Sendens neu gestartet; der Wächter sendet weiter | Normal; am Ende steht der Lauf in der Historie mit „nach einem Neustart übernommen“ |
+| Sync: **Zeitplan: nicht freigeschaltet** (ab 0.6.0) | `sync.schedule.enabled` ist `true`, aber `actions.sync` fehlt | `actions.sync: true` setzen und TwinRaid neu starten, oder `enabled: false` (21.2) |
+| Sync: **Geplanter Lauf wartet: …, neuer Versuch um …** (ab 0.6.0) | Zum Termin sperrt etwas, etwa die Pause des Wächters oder ein laufender Sync | Normal; TwinRaid versucht es alle 5 Minuten, höchstens 60 Minuten lang |
+| Sync: **Letzter geplanter Lauf (Termin …): Termin ausgelassen** mit Grund (ab 0.6.0) | Die Sperre galt auch nach 60 Minuten noch, oder Groß war aus und durfte nicht geweckt werden (`wake_target`, `actions.wake`) | Den Grund beheben; der nächste Termin läuft normal. Einen Sync von Hand gibt es jederzeit mit **Jetzt synchronisieren** |
+| Sync: **Letzter geplanter Lauf (Termin …): Termin verpasst** (ab 0.6.0) | TwinRaid oder Klein war zum Termin aus, und der Termin lag beim Start mehr als 6 Stunden zurück | Nichts zu tun; bei Bedarf **Jetzt synchronisieren** |
+| Sync: **Letzter geplanter Lauf (Termin …): Freigabe nötig** (ab 0.6.0) | Der geplante Lauf hätte mehr als `max_deletions` gelöscht oder eine Share ist stark geschrumpft; er fragt nicht nach und hat nichts gesendet | Bericht ansehen; stimmen die Löschungen, **Jetzt synchronisieren** und im Dialog freigeben |
+| Groß: **Wird um … heruntergefahren (nach dem geplanten Sync / nach dem Spielen)** (ab 0.6.0) | TwinRaid hat Groß selbst geweckt und fährt es nach der Wartezeit herunter | Wer an Groß arbeiten will, drückt vorher **Unraid Groß anlassen** |
+| Groß: **Wird heruntergefahren (…), sobald …** (ab 0.6.0) | Eine Bedingung fehlt noch, etwa die Gaming-VM läuft oder eine weitere VM | Normal; die Wartezeit beginnt, sobald alles passt |
+| Groß (rot): **Zuletzt: Automatisches Herunterfahren – …** (ab 0.6.0) | Beim Herunterfahren lief doch eine VM, ein Empfang oder `guard.sh` lehnte ab | Groß bleibt an; es gibt keinen zweiten Versuch. Den Grund aus der Meldung prüfen, dann von Hand **Herunterfahren** |
 | Hinweis Kachel Klein: „Die neue Basis von … ist nicht gehalten …“ | Nach dem Senden hat der Wächter den Snapshot nicht mit einem Hold festgehalten, oder auf Klein fehlt die Basis ganz | Der nächste erfolgreiche Sync behebt das. Endet er mit „fehlt die Basis“, wie in 16.17 |
 | Hinweis: **Auf … ist keine Grenze für den ZFS-Cache eingetragen** | Bei `zfs_arc_max` steht in Unraid `0` | Auf Groß *Settings → Disk Settings* → **Tunable (zfs_arc_max)** eintragen (13.6) |
 | VM: **Auf dem Server ist nicht genug Arbeitsspeicher frei** | `guard.sh` hat den Start abgelehnt (`memory-low`, 15.12) | Eine andere VM herunterfahren, oder die Grenze des ZFS-Caches senken |
@@ -3843,7 +4002,7 @@ Seit 0.4.3 liest TwinRaid die VM per SSH über `guard.sh` und braucht keinen API
 | VM: **Statusverbindung wird aufgebaut …** | Groß ist gerade angegangen, SSH antwortet noch nicht | Normal nach dem Start von Groß; verschwindet nach wenigen Sekunden |
 | VM: **Statusverbindung unterbrochen – neuer Versuch folgt** | Die SSH-Verbindung für den Status ist abgebrochen | TwinRaid versucht es nach 5 s, 15 s, 60 s und dann alle 5 Minuten erneut; die Uhrzeit des nächsten Versuchs steht darunter (ab 0.4.4). Bleibt die Meldung, SSH auf Groß und das Netz prüfen |
 | VM: **Nächster Versuch um …** (ab 0.4.4) | Nach einem Fehler der Statusverbindung wartet TwinRaid, damit Groß nicht mit Anmeldungen überhäuft wird: nach Abbrüchen 5 Sekunden bis 5 Minuten, nach Fehlern bei Key, Hostkey oder `guard.sh` 30 Minuten | Die Ursache aus der Meldung darüber beheben, dann `twinraid-admin trust-host-key target`. Besteht der Test mit dem Key „status“, endet die Wartezeit sofort (Test G9, 11.22) |
-| VM: **Kein SSH-Key „status“** | Schritt 10.2 bzw. Abschnitt 21, Punkt 5 fehlt | `twinraid-admin init-ssh-keys --key status` und die Zeile auf Groß eintragen |
+| VM: **Kein SSH-Key „status“** | Schritt 10.2 bzw. Abschnitt 22, Punkt 5 fehlt | `twinraid-admin init-ssh-keys --key status` und die Zeile auf Groß eintragen |
 | VM: **SSH-Hostkey des Servers nicht bestätigt** | Hostkey von Groß noch nicht bestätigt | `twinraid-admin trust-host-key target` (10.2) |
 | VM: **Der Server lehnt den SSH-Key „status“ ab** | Zeile für „status“ fehlt oder ist abgeschnitten, oder TwinRaid hat eine andere IP als in `from=` | `twinraid-admin init-ssh-keys --key status` (gibt die Zeile erneut aus) und auf Groß eintragen oder ersetzen; danach `twinraid-admin trust-host-key target`, dann verbindet sich TwinRaid sofort statt erst zur angezeigten Uhrzeit |
 | VM: **guard.sh lehnt ab** | Auf Groß liegt noch `guard.sh` Version 1 (kennt den Key „status“ nicht), oder die Zeile ruft `guard.sh` in einem anderen Modus auf | `guard.sh` wie in 9.2 neu holen; die Zeile für „status“ muss auf `guard.sh status` enden. Danach `twinraid-admin trust-host-key target` (verbindet sofort neu) |
@@ -3914,7 +4073,7 @@ Danach den Container neu starten (Reiter **Docker** → *TwinRaid* → **Restart
 
 ---
 
-## 23. Updates einspielen und Herkunft prüfen
+## 24. Updates einspielen und Herkunft prüfen
 
 - Unraid prüft regelmäßig, ob es eine neue Version gibt. Im Reiter **Docker** steht dann bei TwinRaid **update ready**. Klick auf das Symbol → **Update**. Daten und Einstellungen bleiben erhalten, die MAC dank des Felds **Fixed MAC address** ebenso. Nach dem ersten Update einmal wie in Schritt 5.4 vergleichen.
 - Von 0.4.3 auf 0.4.4 genügt das Update: `guard.sh` (Version 2), `power.conf`, die Keys und `twinraid.yaml` bleiben unverändert.
@@ -3933,7 +4092,7 @@ Steht am Ende `Verification succeeded!`, stammt das Image nachweislich aus diese
 
 ---
 
-## 24. Befehle der Admin-CLI
+## 25. Befehle der Admin-CLI
 
 Alle Befehle laufen in der **Container-Konsole**.
 

@@ -34,6 +34,10 @@ export function SyncHistory({ entries, names }: SyncHistoryProps) {
                 </span>
                 {" · "}
                 {t(`sync.kinds.${entry.kind}`)}
+                {entry.scheduled_for != null &&
+                  ` ${t("sync.history.scheduled", {
+                    term: formatSince(i18n.resolvedLanguage, entry.scheduled_for),
+                  })}`}
                 {" · "}
                 <span className="text-muted-foreground">{details(entry, names.target)}</span>
               </p>

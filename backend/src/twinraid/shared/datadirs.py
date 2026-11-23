@@ -51,6 +51,11 @@ class DataPaths:
         return self.worker / "sync-history.jsonl"
 
     @property
+    def schedule_state(self) -> Path:
+        """Zuletzt behandelter Termin des Zeitplans ab v0.6.0 (Konzept 4.8), nur der Worker."""
+        return self.worker / "schedule.json"
+
+    @property
     def password_file(self) -> Path:
         return self.secrets / "password.argon2"
 

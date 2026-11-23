@@ -86,7 +86,25 @@
     "target": {
       "fallbackTitle": "Target server",
       "description": "Runs on demand and is the sync target.",
-      "otherVms": "Other running VMs: {{vms}}"
+      "otherVms": "Other running VMs: {{vms}}",
+      "autoShutdown": {
+        "at": "Shuts down at {{time}} ({{kind}}).",
+        "waiting": "Will shut down ({{kind}}) {{reason}}.",
+        "kinds": {
+          "after_sync": "after the scheduled sync",
+          "after_play": "after playing",
+          "both": "after the scheduled sync and after playing"
+        },
+        "reasons": {
+          "vm_running": "once the VM is off",
+          "vm_unknown": "once the state of the VMs is known",
+          "other_vms_running": "once no other VM is running",
+          "busy": "once the running action is done",
+          "sync_running": "once the sync is done",
+          "not_enabled": "but shutting down is not enabled in twinraid.yaml"
+        },
+        "keepHint": "If you want to work on {{target}}, press “Keep {{target}} on” first."
+      }
     },
     "vm": {
       "fallbackTitle": "Gaming VM",
@@ -204,6 +222,30 @@
       "newest": "newest receive",
       "oldest": "oldest",
       "props": "Properties"
+    },
+    "schedule": {
+      "title": "Schedule",
+      "description": "The schedule is set in twinraid.yaml under sync.schedule and is read-only here.",
+      "state": "State",
+      "on": "on",
+      "off": "off",
+      "notPermitted": "on, but not enabled (actions.sync)",
+      "plan": "Terms",
+      "planValue": "{{days}} at {{time}} ({{zone}})",
+      "next": "Next terms",
+      "none": "none",
+      "wake": "Wake",
+      "wakeOn": "yes, if {{target}} is off",
+      "wakeOff": "no; if {{target}} is off, the term is skipped",
+      "shutdown": "Shut down after the scheduled sync",
+      "shutdownOn": "yes, {{minutes}} min after the run, if it woke {{target}}",
+      "shutdownOff": "no",
+      "play": "Shut down after playing",
+      "playOn": "yes, {{minutes}} min after the VM was turned off, if TwinRaid woke {{target}} for the VM",
+      "playOff": "no",
+      "gap": "Shortest gap between two terms: {{gap}}.",
+      "conflict": "Note: {{limit}} ({{minutes}} min) is as long as the shortest gap between two terms or longer. The schedule then wants to run more often than the guard or {{target}} allow; a term waits or is skipped.",
+      "skip": "A term can only be skipped in twinraid.yaml: enabled: false or remove the day from days, then restart TwinRaid."
     }
   },
   "audit": {
@@ -229,6 +271,7 @@
       "shutdown_target_force_vm": "Force VM off and shut down server",
       "sync_dry_run": "Dry run",
       "sync_start": "Start sync",
+      "auto_shutdown_cancel": "Keep server on",
       "sync_cancel": "Cancel dry run",
       "sync_confirm_deletions": "Approve deletions",
       "cli_sync_check": "Sync check (CLI)"
@@ -283,7 +326,8 @@
       "vm_force_stop": "Force off",
       "shutdown_target_force_vm": "Force off, then shut down server",
       "sync_dry_run": "Dry run only",
-      "sync_start": "Sync now"
+      "sync_start": "Sync now",
+      "auto_shutdown_cancel": "Keep {{target}} on"
     },
     "names": {
       "wake_target": "Wake server",
@@ -293,7 +337,9 @@
       "vm_force_stop": "Force VM off",
       "shutdown_target_force_vm": "Force VM off and shut down server",
       "sync_dry_run": "Dry run",
-      "sync_start": "Sync"
+      "sync_start": "Sync",
+      "auto_shutdown_cancel": "Keep server on",
+      "automatic_shutdown": "Automatic shutdown"
     },
     "steps": {
       "waking": "Magic packet sent, the server is starting …",
@@ -372,7 +418,10 @@
       "confirmation_timeout": "The deletions were not confirmed in time; nothing was sent.",
       "container_restart_failed": "Sent, but a stopped container is not running again.",
       "send_failed": "Sending failed. Shares that did not arrive (failed or skipped) keep their previous state on the target server; shares sent successfully are up to date there.",
-      "target_modified": "The mirror on the target server was changed since the last snapshot; the receive was refused."
+      "target_modified": "The mirror on the target server was changed since the last snapshot; the receive was refused.",
+      "schedule_skipped": "term skipped",
+      "schedule_missed": "term missed",
+      "confirmation_required": "confirmation required"
     },
     "last": "Last: {{action}} – {{outcome}} ({{time}})",
     "hint": "{{actions}}: {{reason}}",
@@ -558,7 +607,28 @@
     "stopping": "Guard: stopping a container (up to {{seconds}} s)"
   },
   "sync": {
-    "schedule": "Schedule off (from phase 6).",
+    "schedule": {
+      "off": "Schedule off.",
+      "notPermitted": "Schedule: not enabled (actions.sync in twinraid.yaml).",
+      "next": "Next scheduled run: {{term}}",
+      "zone": "{{term}} ({{zone}})",
+      "wakeAndShutdown": "If {{target}} is off, it is woken and shut down afterwards.",
+      "wakeOnly": "If {{target}} is off, it is woken and stays on afterwards.",
+      "noWake": "If {{target}} is off, the term is skipped.",
+      "waiting": "Scheduled run is waiting: {{reason}}, next attempt at {{next}} (until {{until}} at the latest).",
+      "running": "Scheduled run (term {{term}})",
+      "last": "Last scheduled run (term {{term}}): {{outcome}}",
+      "lastReason": "Reason: {{reason}}",
+      "days": {
+        "mon": "Mon",
+        "tue": "Tue",
+        "wed": "Wed",
+        "thu": "Thu",
+        "fri": "Fri",
+        "sat": "Sat",
+        "sun": "Sun"
+      }
+    },
     "noRun": "No run yet.",
     "running": "Dry run in progress: {{step}}",
     "last": "Last dry run ({{time}}): {{outcome}}",
@@ -730,7 +800,8 @@
       "containers_one": "{{count}} container stopped",
       "containers_other": "{{count}} containers stopped",
       "woke": "woke {{target}}",
-      "adopted": "adopted after a restart"
+      "adopted": "adopted after a restart",
+      "scheduled": "(scheduled for {{term}})"
     },
     "shareResults": {
       "ok": "arrived",

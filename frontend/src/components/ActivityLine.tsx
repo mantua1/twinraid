@@ -81,8 +81,10 @@ export function ActivityLine({ activity, status, tile, vmName }: ActivityLinePro
   }
   const time = (value: string) =>
     new Intl.DateTimeFormat(i18n.resolvedLanguage, { timeStyle: "short" }).format(new Date(value));
+  // Ab v0.6.0: das automatische Herunterfahren mit eigenem Namen (Konzept 4.2).
+  const automatic = last.trigger === "automatic" && last.action === "shutdown_target";
   const text = t("actions.last", {
-    action: t(`actions.names.${last.action}`),
+    action: t(automatic ? "actions.names.automatic_shutdown" : `actions.names.${last.action}`),
     outcome: t(`actions.outcomes.${last.outcome}`),
     time: time(last.finished_at),
   });

@@ -17,7 +17,8 @@
 # Sync, testdata.sh verify-latest und verify-container auf Groß, Freigabe von Löschungen
 # (abgelehnt und freigegeben), Abbrechen während des Sendens, den Totmannschalter in der
 # Stopp-Phase (TwinRaid mit docker pause angehalten) und das gesperrte Herunterfahren
-# während eines Syncs, dazu Aktionslog und Sync-Historie.
+# während eines Syncs, dazu Aktionslog und Sync-Historie; ab v0.6.0 einen geplanten Lauf
+# mit der echten Uhr (Zeitzone UTC) und den Auslöser schedule in Historie und Aktionslog.
 #
 # Läuft nur auf einem Wegwerf-Rechner (CI-Runner) als root, mit zfsutils-linux und Docker,
 # und nur mit SYNC_E2E_TEST_HOST=disposable. Aufruf aus dem Repo-Hauptordner:
@@ -589,6 +590,53 @@ expect_contains "show-sync-log lists the runs" "${sync_log}" "deletions_declined
 expect_contains "show-sync-log names stopped containers" "${sync_log}" "2 containers stopped"
 expect_equal "never a destroy with -r" "$(zpool history "${KLEIN}" mainpool | grep -c 'zfs destroy -r' || true)" "0"
 expect_equal "never a receive with -F" "$(zpool history mainpool | grep -c 'receive -F' || true)" "0"
+
+echo "== Geplanter Lauf mit der echten Uhr (ab v0.6.0, Konzept 4.8)"
+next_run
+# Termin 4 Minuten nach jetzt in UTC; der Worker beginnt frühestens 2 min nach seinem Start.
+term_time="$(date -u -d '+4 minutes' +%H:%M)"
+term_at="$(date -u -d '+4 minutes' +%Y-%m-%dT%H:%M:00Z)"
+python3 - "${WORK}/twinraid.yaml" "${term_time}" <<'PY'
+import sys
+
+path, term = sys.argv[1:]
+text = open(path, encoding="utf-8").read()
+old = """  schedule:
+    enabled: false
+    timezone: "Europe/Berlin"
+    days: [sun]
+    time: "03:00"
+"""
+new = f"""  schedule:
+    enabled: true
+    timezone: "UTC"
+    days: [mon, tue, wed, thu, fri, sat, sun]
+    time: "{term}"
+"""
+assert old in text
+open(path, "w", encoding="utf-8").write(text.replace(old, new))
+PY
+docker restart "${APP}" >/dev/null
+for _ in $(seq 1 60); do
+  [[ "$(curl -sk --max-time 2 "${API}/health" || true)" == ok ]] && break
+  sleep 1
+done
+csrf="$(curl -s -c "${WORK}/cookies.txt" --cacert "${WORK}/ca.pem" -H "${ORIGIN}" \
+  -H "Content-Type: application/json" -d "{\"password\": \"${PASSWORD}\"}" "${API}/api/auth/login" |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["csrf_token"])')"
+expect_contains "start log names the term" "$(docker logs --since 2m "${APP}" 2>&1)" \
+  "Next scheduled run: "
+wait_field source_guard.state active 60 && pass "TwinRaid reads the source guard again"
+wait_field schedule.next_terms.0 "${term_at}" 30 && pass "status names the term"
+wait_field sync.history.0.trigger schedule 480 && pass "the scheduled run ran"
+expect_equal "scheduled run" "$(field sync.history.0.result):$(field sync.history.0.scheduled_for)" \
+  "success:${term_at}"
+expect_equal "last scheduled run in the status" "$(field schedule.last.outcome)" "success"
+expect_contains "action log: trigger schedule" "$(docker exec "${APP}" twinraid-admin show-action-log 2>&1)" \
+  "sync_start  schedule: success"
+expect_contains "show-sync-log names trigger and term" \
+  "$(docker exec "${APP}" twinraid-admin show-sync-log --lines 1 2>&1)" "by schedule, term ${term_at}"
+expect_equal "Groß stays on: the run did not wake it" "$(field auto_shutdown)" "null"
 
 echo
 if ((failures > 0)); then

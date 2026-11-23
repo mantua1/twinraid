@@ -144,6 +144,12 @@ class StatusSource(Protocol):
     def current(self) -> ResourceStatus: ...
 
 
+class ShutdownMarks(Protocol):
+    """Vormerkung „nach dem geplanten Sync“ (worker/auto_shutdown.py, ab v0.6.0)."""
+
+    def mark_after_sync(self) -> None: ...
+
+
 class _End(Exception):  # noqa: N818 - Ende eines Laufs, kein Fehler im eigentlichen Sinn
     def __init__(self, outcome: ActionOutcome, reason: SyncReason | None = None) -> None:
         super().__init__(outcome.value)
@@ -185,6 +191,9 @@ class _Run:
     started: bool = False
     # begin, stop oder finish ist geschrieben, die Antwort steht noch aus.
     run_order_pending: bool = False
+    # Ab v0.6.0: geplanter Lauf mit seinem Termin (Konzept 4.8).
+    trigger: Trigger = Trigger.DASHBOARD
+    scheduled_for: datetime | None = None
 
     @property
     def action(self) -> ActionName:
@@ -227,6 +236,7 @@ class SyncCoordinator:
         self._monotonic = monotonic
         self._sleep = sleep
         self._target: TargetActions | None = None
+        self._marks: ShutdownMarks | None = None
         self._run: _Run | None = None
         self._task: asyncio.Task[None] | None = None
         self._last: SyncResult | None = None
@@ -236,6 +246,9 @@ class SyncCoordinator:
 
     def attach(self, target: TargetActions) -> None:
         self._target = target
+
+    def attach_marks(self, marks: ShutdownMarks) -> None:
+        self._marks = marks
 
     # --- Verfügbarkeit ---
 
@@ -337,6 +350,8 @@ class SyncCoordinator:
                 job_id=run.job_id,
                 step=step,
                 started_at=run.started_at,
+                trigger=run.trigger,
+                scheduled_for=run.scheduled_for,
                 adopted=run.adopted,
                 containers_stopped=run.containers_stopped,
                 confirmation=run.confirmation,
@@ -388,11 +403,29 @@ class SyncCoordinator:
     # --- Befehle ---
 
     async def request(self, name: ActionName) -> ActionBlocker | None:
+        return self._begin(name, Trigger.DASHBOARD, None)
+
+    async def request_scheduled(self, term: datetime) -> ActionBlocker | None:
+        """Geplanter Lauf (Konzept 4.8): derselbe Ablauf wie „Jetzt synchronisieren“ mit dem
+        Auslöser schedule. Ob Groß geweckt werden darf, prüft der Zeitplan vorher."""
+        return self._begin(ActionName.SYNC_START, Trigger.SCHEDULE, term)
+
+    def _begin(
+        self, name: ActionName, trigger: Trigger, term: datetime | None
+    ) -> ActionBlocker | None:
         blocker = self.blocker(name, self._status.current())
         if blocker is not None:
             return blocker
         kind = SyncKind.SYNC if name is ActionName.SYNC_START else SyncKind.DRY_RUN
-        run = _Run(new_action_id(), new_job_id(), kind, self._clock(), SyncStep.SNAPSHOT)
+        run = _Run(
+            new_action_id(),
+            new_job_id(),
+            kind,
+            self._clock(),
+            SyncStep.SNAPSHOT,
+            trigger=trigger,
+            scheduled_for=term,
+        )
         if self._status.current().target.state is ResourceState.OFFLINE:
             if self._target is None:  # pragma: no cover - der Worker verbindet beide immer
                 return ActionBlocker.BUSY
@@ -453,7 +486,7 @@ class SyncCoordinator:
     async def _execute(self, run: _Run) -> None:
         run.started = True
         if not run.adopted:
-            self._log.record(run.id, run.action, Trigger.DASHBOARD, STARTED)
+            self._log.record(run.id, run.action, run.trigger, STARTED)
         outcome, reason = ActionOutcome.INTERNAL_ERROR, None
         try:
             if run.cancel_requested:
@@ -492,7 +525,7 @@ class SyncCoordinator:
 
     def _finish(self, run: _Run, outcome: ActionOutcome, reason: SyncReason | None) -> None:
         self._log.record(
-            run.id, run.action, Trigger.DASHBOARD, outcome, reason=reason, adopted=run.adopted
+            run.id, run.action, run.trigger, outcome, reason=reason, adopted=run.adopted
         )
         finished_at = self._clock()
         self._last = SyncResult(
@@ -502,7 +535,7 @@ class SyncCoordinator:
             SyncHistoryEntry(
                 id=run.id,
                 kind=run.kind,
-                trigger=Trigger.DASHBOARD,
+                trigger=run.trigger,
                 started_at=run.started_at,
                 finished_at=finished_at,
                 result=outcome,
@@ -511,6 +544,7 @@ class SyncCoordinator:
                 containers_stopped=run.containers_stopped,
                 adopted=run.adopted,
                 shares=_history_shares(run.job),
+                scheduled_for=run.scheduled_for,
             )
         )
         if self._run is run:
@@ -566,6 +600,9 @@ class SyncCoordinator:
             raise _End(ActionOutcome.INTERNAL_ERROR)
         run.woke = True
         await self._target.wake_for(run.id, run.action)
+        if run.trigger is Trigger.SCHEDULE and self._marks is not None:
+            # Groß ist nur für diesen Lauf an (Konzept 4.2, „Automatisches Herunterfahren“).
+            self._marks.mark_after_sync()
 
     async def _snapshot(self, run: _Run) -> None:
         run.step = SyncStep.SNAPSHOT
@@ -702,6 +739,12 @@ class SyncCoordinator:
             await self._close_quietly(run)
             raise _End(outcome, reason)
         if job.state is GuardJobState.AWAITING_CONFIRM:
+            if run.trigger is Trigger.SCHEDULE:
+                # Ein geplanter Lauf fragt nicht nach: close, die Gründe stehen im Bericht,
+                # und der Wächter verwirft den vorläufigen Snapshot (Konzept 4.3, Schritt 4).
+                run.step = SyncStep.CLOSING
+                await self._close_quietly(run)
+                raise _End(ActionOutcome.CONFIRMATION_REQUIRED)
             await self._await_confirmation(run, job, details)
         await self._send(run)
 

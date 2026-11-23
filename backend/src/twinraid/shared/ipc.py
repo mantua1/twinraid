@@ -85,6 +85,12 @@ class SyncConfirmDeletions(StrictModel):
     job_id: JobId
 
 
+class AutoShutdownCancel(StrictModel):
+    """„Groß anlassen“ (Konzept 4.2, ab v0.6.0): löscht ein vorgemerktes Herunterfahren."""
+
+    command: Literal["auto_shutdown_cancel"]
+
+
 Command = Annotated[
     GetStatus
     | VerifyPassword
@@ -97,7 +103,8 @@ Command = Annotated[
     | SyncDryRun
     | SyncStart
     | SyncCancel
-    | SyncConfirmDeletions,
+    | SyncConfirmDeletions
+    | AutoShutdownCancel,
     Field(discriminator="command"),
 ]
 
@@ -117,6 +124,7 @@ COMMAND_NAMES: frozenset[str] = frozenset(
         "sync_start",
         "sync_cancel",
         "sync_confirm_deletions",
+        "auto_shutdown_cancel",
     }
 )
 

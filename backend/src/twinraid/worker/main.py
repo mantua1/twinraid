@@ -12,16 +12,20 @@ from twinraid.config import ConfigError, TwinRaidConfig, load_config
 from twinraid.integrations.factory import BackgroundTask, build_integrations
 from twinraid.integrations.wol import BroadcastError, WolTarget, resolve_wol_target
 from twinraid.shared import runtime
+from twinraid.shared.actions import ActionName
 from twinraid.shared.datadirs import DataPaths
 from twinraid.shared.logs import configure_logging, warn_if_mock
 from twinraid.shared.mode import RunMode, RunModeError, resolve_run_mode
 from twinraid.shared.passwords import PasswordStore
 from twinraid.sync.coordinator import SyncCoordinator
+from twinraid.sync.schedule import ScheduleState
 from twinraid.worker.action_log import ActionLog
 from twinraid.worker.actions import ActionCoordinator
+from twinraid.worker.auto_shutdown import AutoShutdown
 from twinraid.worker.handler import CommandHandler
 from twinraid.worker.monitor import StatusMonitor
 from twinraid.worker.password_check import PasswordCheck
+from twinraid.worker.scheduler import Scheduler
 from twinraid.worker.server import SocketPathError, WorkerServer
 from twinraid.worker.sync_history import SyncHistory
 
@@ -65,6 +69,7 @@ def main() -> int:
         integrations.status, changes=integrations.status_changed, config_path=config_path
     )
     action_log = ActionLog(paths.action_log)
+    history = SyncHistory(paths.sync_history)
     # Probelauf und Sync (ab v0.5.1): eigene Ressource „Sync“; „Kopierjob läuft“ kommt von hier.
     sync = SyncCoordinator(
         integrations.guard_channel,
@@ -73,7 +78,7 @@ def main() -> int:
         config,
         mode,
         action_log,
-        SyncHistory(paths.sync_history),
+        history,
     )
     actions = ActionCoordinator(
         integrations.control,
@@ -86,11 +91,37 @@ def main() -> int:
     )
     actions.attach_sync(sync)
     sync.attach(actions)
+    # Ab v0.6.0: automatisches Herunterfahren (Konzept 4.2) und Zeitplan (Konzept 4.8).
+    auto_shutdown = AutoShutdown(config, mode, monitor)
+    auto_shutdown.attach(actions, sync)
+    actions.attach_auto_shutdown(auto_shutdown)
+    sync.attach_marks(auto_shutdown)
+    scheduler = Scheduler(
+        config,
+        mode,
+        sync,
+        lambda: actions.availability(monitor.current())[ActionName.SYNC_START],
+        monitor,
+        integrations.source_guard,
+        ScheduleState(paths.schedule_state),
+        action_log,
+        history,
+    )
     handler = CommandHandler(
-        monitor, password_check, sync, mode, actions, integrations.source_guard, sync
+        monitor,
+        password_check,
+        sync,
+        mode,
+        actions,
+        integrations.source_guard,
+        sync,
+        scheduler,
+        auto_shutdown,
+        integrations.schedule_tour,
     )
     server = WorkerServer(runtime.socket_path(env), allowed_uid, handler)
     log_enabled_actions(actions, mode)
+    scheduler.log_start()
     try:
         asyncio.run(
             _serve(
@@ -99,7 +130,7 @@ def main() -> int:
                 monitor,
                 actions,
                 sync,
-                (*integrations.background, sync.run),
+                (*integrations.background, sync.run, scheduler.run, auto_shutdown.run),
                 integrations.retry_status_now,
             )
         )

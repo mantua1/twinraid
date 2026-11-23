@@ -33,6 +33,8 @@ CONCEPT_COMMANDS = {
     "sync_start",
     "sync_cancel",
     "sync_confirm_deletions",
+    # Ab v0.6.0: „Groß anlassen“ (Konzept 3.2 und 4.2).
+    "auto_shutdown_cancel",
 }
 JOB_ID = "0123456789abcdef0123456789abcdef"
 

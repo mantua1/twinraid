@@ -16,12 +16,16 @@ from twinraid.integrations.mocks.guard_jobs import MockJobTimings
 from twinraid.integrations.mocks.lab import LabTimings, MockLab
 from twinraid.integrations.mocks.source_guard import MockSourceGuard
 from twinraid.integrations.source_guard import SourceGuardSource
+from twinraid.shared.actions import ActionName
 from twinraid.shared.mode import RunMode
 from twinraid.sync.coordinator import SyncCoordinator, SyncTimings
+from twinraid.sync.schedule import ScheduleState
 from twinraid.worker.action_log import ActionLog
 from twinraid.worker.actions import ActionCoordinator, ActionTimings, StatusSource
+from twinraid.worker.auto_shutdown import AutoShutdown
 from twinraid.worker.handler import CommandHandler
 from twinraid.worker.monitor import StatusMonitor
+from twinraid.worker.scheduler import Scheduler, ScheduleTimings
 from twinraid.worker.sync_history import SyncHistory
 
 # Kurze Zeiten für den simulierten Wächter und den Probelauf.
@@ -44,6 +48,8 @@ class TestWorker:
     sync: SyncCoordinator
     lab: MockLab
     monitor: StatusSource
+    scheduler: Scheduler
+    auto_shutdown: AutoShutdown
 
     async def close(self) -> None:
         await self.sync.close()
@@ -64,6 +70,8 @@ def make_worker(
     lab_timings: LabTimings | None = None,
     sync_timings: SyncTimings = FAST_SYNC,
     sync_clock: Callable[[], datetime] | None = None,
+    schedule_clock: Callable[[], datetime] | None = None,
+    schedule_timings: ScheduleTimings | None = None,
 ) -> TestWorker:
     config = config or load_config(EXAMPLE_CONFIG)
     lab = MockLab(directory, lab_timings)
@@ -71,6 +79,7 @@ def make_worker(
     mock_guard = MockSourceGuard(directory, timings=FAST_JOBS, datasets=tuple(config.sync.shares))
     guard = source_guard or mock_guard
     action_log = ActionLog(directory / "actions.jsonl")
+    history = SyncHistory(directory / "sync-history.jsonl")
     sync = SyncCoordinator(
         channel or mock_guard,
         guard,
@@ -78,7 +87,7 @@ def make_worker(
         config,
         mode,
         action_log,
-        SyncHistory(directory / "sync-history.jsonl"),
+        history,
         timings=sync_timings,
         clock=sync_clock or (lambda: datetime.now(UTC)),
     )
@@ -95,10 +104,36 @@ def make_worker(
     )
     actions.attach_sync(sync)
     sync.attach(actions)
-    handler = CommandHandler(
-        monitor, password_check(directory, password), job_state, mode, actions, guard, sync
+    clock = schedule_clock or (lambda: datetime.now(UTC))
+    auto_shutdown = AutoShutdown(config, mode, monitor, clock=clock)
+    auto_shutdown.attach(actions, sync)
+    actions.attach_auto_shutdown(auto_shutdown)
+    sync.attach_marks(auto_shutdown)
+    scheduler = Scheduler(
+        config,
+        mode,
+        sync,
+        lambda: actions.availability(monitor.current())[ActionName.SYNC_START],
+        monitor,
+        guard,
+        ScheduleState(directory / "schedule.json"),
+        action_log,
+        history,
+        timings=schedule_timings,
+        clock=clock,
     )
-    return TestWorker(handler, actions, sync, lab, monitor)
+    handler = CommandHandler(
+        monitor,
+        password_check(directory, password),
+        job_state,
+        mode,
+        actions,
+        guard,
+        sync,
+        scheduler,
+        auto_shutdown,
+    )
+    return TestWorker(handler, actions, sync, lab, monitor, scheduler, auto_shutdown)
 
 
 def make_handler(

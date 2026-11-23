@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { ResourceInfo, StatusNotice } from "@/api/types";
 import { ActionPanel, type PanelAction } from "@/components/ActionPanel";
 import { ActivityLine } from "@/components/ActivityLine";
+import { AutoShutdownLine } from "@/components/AutoShutdownLine";
 import { CaChangeNotice } from "@/components/CaChangeNotice";
 import { ErrorNotice } from "@/components/ErrorNotice";
 import { HistoryTile } from "@/components/HistoryTile";
@@ -65,6 +66,13 @@ export function Dashboard({ data }: { data: DashboardData }) {
           },
     },
   ];
+  // „Groß anlassen“ nur, solange ein automatisches Herunterfahren vorgemerkt ist (Konzept 4.2).
+  if (status?.auto_shutdown != null) {
+    targetActions.push({
+      name: "auto_shutdown_cancel",
+      label: t("actions.buttons.auto_shutdown_cancel", names),
+    });
+  }
   const vmActions: PanelAction[] = [
     { name: "vm_start", label: t("actions.buttons.vm_start"), variant: "default" },
     {
@@ -172,6 +180,7 @@ export function Dashboard({ data }: { data: DashboardData }) {
               {t("tiles.target.otherVms", { vms: blockerValues.vms })}
             </p>
           )}
+          <AutoShutdownLine auto={status?.auto_shutdown} target={names.target} />
           <ActivityLine
             activity={actions?.target}
             status={status}
