@@ -609,7 +609,8 @@ wait_for_status "target is offline again" '"target":{"state":"offline","reason":
 run_action vm_start success 120
 run_action vm_stop success
 wait_for_status "the delay runs once the VM is off" '"auto_shutdown":{"kinds":["after_play"],"at":"' 30
-for _ in $(seq 1 120); do
+# 1 min Wartezeit, bis zu 10 s bis zur nächsten Prüfung, dann das Ausschalten selbst.
+for _ in $(seq 1 180); do
   [[ "$(auto_done success)" -ge 1 ]] && break
   sleep 1
 done
