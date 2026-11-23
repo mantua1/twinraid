@@ -28,7 +28,7 @@ from twinraid.integrations.ssh import (
     key_fingerprint,
     parse_host_key,
 )
-from twinraid.shared.actions import ActionName, ActionOutcome, SyncPart, Trigger
+from twinraid.shared.actions import ActionBlocker, ActionName, ActionOutcome, SyncPart, Trigger
 from twinraid.shared.passwords import PasswordStore, VerifyOutcome
 from twinraid.shared.source_guard import GuardBlocker, GuardJobReason
 from twinraid.shared.status import StatusSnapshot
@@ -678,14 +678,48 @@ def test_show_sync_log(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert admin_cli.main(["show-sync-log", "--lines", "2"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert lines == [
-        "2026-11-06T12:02:00Z  00000001  sync: success  [started 2026-11-06T12:00:00Z, "
-        "woke the target, 1 containers stopped]",
+        "2026-11-06T12:02:00Z  00000001  sync: success  [by dashboard, "
+        "started 2026-11-06T12:00:00Z, woke the target, 1 containers stopped]",
         "    twinraidtest  incremental  deleted 50  modified 20  added 30  renamed 10"
         "  size 350.0 MiB  sent ?  -",
         "2026-11-06T12:02:00Z  00000002  sync: send_failed (unreachable)  "
-        "[started 2026-11-06T12:00:00Z, 2 containers stopped, adopted after a restart]",
+        "[by dashboard, started 2026-11-06T12:00:00Z, 2 containers stopped, "
+        "adopted after a restart]",
         "    twinraidtest  incremental  deleted 50  modified 20  added 30  renamed 10"
         "  size 350.0 MiB  sent ?  -",
+    ]
+
+
+def test_show_sync_log_with_trigger_and_term(env: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Ab v0.6.0: geplante Läufe mit Termin, ausgelassene ohne Shares (Konzept 5.3 und 4.8)."""
+    history = SyncHistory(env / "data" / "worker" / "sync-history.jsonl")
+    term = datetime(2026, 11, 29, 2, tzinfo=UTC)
+    for number, result, reason in (
+        (1, ActionOutcome.SUCCESS, None),
+        (2, ActionOutcome.SCHEDULE_SKIPPED, ActionBlocker.SOURCE_GUARD_TOO_SOON),
+    ):
+        history.append(
+            SyncHistoryEntry(
+                id=f"{number:08x}",
+                kind=SyncKind.SYNC,
+                trigger=Trigger.SCHEDULE,
+                started_at=term + timedelta(minutes=1),
+                finished_at=term + timedelta(minutes=5),
+                result=result,
+                reason=reason,
+                woke_target=False,
+                containers_stopped=0,
+                adopted=False,
+                shares=(),
+                scheduled_for=term,
+            )
+        )
+    assert admin_cli.main(["show-sync-log"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "2026-11-29T02:05:00Z  00000001  sync: success  [by schedule, term 2026-11-29T02:00:00Z, "
+        "started 2026-11-29T02:01:00Z]",
+        "2026-11-29T02:05:00Z  00000002  sync: schedule_skipped (source_guard_too_soon)  "
+        "[by schedule, term 2026-11-29T02:00:00Z, started 2026-11-29T02:01:00Z]",
     ]
 
 
