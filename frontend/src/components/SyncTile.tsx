@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 
 import type { ActionName, StatusSnapshot, SyncReport, SyncShareReport } from "@/api/types";
 import { ActionPanel, type BlockerValues, type PanelAction } from "@/components/ActionPanel";
+import { ScheduleLines } from "@/components/ScheduleLines";
 import { SyncHistory } from "@/components/SyncHistory";
 import { SyncRunning } from "@/components/SyncRunning";
 import { SyncSnapshots } from "@/components/SyncSnapshots";
@@ -10,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import type { ActionRequestResult } from "@/hooks/useDashboardData";
 import { useNow } from "@/hooks/useNow";
 import { formatBytes, formatSince, formatTime, roundUpToMinute } from "@/lib/format";
+import { termWithZone } from "@/lib/schedule";
 import { QUIET_OUTCOMES, uncountedKind, useReasonText, useRunDetails } from "@/lib/syncTexts";
 import { cn } from "@/lib/utils";
 
@@ -338,6 +340,18 @@ export function SyncTile({
             target: names.target,
           })}
         </p>
+        {running?.scheduled_for != null && status !== null && (
+          <p className="text-xs text-muted-foreground" data-testid="sync-running-scheduled">
+            {t("sync.schedule.running", {
+              term: termWithZone(
+                language,
+                running.scheduled_for,
+                status.schedule.timezone,
+                (term, zone) => t("sync.schedule.zone", { term, zone }),
+              ),
+            })}
+          </p>
+        )}
         {running !== null ? (
           <SyncRunning
             key={running.job_id}
@@ -379,9 +393,9 @@ export function SyncTile({
             {t("sync.nextSnapshot", { time: nextSnapshot })}
           </p>
         )}
-        <p className="text-xs text-muted-foreground" data-testid="sync-schedule">
-          {t("sync.schedule")}
-        </p>
+        {status !== null && (
+          <ScheduleLines schedule={status.schedule} blockerValues={blockerValues} />
+        )}
         <ActionPanel
           actions={actions}
           snapshot={actionsSnapshot}

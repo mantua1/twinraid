@@ -222,6 +222,7 @@ describe("actions", () => {
               action: "wake_target",
               outcome: "boot_timeout",
               finished_at: "2026-10-13T12:05:00Z",
+              trigger: "dashboard" as const,
             },
           },
         },
@@ -242,6 +243,7 @@ describe("actions", () => {
         action: "wake_target" as const,
         outcome: "boot_timeout" as const,
         finished_at: "2026-10-13T12:05:00Z",
+        trigger: "dashboard" as const,
       },
     };
     const { target } = await openDashboard({
@@ -269,6 +271,7 @@ describe("actions", () => {
               action: "vm_start",
               outcome: "ssh_denied",
               finished_at: "2026-10-13T12:05:00Z",
+              trigger: "dashboard" as const,
             },
           },
         },
@@ -292,6 +295,7 @@ describe("actions", () => {
               action: "shutdown_target",
               outcome: "vm_running",
               finished_at: "2026-10-13T12:05:00Z",
+              trigger: "dashboard" as const,
             },
           },
         },
@@ -406,6 +410,7 @@ describe("force off, then shut down", () => {
       action: "shutdown_target" as const,
       outcome: "vm_stop_timeout" as const,
       finished_at: "2026-10-13T12:05:00Z",
+      trigger: "dashboard" as const,
     },
   };
   const offered: StatusSnapshot = {
@@ -482,6 +487,7 @@ describe("force off, then shut down", () => {
               action: "vm_force_stop",
               outcome: "success",
               finished_at: "2026-10-13T12:07:00Z",
+              trigger: "dashboard" as const,
             },
           },
         },
@@ -607,6 +613,7 @@ describe("other running VMs", () => {
         action: "shutdown_target" as const,
         outcome: "other_vms_running" as const,
         finished_at: "2026-10-13T12:05:00Z",
+        trigger: "dashboard" as const,
       },
     };
     const { target } = await openDashboard({
@@ -667,6 +674,7 @@ describe("other running VMs", () => {
         action: "vm_start" as const,
         outcome: "vm_device_busy" as const,
         finished_at: "2026-10-19T12:05:00Z",
+        trigger: "dashboard" as const,
       },
     };
     const status: StatusSnapshot = {

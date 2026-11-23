@@ -2,6 +2,7 @@
 import { useTranslation } from "react-i18next";
 
 import {
+  ACTION_BLOCKERS,
   GUARD_BLOCKERS,
   GUARD_CHECK_RESULTS,
   GUARD_JOB_REASONS,
@@ -53,6 +54,10 @@ export function useReasonText() {
   ): string | null => {
     if (reason === null) {
       return null;
+    }
+    // Ausgelassener Termin (ab v0.6.0): die letzte Sperre aus der Liste der Aktionen.
+    if (outcome === "schedule_skipped" && isOneOf(ACTION_BLOCKERS, reason)) {
+      return t(`actions.blockers.${reason}`, { ...names, vms: "" });
     }
     // Aus prepare (Probelauf und Sync) kommt ein Eintrag aus blockers.
     if (outcome === "target_refused" && isOneOf(GUARD_BLOCKERS, reason)) {

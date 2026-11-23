@@ -574,11 +574,7 @@ export type SyncStep = (typeof SYNC_STEPS)[number];
 // der Grund aus dem Job (ab v0.5.2).
 // Ab v0.6.0 bei schedule_skipped auch die letzte Sperre (Konzept 4.8).
 export type SyncReason =
-  | GuardBlocker
-  | GuardCheckResult
-  | GuardOrderResult
-  | GuardJobReason
-  | ActionBlocker;
+  GuardBlocker | GuardCheckResult | GuardOrderResult | GuardJobReason | ActionBlocker;
 
 export type SyncKind = "dry_run" | "sync";
 

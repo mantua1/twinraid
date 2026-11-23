@@ -86,7 +86,25 @@
     "target": {
       "fallbackTitle": "Zielserver",
       "description": "Läuft bei Bedarf und ist das Ziel des Syncs.",
-      "otherVms": "Weitere laufende VMs: {{vms}}"
+      "otherVms": "Weitere laufende VMs: {{vms}}",
+      "autoShutdown": {
+        "at": "Wird um {{time}} heruntergefahren ({{kind}}).",
+        "waiting": "Wird heruntergefahren ({{kind}}), {{reason}}.",
+        "kinds": {
+          "after_sync": "nach dem geplanten Sync",
+          "after_play": "nach dem Spielen",
+          "both": "nach dem geplanten Sync und nach dem Spielen"
+        },
+        "reasons": {
+          "vm_running": "sobald die VM aus ist",
+          "vm_unknown": "sobald der Zustand der VMs bekannt ist",
+          "other_vms_running": "sobald keine weitere VM mehr läuft",
+          "busy": "sobald die laufende Aktion fertig ist",
+          "sync_running": "sobald der Sync fertig ist",
+          "not_enabled": "aber Herunterfahren ist in twinraid.yaml nicht freigeschaltet"
+        },
+        "keepHint": "Wer an {{target}} arbeiten will, drückt vorher „{{target}} anlassen“."
+      }
     },
     "vm": {
       "fallbackTitle": "Gaming-VM",
@@ -204,6 +222,30 @@
       "newest": "neuester Empfang",
       "oldest": "ältester",
       "props": "Eigenschaften"
+    },
+    "schedule": {
+      "title": "Zeitplan",
+      "description": "Der Zeitplan steht in twinraid.yaml unter sync.schedule und ist hier nur zu lesen.",
+      "state": "Zustand",
+      "on": "eingeschaltet",
+      "off": "aus",
+      "notPermitted": "eingeschaltet, aber nicht freigeschaltet (actions.sync)",
+      "plan": "Termine",
+      "planValue": "{{days}} um {{time}} ({{zone}})",
+      "next": "Nächste Termine",
+      "none": "keine",
+      "wake": "Wecken",
+      "wakeOn": "ja, wenn {{target}} aus ist",
+      "wakeOff": "nein; ist {{target}} aus, wird der Termin ausgelassen",
+      "shutdown": "Herunterfahren nach dem geplanten Sync",
+      "shutdownOn": "ja, {{minutes}} min nach dem Lauf, wenn er {{target}} geweckt hat",
+      "shutdownOff": "nein",
+      "play": "Herunterfahren nach dem Spielen",
+      "playOn": "ja, {{minutes}} min nach dem Ausschalten der VM, wenn TwinRaid {{target}} für die VM geweckt hat",
+      "playOff": "nein",
+      "gap": "Kürzester Abstand zwischen zwei Terminen: {{gap}}.",
+      "conflict": "Hinweis: {{limit}} ({{minutes}} min) ist so lang wie der kürzeste Abstand zwischen zwei Terminen oder länger. Der Zeitplan will dann häufiger laufen, als Wächter oder {{target}} erlauben; ein Termin wartet oder wird ausgelassen.",
+      "skip": "Einen Termin auslassen geht nur in twinraid.yaml: enabled: false oder den Tag aus days entfernen, dann TwinRaid neu starten."
     }
   },
   "audit": {
@@ -229,6 +271,7 @@
       "shutdown_target_force_vm": "VM erzwingen und Server herunterfahren",
       "sync_dry_run": "Probelauf",
       "sync_start": "Sync starten",
+      "auto_shutdown_cancel": "Server anlassen",
       "sync_cancel": "Probelauf abbrechen",
       "sync_confirm_deletions": "Löschungen freigeben",
       "cli_sync_check": "Sync-Prüfung (CLI)"
@@ -283,7 +326,8 @@
       "vm_force_stop": "Erzwingen",
       "shutdown_target_force_vm": "Erzwingen und danach Server herunterfahren",
       "sync_dry_run": "Nur Probelauf",
-      "sync_start": "Jetzt synchronisieren"
+      "sync_start": "Jetzt synchronisieren",
+      "auto_shutdown_cancel": "{{target}} anlassen"
     },
     "names": {
       "wake_target": "Server wecken",
@@ -293,7 +337,9 @@
       "vm_force_stop": "VM erzwingen",
       "shutdown_target_force_vm": "VM erzwingen und Server herunterfahren",
       "sync_dry_run": "Probelauf",
-      "sync_start": "Sync"
+      "sync_start": "Sync",
+      "auto_shutdown_cancel": "Server anlassen",
+      "automatic_shutdown": "Automatisches Herunterfahren"
     },
     "steps": {
       "waking": "Magic Packet gesendet, der Server startet …",
@@ -372,7 +418,10 @@
       "confirmation_timeout": "Die Löschungen wurden nicht rechtzeitig freigegeben; nichts wurde gesendet.",
       "container_restart_failed": "Gesendet, aber ein angehaltener Container läuft danach nicht wieder.",
       "send_failed": "Das Senden ist gescheitert. Shares, die nicht angekommen sind (gescheitert oder übersprungen), behalten auf dem Zielserver den bisherigen Stand; erfolgreich gesendete Shares sind dort aktuell.",
-      "target_modified": "Der Spiegel auf dem Zielserver wurde seit dem letzten Snapshot verändert; der Empfang wurde abgelehnt."
+      "target_modified": "Der Spiegel auf dem Zielserver wurde seit dem letzten Snapshot verändert; der Empfang wurde abgelehnt.",
+      "schedule_skipped": "Termin ausgelassen",
+      "schedule_missed": "Termin verpasst",
+      "confirmation_required": "Freigabe nötig"
     },
     "last": "Zuletzt: {{action}} – {{outcome}} ({{time}})",
     "hint": "{{actions}}: {{reason}}",
@@ -558,7 +607,28 @@
     "stopping": "Wächter: Container wird angehalten (bis zu {{seconds}} s)"
   },
   "sync": {
-    "schedule": "Zeitplan aus (ab Phase 6).",
+    "schedule": {
+      "off": "Zeitplan aus.",
+      "notPermitted": "Zeitplan: nicht freigeschaltet (actions.sync in twinraid.yaml).",
+      "next": "Nächster geplanter Lauf: {{term}}",
+      "zone": "{{term}} ({{zone}})",
+      "wakeAndShutdown": "Ist {{target}} aus, wird es geweckt und danach heruntergefahren.",
+      "wakeOnly": "Ist {{target}} aus, wird es geweckt und bleibt danach an.",
+      "noWake": "Ist {{target}} aus, wird der Termin ausgelassen.",
+      "waiting": "Geplanter Lauf wartet: {{reason}}, neuer Versuch um {{next}} (längstens bis {{until}}).",
+      "running": "Geplanter Lauf (Termin {{term}})",
+      "last": "Letzter geplanter Lauf (Termin {{term}}): {{outcome}}",
+      "lastReason": "Grund: {{reason}}",
+      "days": {
+        "mon": "Mo",
+        "tue": "Di",
+        "wed": "Mi",
+        "thu": "Do",
+        "fri": "Fr",
+        "sat": "Sa",
+        "sun": "So"
+      }
+    },
     "noRun": "Noch kein Lauf.",
     "running": "Probelauf läuft: {{step}}",
     "last": "Letzter Probelauf ({{time}}): {{outcome}}",
@@ -730,7 +800,8 @@
       "containers_one": "{{count}} Container angehalten",
       "containers_other": "{{count}} Container angehalten",
       "woke": "hat {{target}} geweckt",
-      "adopted": "nach einem Neustart übernommen"
+      "adopted": "nach einem Neustart übernommen",
+      "scheduled": "(geplant für {{term}})"
     },
     "shareResults": {
       "ok": "angekommen",

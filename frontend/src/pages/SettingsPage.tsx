@@ -5,6 +5,7 @@ import { CA_CERTIFICATE_URL } from "@/api/client";
 import type { AppInfo, StatusNotice, StatusSnapshot, TargetZfs, TlsInfo } from "@/api/types";
 import { ErrorNotice } from "@/components/ErrorNotice";
 import { NoticeList } from "@/components/NoticeList";
+import { ScheduleSettingsCard } from "@/components/ScheduleSettingsCard";
 import { SourceGuardCard } from "@/components/SourceGuardCard";
 import { SyncSnapshots } from "@/components/SyncSnapshots";
 import { SyncSettingsCard } from "@/components/SyncSettingsCard";
@@ -253,6 +254,9 @@ export function SettingsPage({ info, tls, status, onBack }: SettingsPageProps) {
           check={status.source_guard.details?.target_check ?? null}
           names={names}
         />
+      )}
+      {names !== null && status !== null && (
+        <ScheduleSettingsCard schedule={status.schedule} target={names.target} />
       )}
       {info !== null && <ActionsCard info={info} />}
     </div>

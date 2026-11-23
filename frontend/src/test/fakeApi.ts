@@ -2,6 +2,8 @@
 import { vi } from "vitest";
 
 import type {
+  AutoShutdownStatus,
+  ScheduleStatus,
   GuardCheck,
   GuardDataset,
   GuardDetails,
@@ -48,6 +50,7 @@ export function actionsSnapshot(
       vm_force_stop: "target_offline",
       sync_dry_run: null,
       sync_start: null,
+      auto_shutdown_cancel: "not_offered",
       ...availability,
     },
     target: { running: null, last: null },
@@ -152,6 +155,8 @@ export function syncRun(overrides: Partial<SyncRun> = {}): SyncRun {
     job_id: "0123456789abcdef0123456789abcdef",
     step: "preparing",
     started_at: "2026-10-13T12:00:00Z",
+    trigger: "dashboard",
+    scheduled_for: null,
     adopted: false,
     containers_stopped: 0,
     confirmation: null,
@@ -221,6 +226,32 @@ export const REPORT: SyncReport = {
   mirrors_after_send: false,
 };
 
+/** Zeitplan wie in der Beispielkonfiguration: sonntags 03:00, Europe/Berlin (Konzept 6.2). */
+export const SCHEDULE: ScheduleStatus = {
+  enabled: true,
+  permitted: true,
+  timezone: "Europe/Berlin",
+  days: ["sun"],
+  time: "03:00",
+  wake: true,
+  shutdown: true,
+  shutdown_delay_minutes: 5,
+  play_shutdown: false,
+  play_delay_minutes: 15,
+  next_terms: ["2026-11-29T02:00:00Z", "2026-12-06T02:00:00Z", "2026-12-13T02:00:00Z"],
+  waiting: null,
+  last: null,
+  shortest_gap_minutes: 10020,
+  conflicts: [],
+};
+
+/** Vorgemerktes Herunterfahren nach dem geplanten Sync (Konzept 4.2). */
+export const AUTO_SHUTDOWN: AutoShutdownStatus = {
+  kinds: ["after_sync"],
+  at: "2026-11-29T02:30:00Z",
+  reason: null,
+};
+
 export const STATUS: StatusSnapshot = {
   source: { state: "online", reason: null },
   target: { state: "offline", reason: "unreachable" },
@@ -235,6 +266,8 @@ export const STATUS: StatusSnapshot = {
   source_guard: GUARD_ACTIVE,
   target_zfs: null,
   sync: SYNC_IDLE,
+  schedule: SCHEDULE,
+  auto_shutdown: null,
 };
 
 /** Groß und VM laufen: Herunterfahren ist möglich, Erzwingen noch nicht. */
