@@ -845,10 +845,17 @@ class StopWindow:
     Status. Solange ein stop offen ist (geschrieben, die Antwort noch nicht gelesen, das
     Warten darauf nicht beendet), gilt er deshalb länger als aktiv. Nur im Worker; geteilt
     zwischen dem Kanal für Aufträge und dem Leser im Takt von 5 s.
+
+    Ab v0.6.0 (Befund aus PR #54): Hat der Kanal die Antwort gelesen, bleibt der stop offen,
+    bis auch der Leser im Takt von 5 s einen Status gelesen hat, dessen Herzschlag nicht älter
+    ist als die Antwort; sonst zeigte die Kachel bis zu 5 s „nicht aktiv“. Längstens gilt die
+    Frist aus _stop_grace.
     """
 
     def __init__(self) -> None:
         self._since: datetime | None = None
+        # Herzschlag des Status mit der Antwort; None, solange sie aussteht.
+        self._answer: datetime | None = None
 
     @property
     def since(self) -> datetime | None:
@@ -856,9 +863,21 @@ class StopWindow:
 
     def open(self, at: datetime) -> None:
         self._since = at
+        self._answer = None
+
+    def answered(self, heartbeat: datetime) -> None:
+        """Der Kanal hat die Antwort gelesen; offen, bis der Leser so weit ist."""
+        if self._since is not None:
+            self._answer = heartbeat
+
+    def seen(self, heartbeat: datetime) -> None:
+        """Der Leser hat einen Status mit diesem Herzschlag gelesen."""
+        if self._answer is not None and heartbeat >= self._answer:
+            self.close()
 
     def close(self) -> None:
         self._since = None
+        self._answer = None
 
 
 def _stop_grace(file: GuardFile, heartbeat: datetime, now: datetime, since: datetime) -> bool:
@@ -997,6 +1016,8 @@ class RealSourceGuard:
         except Exception:  # Ein Fehler beim Lesen darf den Worker nie beenden.
             logger.exception("reading the source guard status failed")
             return
+        if self._observation.file is not None:
+            self._stops.seen(_time(self._observation.file.heartbeat_at))
         summary = _summary(self.report().status)
         if summary != self._logged:
             logger.info("source guard: %s", summary)

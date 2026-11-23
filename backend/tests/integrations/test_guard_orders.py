@@ -4,6 +4,7 @@ import copy
 import hashlib
 import os
 import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ from twinraid.integrations.guard_orders import (
     order_line,
     write_order,
 )
-from twinraid.integrations.source_guard import GuardPaths
+from twinraid.integrations.source_guard import GuardPaths, StopWindow
 from twinraid.shared.actions import ActionOutcome
 from twinraid.shared.source_guard import GuardOrder, GuardOrderResult
 
@@ -247,6 +248,74 @@ async def test_stop_with_container_and_longer_wait(tmp_path: Path) -> None:
     with pytest.raises(GuardOrderError):
         await channel.order(GuardOrder.STOP, "db", reply_seconds=75.0)
     assert guard.monotonic - start >= 75.0
+
+
+async def test_answered_stop_stays_open_until_the_reader_catches_up(tmp_path: Path) -> None:
+    """Ab v0.6.0 (Konzept 3.6, „Während docker stop“): Nach der Antwort bleibt der stop offen,
+    bis der Leser im Takt von 5 s einen Status mit einem Herzschlag nicht älter als die Antwort
+    gelesen hat; sonst zeigte die Kachel kurz „nicht aktiv“."""
+    paths = guard_paths(tmp_path)
+    guard = FakeGuard(paths)
+    stops = StopWindow()
+    channel = RealGuardChannel(
+        paths,
+        OrderTimings(),
+        clock=lambda: NOW,
+        monotonic=guard.now,
+        sleep=guard.sleep,
+        stops=stops,
+    )
+    guard.result = "stopped"
+    assert await channel.order(GuardOrder.STOP, "web", reply_seconds=75.0) is (
+        GuardOrderResult.STOPPED
+    )
+    assert stops.since == NOW
+    answer = datetime.fromtimestamp(guard.status["heartbeat_at"], UTC)
+    # Der Leser hält noch einen älteren Status: weiter offen.
+    stops.seen(answer - timedelta(seconds=5))
+    assert stops.since == NOW
+    # Er hat den Status mit der Antwort gelesen: geschlossen.
+    stops.seen(answer)
+    assert stops.since is None
+
+
+async def test_stop_without_answer_and_other_orders_close_at_once(tmp_path: Path) -> None:
+    paths = guard_paths(tmp_path)
+    guard = FakeGuard(paths)
+    stops = StopWindow()
+    channel = RealGuardChannel(
+        paths,
+        OrderTimings(),
+        clock=lambda: NOW,
+        monotonic=guard.now,
+        sleep=guard.sleep,
+        stops=stops,
+    )
+    guard.answer = False
+    with pytest.raises(GuardOrderError):
+        await channel.order(GuardOrder.STOP, "web", reply_seconds=5.0)
+    # Das Warten endete ohne Antwort: wie bisher sofort geschlossen.
+    assert stops.since is None
+    guard.answer = True
+    guard.result = "extended"
+    stops.open(NOW)
+    await channel.order(GuardOrder.PING)
+    assert stops.since is None
+
+
+def test_stop_window_seen_without_answer_keeps_it_open() -> None:
+    stops = StopWindow()
+    stops.open(NOW)
+    stops.seen(NOW + timedelta(hours=1))
+    assert stops.since == NOW
+    stops.answered(NOW)
+    # Ein neuer stop beginnt ohne die alte Antwort.
+    stops.open(NOW + timedelta(seconds=10))
+    stops.seen(NOW + timedelta(hours=1))
+    assert stops.since == NOW + timedelta(seconds=10)
+    stops.close()
+    stops.answered(NOW)
+    assert stops.since is None
 
 
 async def test_post_does_not_wait_for_the_answer(tmp_path: Path) -> None:
