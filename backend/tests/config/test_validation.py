@@ -270,8 +270,7 @@ def test_missing_enablements_warn_only_in_real_mode() -> None:
     """
     config = load_config(EXAMPLE_CONFIG)
     assert config.warnings(real_mode=True) == [
-        "sync.schedule.enabled is true, but actions.sync is not enabled; "
-        "the schedule is not run.",
+        "sync.schedule.enabled is true, but actions.sync is not enabled; the schedule is not run.",
         "sync.schedule.wake_target is true, but actions.wake is not enabled; "
         "a scheduled run is skipped while the target is off.",
         "sync.schedule.shutdown_after is true, but actions.shutdown is not enabled; "

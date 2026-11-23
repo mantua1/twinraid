@@ -149,9 +149,7 @@ class GamingVmConfig(StrictModel):
     unraid_vm_name: VmName | None = None
     shutdown_timeout_minutes: Minutes
     # Optional (ab v0.6.0): automatisches Herunterfahren nach dem Spielen (Konzept 4.2).
-    shutdown_target_after: ShutdownAfterPlayConfig = Field(
-        default_factory=ShutdownAfterPlayConfig
-    )
+    shutdown_target_after: ShutdownAfterPlayConfig = Field(default_factory=ShutdownAfterPlayConfig)
 
 
 class ScheduleConfig(StrictModel):
