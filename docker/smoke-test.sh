@@ -359,6 +359,13 @@ expect_contains "audit log lists the login" "$(https_get -b "${JAR}" "${BASE}/ap
 expect_contains "status carries reasons and the job flag" "$(https_get -b "${JAR}" "${BASE}/api/status")" '"job_running":false'
 expect_contains "status carries the simulated source guard" \
   "$(https_get -b "${JAR}" "${BASE}/api/status")" '"source_guard":{"state":"active"'
+# Ab v0.6.0: Zeitplan im Worker (Konzept 4.8); im Simulationsmodus freigeschaltet.
+expect_contains "start log names the next scheduled run" "$(docker logs "${main}" 2>&1)" \
+  "Next scheduled run: Sun "
+expect_contains "status carries the schedule" "$(https_get -b "${JAR}" "${BASE}/api/status")" \
+  '"schedule":{"enabled":true,"permitted":true,"timezone":"Europe/Berlin"'
+expect_contains "nothing is planned for an automatic shutdown" \
+  "$(https_get -b "${JAR}" "${BASE}/api/status")" '"auto_shutdown":null'
 ca_download="${WORKDIR}/twinraid-ca.crt"
 expect_equal "CA certificate download" \
   "$(curl -s -o "${ca_download}" -w '%{http_code} %{content_type}' --cacert "${CERT}" -b "${JAR}" "${BASE}/api/tls/ca-certificate")" \
@@ -383,6 +390,16 @@ expect_contains "audit log lists the requested action" "$(https_get -b "${JAR}" 
   '"action":"wake_target","result":"requested"'
 expect_contains "action log of the worker records the action" \
   "$(docker exec "${main}" twinraid-admin show-action-log 2>&1)" "wake_target  dashboard: started"
+# „Groß anlassen“ (ab v0.6.0): nur mit Session und CSRF, ohne Vormerkung abgelehnt, im Audit-Log.
+expect_equal "keep the target on without CSRF token is rejected" \
+  "$(status_of -b "${JAR}" -H "${ORIGIN}" -X POST "${BASE}/api/actions/auto_shutdown_cancel")" "403"
+expect_equal "keep the target on without a session is rejected" \
+  "$(status_of -H "${ORIGIN}" -X POST "${BASE}/api/actions/auto_shutdown_cancel")" "401"
+expect_equal "keep the target on without a planned shutdown is refused" \
+  "$(https_get -b "${JAR}" -H "${ORIGIN}" -H "X-CSRF-Token: ${csrf}" -X POST "${BASE}/api/actions/auto_shutdown_cancel")" \
+  '{"detail":"not_offered"}'
+expect_contains "audit log lists the refused keep on" "$(https_get -b "${JAR}" "${BASE}/api/audit")" \
+  '"action":"auto_shutdown_cancel","result":"rejected"'
 expect_equal "action log is 0600 root" "$(perm /data/worker/actions.jsonl)" "600 0"
 expect_contains "mock-tour locks actions" "$(docker exec "${main}" twinraid-admin mock-tour on 2>&1)" "Actions are locked"
 docker exec "${main}" twinraid-admin mock-tour off >/dev/null
