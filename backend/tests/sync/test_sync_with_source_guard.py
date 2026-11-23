@@ -37,7 +37,7 @@ from twinraid.integrations.source_guard import (
     evaluate,
     read_observation,
 )
-from twinraid.shared.actions import ActionBlocker, ActionName, ActionOutcome
+from twinraid.shared.actions import ActionBlocker, ActionName, ActionOutcome, Trigger
 from twinraid.shared.mode import RunMode
 from twinraid.shared.source_guard import GuardOrder, GuardOrderResult, GuardState
 from twinraid.shared.status import ResourceState
@@ -236,6 +236,52 @@ async def test_confirmation_against_the_real_guard(host: Host, tmp_path: Path) -
     await _until(lambda: worker.sync.snapshot().running is None)
     assert _outcome(worker) == (ActionOutcome.SUCCESS, None)
     assert host.status()["job"]["confirmed"] is True
+
+
+TERM = datetime(2026, 11, 29, 2, 0, tzinfo=UTC)
+
+
+async def test_scheduled_run_against_the_real_guard(host: Host, tmp_path: Path) -> None:
+    """Ab v0.6.0: ein geplanter Lauf bis done, mit Auslöser und Termin (Konzept 4.8)."""
+    (tmp_path / "klein" / "worker").mkdir()
+    started(host)
+    worker = await _worker(host)
+    assert await worker.sync.request_scheduled(TERM) is None
+    await _until(lambda: worker.sync.snapshot().running is None)
+    assert _outcome(worker) == (ActionOutcome.SUCCESS, None)
+    assert host.status()["job"]["state"] == "done"
+    entry = worker.sync.snapshot().history[0]
+    assert (entry.trigger, entry.scheduled_for, entry.result) == (
+        Trigger.SCHEDULE,
+        TERM,
+        ActionOutcome.SUCCESS,
+    )
+    log = (tmp_path / "klein" / "worker" / "actions.jsonl").read_text()
+    assert '"action":"sync_start","trigger":"schedule","result":"success"' in log
+
+
+async def test_scheduled_run_with_confirmation_closes_and_discards(
+    host: Host, tmp_path: Path
+) -> None:
+    """Ab v0.6.0: Braucht ein geplanter Lauf eine Freigabe, schickt er close und endet mit
+    confirmation_required; der Wächter verwirft den vorläufigen Snapshot (Konzept 4.3, 3.6)."""
+    (tmp_path / "klein" / "worker").mkdir()
+    host.configure(CONF + "max_deletions 1\n")
+    started(host)
+    worker = await _worker(host)
+    assert await worker.sync.request_scheduled(TERM) is None
+    await _until(lambda: worker.sync.snapshot().running is None)
+    assert _outcome(worker) == (ActionOutcome.CONFIRMATION_REQUIRED, None)
+    job = host.status()["job"]
+    assert (job["state"], job["result"]) == ("closed", "closed")
+    prefix = f"job {job['id']}: provisional snapshot {job['snapshot']} discarded on "
+    await _until(lambda: any(line.startswith(prefix) for line in host.syslog()))
+    destroys = [call for call in host.calls("zfs") if call[0] == "destroy"]
+    assert [call[:2] for call in destroys] == [["destroy", "--"]]
+    assert "send" not in _orders(host)
+    # Die Container laufen wieder, nichts ging nach Groß.
+    assert host.running(CONTAINER)
+    assert host.received() == []
 
 
 async def test_cancel_while_sending(host: Host, tmp_path: Path) -> None:
