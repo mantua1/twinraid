@@ -1,5 +1,5 @@
 #!/bin/bash
-# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 5 (Konzept 3.6).
+# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 6 (Konzept 3.6).
 #
 # Ablage auf Klein: /boot/config/twinraid/source-guard.sh, Konfiguration daneben in
 # source-guard.conf (Vorlage: host-scripts/source-guard.conf.example). Gestartet wird
@@ -39,6 +39,13 @@
 # Danach gilt eine feste Pause von 10 s (too_soon_probe). Der Status nennt beide Grenzen und
 # den neuesten eigenen Snapshot je Dataset. TwinRaid 0.5.4 nimmt Protokoll 4 nicht an: erst
 # TwinRaid 0.5.5, dann Version 5.
+# Version 6 (TwinRaid v0.6.1) hat Protokoll 5: Auftrag notify mit Ereignis und Grund aus festen
+# Listen; der Wächter ruft damit Unraids Skript notify mit festen Texten auf, nur mit "notify on"
+# in source-guard.conf und begrenzt. Mit "notify on" meldet er Totmannschalter und nicht wieder
+# gestartete Container auch selbst. Eigene Lesezeichen, die Groß nicht mehr als Basis braucht,
+# löscht er; Zeiten im Status rechnet er aus einem festen Abstand zwischen Uhr und Laufzeit, und
+# ein nicht lesbares Verwerfen versucht er nur im Takt des ZFS-Teils erneut. TwinRaid 0.6.0 nimmt
+# Protokoll 5 nicht an: erst TwinRaid 0.6.1, dann Version 6.
 #
 # Ins Syslog (Kennung twinraid-source-guard) kommen nur feste Texte, Codes, Zahlen
 # und geprüfte Container-Namen, nie der Inhalt der Auftragsdatei.
@@ -47,8 +54,8 @@ export LC_ALL=C
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 077
 
-readonly VERSION=5
-readonly PROTOCOL=4
+readonly VERSION=6
+readonly PROTOCOL=5
 readonly CONF=/boot/config/twinraid/source-guard.conf
 readonly BASE_DIR=/run/twinraid-source-guard
 # Andere Schreibweise desselben Ordners: auf Unraid ist /var/run ein Link auf /run.
@@ -65,6 +72,8 @@ readonly SSH=/usr/bin/ssh
 readonly SSH_KEYGEN=/usr/bin/ssh-keygen
 readonly SSH_KEYSCAN=/usr/bin/ssh-keyscan
 readonly IP=/sbin/ip
+# Unraids Skript für Benachrichtigungen (ab Version 6); geprüft auf Unraid 7.4.1.
+readonly NOTIFY=/usr/local/emhttp/webGui/scripts/notify
 # Key „sync“ und bestätigter Hostkey von Groß (Konzept 3.6, ab Version 2).
 readonly SYNC_KEY=/boot/config/twinraid/ssh-sync
 readonly KNOWN_HOSTS=/boot/config/twinraid/target-known-hosts
@@ -113,6 +122,12 @@ readonly SEND_LIMIT=43200
 readonly RETENTION_INTERVAL=86400
 readonly CHECK_TIMEOUT=60
 readonly DAY=86400
+# Benachrichtigungen (ab Version 6): Zeitlimit des Aufrufs, Abstand und Höchstzahl je 24 h.
+readonly NOTIFY_TIMEOUT=10
+readonly NOTIFY_GAP=60
+readonly NOTIFY_LIMIT=20
+# Ab dieser Abweichung von NOW − UP gilt die Uhr als gestellt (ab Version 6).
+readonly CLOCK_DRIFT=2
 # Gründe, mit denen guard.sh einen Empfang ablehnt (Konzept 3.7); jeder andere wird refused_other.
 readonly SEND_REFUSALS=(name-denied receive-busy mirror-root-missing receiver-id-in-use
   target-exists delegation-mismatch props-mismatch props-not-applied clone-active space-low
@@ -140,7 +155,25 @@ readonly NUMBER_RE='^[0-9]{1,20}$'
 readonly GUID_RE='^[0-9]{1,20}$'
 readonly SNAPNAME_RE='^twinraid-[0-9]{8}T[0-9]{6}Z$'
 # Ein Auftrag: genau diese Form, mit Leerzeichen auf 255 Zeichen aufgefüllt, dann "\n".
-readonly ORDER_RE='^TRSG1 ([1-9][0-9]{0,8}) ((begin|ping|snapshot|finish|prepare|confirm|send|close)|stop ([A-Za-z0-9][A-Za-z0-9_.-]{0,127})) ([0-9a-f]{16}) *$'
+readonly ORDER_RE='^TRSG1 ([1-9][0-9]{0,8}) ((begin|ping|snapshot|finish|prepare|confirm|send|close)|stop ([A-Za-z0-9][A-Za-z0-9_.-]{0,127})|notify ([a-z_]{1,32}) ([a-z_]{1,40}|-)) ([0-9a-f]{16}) *$'
+
+# Benachrichtigungen (ab Version 6, Konzept 3.6): Ereignisse von TwinRaid und Gründe. Die Gründe
+# sind die Ergebnisse und Sperrgründe von TwinRaid ohne success; ein Test vergleicht beide
+# Listen mit TwinRaid.
+readonly NOTIFY_EVENTS=(schedule_ok schedule_failed schedule_skipped schedule_missed
+  auto_shutdown_failed)
+readonly NOTIFY_REASONS=(wol_failed boot_timeout vm_not_found vm_not_configured
+  vm_service_unavailable vm_start_timeout vm_stop_timeout ssh_key_missing ssh_host_untrusted
+  ssh_host_key_mismatch ssh_auth_failed ssh_unreachable ssh_denied ssh_failed guard_outdated
+  watch_interrupted remote_failed shutdown_timeout vm_running other_vms_running vm_memory_low
+  vm_device_busy vm_start_failed sync_running dry_run_success cancelled source_guard_inactive
+  source_guard_lost source_guard_refused too_soon too_soon_probe snapshot_low_space
+  snapshot_limit prepare_failed job_timeout target_check_failed target_refused base_missing
+  self_dataset_missing deletions_declined confirmation_timeout container_restart_failed
+  send_failed target_modified schedule_skipped schedule_missed confirmation_required
+  interrupted internal_error not_enabled busy target_online target_offline target_unknown
+  vm_off vm_unknown force_not_yet not_offered tour levels_mismatch source_guard_too_soon
+  target_clone_active source_guard_snapshot_too_soon source_guard_probe_too_soon)
 
 # --- Hilfen ------------------------------------------------------------------------------
 
@@ -153,6 +186,26 @@ now() {
   printf -v NOW '%(%s)T' -1
   read -r uptime rest <"${UPTIME}"
   UP="${uptime%%.*}"
+}
+
+# Fester Abstand zwischen Uhr und Laufzeit (ab Version 6): Zeitpunkte im Status sind
+# OFFSET + Frist in Laufzeit. NOW und UP werden getrennt auf ganze Sekunden gelesen; ihr
+# Abstand schwankt deshalb um 1 s. Erst ab CLOCK_DRIFT Sekunden Abweichung gilt die Uhr als
+# gestellt, und der neue Abstand gilt.
+OFFSET=""
+clock_offset() {
+  local diff drift
+  now
+  diff=$((NOW - UP))
+  if [[ -z "${OFFSET}" ]]; then
+    OFFSET="${diff}"
+    return 0
+  fi
+  drift=$((diff - OFFSET))
+  if ((drift >= CLOCK_DRIFT || drift <= -CLOCK_DRIFT)); then
+    OFFSET="${diff}"
+    log "clock changed by ${drift} s; times in the status follow the new clock"
+  fi
 }
 
 # Nur feste Texte und geprüfte Werte ins Syslog.
@@ -256,6 +309,7 @@ TARGET_HOST=""
 TARGET_PORT=22
 SNAPSHOT_KEEP_DAYS=7
 SNAPSHOT_RESERVE_PERCENT=15
+NOTIFY_ON=0
 CONFIG_ERROR=""
 CONFIG_DETAIL=""
 CONFIG_LINE=0
@@ -268,6 +322,7 @@ config_fail() {
   ALLOW=()
   DENY=()
   DATASETS=()
+  NOTIFY_ON=0
   return 1
 }
 
@@ -305,6 +360,7 @@ load_config() {
   ALLOW=()
   DENY=()
   DATASETS=()
+  NOTIFY_ON=0
   if [[ -L "${CONF}" || ! -f "${CONF}" ]]; then
     config_fail missing_file 0
     return 1
@@ -423,6 +479,16 @@ load_config() {
       snapshot_reserve_percent)
         int_in "${value}" 5 50 || config_fail bad_value "${number}" || return 1
         SNAPSHOT_RESERVE_PERCENT="${INT}"
+        ;;
+      notify)
+        case "${value}" in
+          on) NOTIFY_ON=1 ;;
+          off) NOTIFY_ON=0 ;;
+          *)
+            config_fail bad_value "${number}"
+            return 1
+            ;;
+        esac
         ;;
       *)
         config_fail unknown_key "${number}"
@@ -812,12 +878,14 @@ read_request() {
   return 0
 }
 
-# Prüft eine gelesene Zeile. Setzt O_SEQ, O_ORDER und O_CONTAINER.
+# Prüft eine gelesene Zeile. Setzt O_SEQ, O_ORDER, O_CONTAINER, O_EVENT und O_REASON.
 parse_order() {
   local line="$1" body payload sum
   O_SEQ=0
   O_ORDER=""
   O_CONTAINER=""
+  O_EVENT=""
+  O_REASON=""
   if ((${#line} != REQUEST_SIZE)) || [[ "${line: -1}" != $'\n' ]]; then
     return 1
   fi
@@ -827,10 +895,17 @@ parse_order() {
   fi
   O_SEQ=$((10#${BASH_REMATCH[1]}))
   payload="TRSG1 ${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
-  O_ORDER="${BASH_REMATCH[3]:-stop}"
+  O_ORDER="${BASH_REMATCH[3]}"
   O_CONTAINER="${BASH_REMATCH[4]}"
+  O_EVENT="${BASH_REMATCH[5]}"
+  O_REASON="${BASH_REMATCH[6]}"
+  if [[ -n "${O_CONTAINER}" ]]; then
+    O_ORDER=stop
+  elif [[ -n "${O_EVENT}" ]]; then
+    O_ORDER=notify
+  fi
   sum="$(printf '%s' "${payload}" | sha256sum)"
-  if [[ "${sum:0:16}" != "${BASH_REMATCH[5]}" ]]; then
+  if [[ "${sum:0:16}" != "${BASH_REMATCH[7]}" ]]; then
     return 1
   fi
 }
@@ -922,6 +997,7 @@ close_run() {
   save_run
   log "run closed (${reason})"
   STATUS_DIRTY=1
+  own_notifications "${reason}"
 }
 
 # Sekunden, bis wieder ein Lauf geöffnet werden darf (Pause nach dem letzten Lauf). Setzt WAIT.
@@ -1088,6 +1164,7 @@ execute_order() {
     confirm) order_confirm ;;
     send) order_send ;;
     close) order_close ;;
+    notify) order_notify "${O_EVENT}" "${O_REASON}" ;;
     *)
       RESULT=not_supported
       ;;
@@ -1140,10 +1217,178 @@ handle_request() {
   LAST_DONE_AT="${NOW}"
   if [[ "${O_ORDER}" == stop ]]; then
     log "order ${O_SEQ}: stop ${O_CONTAINER}: ${RESULT}"
+  elif [[ "${O_ORDER}" == notify ]]; then
+    log "order ${O_SEQ}: notify ${O_EVENT} ${O_REASON}: ${RESULT}"
   else
     log "order ${O_SEQ}: ${O_ORDER}: ${RESULT}"
   fi
   STATUS_DIRTY=1
+}
+
+# --- Benachrichtigungen (ab Version 6) --------------------------------------------------
+
+# Betreff, Text und Stufe je Ereignis aus der festen Tabelle (Konzept 3.6,
+# „Benachrichtigungen“). Der Grund ist schon gegen eine feste Liste geprüft. Setzt N_SUBJECT,
+# N_TEXT und N_LEVEL; Rückgabe 1 bei einem unbekannten Ereignis.
+notify_text() {
+  local event="$1" reason="$2"
+  case "${event}" in
+    schedule_ok)
+      N_LEVEL=normal
+      N_SUBJECT="TwinRaid: Geplanter Sync erfolgreich"
+      N_TEXT="TwinRaid meldet: Der geplante Sync ist erfolgreich durchgelaufen."
+      ;;
+    schedule_failed)
+      N_LEVEL=alert
+      N_SUBJECT="TwinRaid: Geplanter Sync gescheitert"
+      N_TEXT="TwinRaid meldet: Der geplante Sync ist gescheitert (${reason}). Details in der Kachel Sync."
+      ;;
+    schedule_skipped)
+      N_LEVEL=warning
+      N_SUBJECT="TwinRaid: Geplanter Sync ausgelassen"
+      N_TEXT="TwinRaid meldet: Der geplante Sync wurde ausgelassen (${reason})."
+      ;;
+    schedule_missed)
+      N_LEVEL=warning
+      N_SUBJECT="TwinRaid: Geplanter Sync verpasst"
+      N_TEXT="TwinRaid meldet: Ein geplanter Sync wurde verpasst, weil TwinRaid oder Klein zu der Zeit aus war."
+      ;;
+    auto_shutdown_failed)
+      N_LEVEL=warning
+      N_SUBJECT="TwinRaid: Groß nicht heruntergefahren"
+      N_TEXT="TwinRaid meldet: Das automatische Herunterfahren von Groß ist gescheitert (${reason}); Groß bleibt an."
+      ;;
+    deadman)
+      N_LEVEL=alert
+      N_SUBJECT="TwinRaid-Wächter: Totmannschalter"
+      N_TEXT="Der Wächter auf Klein hat einen Lauf beendet, weil TwinRaid sich nicht mehr meldete (${reason}); angehaltene Container hat er wieder gestartet."
+      ;;
+    container_not_restarted)
+      N_LEVEL=alert
+      N_SUBJECT="TwinRaid-Wächter: Container läuft nicht wieder"
+      N_TEXT="Nach einem Lauf läuft ein angehaltener Container nicht wieder (${reason}). Bitte in Unraid prüfen."
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Ist eine weitere Meldung dieser Art erlaubt? Höchstens eine je NOTIFY_GAP Sekunden und
+# NOTIFY_LIMIT in 24 h, nach Laufzeit. Die Zeitpunkte stehen in private/notify-<kind>; die
+# eigenen Meldungen des Wächters haben einen eigenen Zähler (Konzept 3.6).
+notify_allowed() {
+  local file="${PRIVATE_DIR}/notify-$1" value
+  local -a recent=()
+  NOTIFY_TIMES=()
+  now
+  if [[ -f "${file}" && ! -L "${file}" ]]; then
+    read -r -a NOTIFY_TIMES <"${file}" || true
+  fi
+  for value in "${NOTIFY_TIMES[@]+"${NOTIFY_TIMES[@]}"}"; do
+    # Werte aus einem früheren Systemstart (größer als UP) zählen nicht.
+    if [[ "${value}" =~ ^[0-9]{1,12}$ ]] && ((value <= UP && UP - value < DAY)); then
+      recent+=("${value}")
+    fi
+  done
+  NOTIFY_TIMES=("${recent[@]+"${recent[@]}"}")
+  if ((${#NOTIFY_TIMES[@]} >= NOTIFY_LIMIT)); then
+    return 1
+  fi
+  if ((${#NOTIFY_TIMES[@]} > 0)) && ((UP - NOTIFY_TIMES[-1] < NOTIFY_GAP)); then
+    return 1
+  fi
+}
+
+notify_record() {
+  local kind="$1"
+  NOTIFY_TIMES+=("${UP}")
+  write_atomic "${PRIVATE_DIR}/notify-${kind}" "${NOTIFY_TIMES[*]}"$'\n' 0600 || true
+}
+
+# Ruft Unraids notify mit fester Argumentliste auf, ohne Shell. Setzt RESULT.
+notify_call() {
+  local event="$1" reason="$2"
+  if ! notify_text "${event}" "${reason}"; then
+    RESULT=notify_invalid
+    return 0
+  fi
+  if [[ ! -x "${NOTIFY}" ]] ||
+    ! timeout --kill-after=2 "${NOTIFY_TIMEOUT}" "${NOTIFY}" -e TwinRaid -s "${N_SUBJECT}" \
+      -d "${N_TEXT}" -i "${N_LEVEL}" </dev/null >/dev/null 2>&1; then
+    RESULT=notify_failed
+    return 0
+  fi
+  RESULT=notified
+}
+
+# Auftrag notify von TwinRaid (Konzept 3.6, „Benachrichtigungen“).
+order_notify() {
+  local event="$1" reason="$2"
+  if ((NOTIFY_ON == 0)); then
+    RESULT=notify_off
+    return 0
+  fi
+  if ! in_list "${event}" "${NOTIFY_EVENTS[@]}"; then
+    RESULT=notify_invalid
+    return 0
+  fi
+  case "${event}" in
+    schedule_ok | schedule_missed)
+      if [[ "${reason}" != - ]]; then
+        RESULT=notify_invalid
+        return 0
+      fi
+      ;;
+    *)
+      if ! in_list "${reason}" "${NOTIFY_REASONS[@]}"; then
+        RESULT=notify_invalid
+        return 0
+      fi
+      ;;
+  esac
+  if ! notify_allowed order; then
+    RESULT=notify_limited
+    return 0
+  fi
+  notify_call "${event}" "${reason}"
+  if [[ "${RESULT}" == notify_failed ]]; then
+    log "notify ${event}: the notify script failed"
+  fi
+  notify_record order
+}
+
+# Eigene Meldungen nach dem Ende eines Laufs: Totmannschalter und Container, die nicht wieder
+# laufen; nur mit "notify on" und mit eigenem Zähler. Ändert RESULT nicht.
+own_notifications() {
+  local reason="$1" result found="" saved="${RESULT:-}"
+  if ((NOTIFY_ON == 0)); then
+    return 0
+  fi
+  case "${reason}" in
+    deadman_heartbeat | deadman_max) own_notify deadman "${reason}" ;;
+  esac
+  for result in "${LAST_RUN_RESULTS[@]+"${LAST_RUN_RESULTS[@]}"}"; do
+    case "${result}" in
+      start_failed | changed | gone)
+        found="${result}"
+        break
+        ;;
+    esac
+  done
+  if [[ -n "${found}" ]]; then
+    own_notify container_not_restarted "${found}"
+  fi
+  RESULT="${saved}"
+}
+
+own_notify() {
+  local event="$1" reason="$2"
+  if ! notify_allowed own; then
+    log "own notification ${event} ${reason}: limited"
+    return 0
+  fi
+  notify_call "${event}" "${reason}"
+  notify_record own
+  log "own notification ${event} ${reason}: ${RESULT}"
 }
 
 # --- Beobachtung: Container, ZFS, Unraid Connect ----------------------------------------
@@ -1660,17 +1905,25 @@ own_snapshots() {
   done | sort -n)
 }
 
-# Eigene Lesezeichen (#twinraid-…). Setzt OB_NAMES (Teil nach "#") und OB_GUIDS.
+# Eigene Lesezeichen (#twinraid-…), nach dem Entstehen sortiert. Setzt OB_NAMES (Teil nach
+# "#"), OB_GUIDS und OB_CREATED (creation des Snapshots, aus dem es entstand; leer, wenn nicht
+# lesbar).
 own_bookmarks() {
-  local ds="$1" out name guid txg
+  local ds="$1" out name guid txg created
   OB_NAMES=()
   OB_GUIDS=()
-  out="$(zfs_call "${ZFS}" list -H -p -d 1 -t bookmark -o name,guid,createtxg -s createtxg \
-    -- "${ds}" 2>/dev/null)" || return 1
-  while IFS=$'\t' read -r name guid txg; do
+  OB_CREATED=()
+  out="$(zfs_call "${ZFS}" list -H -p -d 1 -t bookmark -o name,guid,createtxg,creation \
+    -s createtxg -- "${ds}" 2>/dev/null)" || return 1
+  while IFS=$'\t' read -r name guid txg created; do
     if [[ "${name}" == "${ds}#"* && "${name#"${ds}#"}" =~ ${SNAPNAME_RE} && "${guid}" =~ ${GUID_RE} ]]; then
       OB_NAMES+=("${name#"${ds}#"}")
       OB_GUIDS+=("${guid}")
+      if [[ "${created}" =~ ^[0-9]{1,12}$ ]]; then
+        OB_CREATED+=("${created}")
+      else
+        OB_CREATED+=("")
+      fi
     fi
   done <<<"${out}"
 }
@@ -1840,12 +2093,13 @@ load_check_from() {
 }
 
 # Zerlegt CHECK_LINES in M_* (je Spiegel) und S_* (summary).
-declare -A M_STATE=() M_PROPS=() M_GUID=()
+declare -A M_STATE=() M_PROPS=() M_GUID=() M_OLDEST=()
 parse_check() {
   local line
   M_STATE=()
   M_PROPS=()
   M_GUID=()
+  M_OLDEST=()
   S_ROOT=""
   S_CONF=""
   S_DELEG=""
@@ -1859,6 +2113,7 @@ parse_check() {
       M_STATE["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
       M_PROPS["${BASH_REMATCH[1]}"]="${BASH_REMATCH[3]}"
       M_GUID["${BASH_REMATCH[1]}"]="${BASH_REMATCH[5]}"
+      M_OLDEST["${BASH_REMATCH[1]}"]="${BASH_REMATCH[8]}"
     elif [[ "${line}" =~ ${CHECK_SUMMARY_RE} ]]; then
       S_ROOT="${BASH_REMATCH[1]}"
       S_CONF="${BASH_REMATCH[2]}"
@@ -2356,6 +2611,8 @@ child_send() {
   JOB_RESULT=ok
   retention_klein
   check_after_send
+  # Mit dem check nach dem Senden (ab Version 6); scheitert er, bleibt alles.
+  cleanup_bookmarks
 }
 
 # Ab Version 4 (Konzept 3.6): check nach dem Senden, damit der Status die Spiegel auf Groß
@@ -2402,6 +2659,48 @@ retention_klein() {
   done
   if ((destroyed > 0 || failed > 0)); then
     log "retention: ${destroyed} own snapshots destroyed, ${failed} failed"
+  fi
+}
+
+# Lesezeichen aufräumen (ab Version 6, Konzept 3.6, „Lesezeichen aufräumen“): eigene
+# Lesezeichen, die älter sind als der älteste Snapshot des Spiegels auf Groß laut letztem
+# erfolgreichen check. Nie das neueste je Dataset, nie eines mit der GUID von newest_guid oder
+# der gehaltenen Basis; genau zfs destroy -- <Dataset>#<Name>, ohne Schalter. Ist eine Angabe
+# nicht lesbar, löscht er in diesem Dataset nichts.
+cleanup_bookmarks() {
+  local name ds i oldest newest destroyed=0 failed=0
+  if [[ "${CHECK_RESULT}" != ok ]]; then
+    return 0
+  fi
+  parse_check
+  for name in "${DATASETS[@]+"${DATASETS[@]}"}"; do
+    oldest="${M_OLDEST[${name}]:-}"
+    newest="${M_GUID[${name}]:-}"
+    if [[ "${M_STATE[${name}]:-}" != mirror || ! "${oldest}" =~ ^[0-9]{1,12}$ ||
+      ! "${newest}" =~ ${GUID_RE} ]]; then
+      continue
+    fi
+    ds="${POOL}/${name}"
+    own_snapshots "${ds}" || continue
+    find_held_base "${ds}"
+    own_bookmarks "${ds}" || continue
+    # Das letzte ist das neueste Lesezeichen; es bleibt immer.
+    for ((i = 0; i < ${#OB_NAMES[@]} - 1; i++)); do
+      if [[ ! "${OB_CREATED[i]}" =~ ^[0-9]{1,12}$ ]] || ((OB_CREATED[i] >= oldest)); then
+        continue
+      fi
+      if [[ "${OB_GUIDS[i]}" == "${newest}" || "${OB_GUIDS[i]}" == "${BASE_GUID}" ]]; then
+        continue
+      fi
+      if zfs_call "${ZFS}" destroy -- "${ds}#${OB_NAMES[i]}" >/dev/null 2>&1; then
+        destroyed=$((destroyed + 1))
+      else
+        failed=$((failed + 1))
+      fi
+    done
+  done
+  if ((destroyed > 0 || failed > 0)); then
+    log "bookmarks: ${destroyed} own bookmarks destroyed, ${failed} failed"
   fi
 }
 
@@ -2506,6 +2805,7 @@ order_snapshot() {
     [[ -n "${out}" ]] && guids+=("${out}")
   done
   clear_job
+  DISCARD_NEXT_UP=0
   JOB_ID="${O_SEQ}"
   JOB_STATE=snapshot
   JOB_SNAPSHOT="${SNAPSHOT_PREFIX}${stamp}"
@@ -2936,7 +3236,7 @@ job_json() {
   json_token "${JOB_SNAPSHOT}" "${SNAPNAME_RE}"
   item+=',"snapshot":'"${JSON}"',"created_at":'"${JOB_CREATED}"
   if ((JOB_DEADLINE > 0)); then
-    item+=',"deadline":'"$((NOW + JOB_DEADLINE - UP))"
+    item+=',"deadline":'"$((OFFSET + JOB_DEADLINE))"
   else
     item+=',"deadline":null'
   fi
@@ -2985,7 +3285,7 @@ job_json() {
 
 write_status() {
   local json item i list="" present
-  now
+  clock_offset
   current_error
   json='{"protocol":'"${PROTOCOL}"',"version":'"${VERSION}"
   json+=',"heartbeat_at":'"${NOW}"',"started_at":'"${STARTED_AT}"
@@ -3015,6 +3315,12 @@ write_status() {
   fi
   json+=',"rejected":{"count":'"${REJECTED_COUNT}"',"last_at":'"${JSON}"'}'
   json+=',"host":{"connect":"'"${CONNECT}"'","flash_backup":"'"${FLASH_BACKUP}"'"}'
+  # Ab Version 6 (Protokoll 5): Schalter für Benachrichtigungen.
+  if ((NOTIFY_ON)); then
+    json+=',"notify":"on"'
+  else
+    json+=',"notify":"off"'
+  fi
   json+=',"limits":{"max_stop_minutes":'"${MAX_STOP_MINUTES}"
   json+=',"heartbeat_timeout_seconds":'"${HEARTBEAT_TIMEOUT}"
   json+=',"stop_timeout_seconds":'"${STOP_TIMEOUT}"',"min_run_interval_minutes":'"${MIN_RUN_INTERVAL}"
@@ -3051,15 +3357,16 @@ write_status() {
       container_json "${RUN_NAMES[i]}" "${RUN_IDS[i]}"
       list+="${list:+,}${JSON}"
     done
-    # Fristen laufen in Laufzeit; im Status stehen sie als Uhrzeit.
-    json+=',"run":{"opened_at":'"${RUN_OPENED}"',"heartbeat_deadline":'"$((NOW + RUN_HEARTBEAT - UP))"
-    json+=',"max_deadline":'"$((NOW + RUN_MAX - UP))"',"stopped":['"${list}"']}'
+    # Fristen laufen in Laufzeit; im Status stehen sie als Uhrzeit, ab Version 6 aus dem festen
+    # Abstand zwischen Uhr und Laufzeit.
+    json+=',"run":{"opened_at":'"${RUN_OPENED}"',"heartbeat_deadline":'"$((OFFSET + RUN_HEARTBEAT))"
+    json+=',"max_deadline":'"$((OFFSET + RUN_MAX))"',"stopped":['"${list}"']}'
   else
     json+=',"run":null'
   fi
   run_wait
   if ((WAIT > 0)); then
-    json+=',"run_allowed_at":'"$((NOW + WAIT))"
+    json+=',"run_allowed_at":'"$((OFFSET + UP + WAIT))"
   else
     json+=',"run_allowed_at":null'
   fi
@@ -3070,7 +3377,7 @@ write_status() {
     WAIT=$((LAST_SNAPSHOT_UP + MIN_SNAPSHOT_INTERVAL * SNAPSHOT_MINUTE - UP))
   fi
   if ((WAIT > 0)); then
-    json+=',"snapshot_allowed_at":'"$((NOW + WAIT))"
+    json+=',"snapshot_allowed_at":'"$((OFFSET + UP + WAIT))"
   else
     json+=',"snapshot_allowed_at":null'
   fi
@@ -3079,7 +3386,7 @@ write_status() {
     WAIT=$((LAST_DISCARD_UP + PROBE_PAUSE - UP))
   fi
   if ((WAIT > 0)); then
-    json+=',"probe_allowed_at":'"$((NOW + WAIT))"
+    json+=',"probe_allowed_at":'"$((OFFSET + UP + WAIT))"
   else
     json+=',"probe_allowed_at":null'
   fi
@@ -3157,6 +3464,8 @@ write_status() {
 # --- Hauptschleife -----------------------------------------------------------------------
 
 STOP_REQUESTED=0
+# Nächster Versuch, einen vorläufigen Snapshot zu verwerfen (Laufzeit; 0: sofort).
+DISCARD_NEXT_UP=0
 
 on_term() {
   STOP_REQUESTED=1
@@ -3176,6 +3485,7 @@ run_guard() {
   need_root
   now
   STARTED_AT="${NOW}"
+  clock_offset
   parent_pid
   first_parent="${PARENT}"
   prepare_layout || true
@@ -3267,6 +3577,7 @@ run_guard() {
     if [[ "${ZFS_STATE}" == ok && -z "${CONFIG_ERROR}" ]] && ! job_is_open &&
       ((LAST_RETENTION_UP == 0 || UP - LAST_RETENTION_UP >= RETENTION_INTERVAL)); then
       retention_klein
+      cleanup_bookmarks
       LAST_RETENTION_UP="${UP}"
       next_zfs=0
     fi
@@ -3276,11 +3587,18 @@ run_guard() {
     # Ein beendeter Job mit vorläufigem Snapshot (close, prepare_failed, job_timeout,
     # interrupted vor dem Senden, auch nach einem Neustart): verwerfen (ab Version 5). Danach
     # gleich den ZFS-Teil neu lesen, damit Anzahl und neuester Snapshot im Status stimmen.
-    if [[ "${JOB_SNAP_STATE}" == pending && "${ZFS_STATE}" == ok ]] && ! job_is_open; then
+    # Ab Version 6: Der erste Versuch kommt sofort; war die Liste nicht lesbar, folgt der nächste
+    # erst im Takt des ZFS-Teils (und weiterhin vor dem nächsten snapshot).
+    now
+    if [[ "${JOB_SNAP_STATE}" == pending && "${ZFS_STATE}" == ok ]] && ! job_is_open &&
+      ((DISCARD_NEXT_UP == 0 || UP >= DISCARD_NEXT_UP)); then
       discard_job_snapshot
       if ((DISCARD_DONE)); then
+        DISCARD_NEXT_UP=0
         refresh_zfs
         next_zfs=$((NOW + ZFS_INTERVAL))
+      else
+        DISCARD_NEXT_UP=$((UP + ZFS_INTERVAL))
       fi
     fi
     now

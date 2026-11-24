@@ -29,3 +29,10 @@ target_host 192.0.2.11             # Unraid Groß (Beispielwert, RFC 5737)
 target_port 22
 snapshot_keep_days 7               # eigene Snapshots auf Klein (1–365)
 snapshot_reserve_percent 15        # freier Platz, der auf mainpool bleiben muss (5–50)
+
+# Benachrichtigungen über Unraids notify (ab Version 6): on oder off, ohne die Zeile off.
+# Mit on meldet TwinRaid Fehler geplanter Läufe (Texte fest im Wächter, höchstens eine pro
+# Minute und 20 am Tag), und der Wächter meldet Totmannschalter und Container, die nach einem
+# Lauf nicht wieder laufen. Wohin die Meldungen gehen, steht in Unraid unter
+# Settings → Notifications. Version 5 kennt die Zeile nicht: vor einem Rückweg entfernen.
+# notify on
