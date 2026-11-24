@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from tests.conftest import REPO_ROOT
+from tests.support.guard_protocol5 import parse_status_5
 from tests.support.reaper import kill_until_gone, marker_for
-from twinraid.integrations.source_guard import parse_status
 
 SCRIPT = REPO_ROOT / "host-scripts" / "source-guard.sh"
 EXAMPLE_CONF = REPO_ROOT / "host-scripts" / "source-guard.conf.example"
@@ -63,6 +63,8 @@ _TOOLS = (
     "ssh-keygen",
     "ssh-keyscan",
     "ip",
+    # Unraids Skript für Benachrichtigungen (ab Version 6).
+    "notify",
 )
 
 Status = dict[str, Any]
@@ -154,8 +156,9 @@ class Host:
     def status(self) -> Status:
         raw = self.status_file.read_bytes()
         result: Status = json.loads(raw)
-        # Jeder Status, den der Wächter hier schreibt, muss das Schema von TwinRaid erfüllen.
-        parse_status(raw)
+        # Jeder Status, den der Wächter hier schreibt, muss das Schema von TwinRaid erfüllen; die
+        # Teile von Protokoll 5 prüft bis TwinRaid 0.6.1 die Testhilfe (Version 6).
+        parse_status_5(raw)
         return result
 
     def wait_status(self, predicate: Callable[[Status], bool], timeout: float = 8) -> Status:
@@ -317,6 +320,7 @@ def make_host(tmp_path: Path, **constants: str) -> Host:
         "SSH_KEYGEN": str(bin_dir / "ssh-keygen"),
         "SSH_KEYSCAN": str(bin_dir / "ssh-keyscan"),
         "IP": str(bin_dir / "ip"),
+        "NOTIFY": str(bin_dir / "notify"),
         "SYNC_KEY": str(root / "boot/config/twinraid/ssh-sync"),
         "KNOWN_HOSTS": str(root / "boot/config/twinraid/target-known-hosts"),
         "PLUGIN_DIR": str(root / "boot/config/plugins"),

@@ -246,7 +246,12 @@ def _zfs_locked(zfs: dict[str, Any], argv: list[str]) -> int:
         if snap is None or "#" not in target or target in bookmarks or _failing(zfs, "bookmark"):
             _err(f"cannot create bookmark '{target}'")
             return 1
-        bookmarks[target] = {"guid": snap["guid"], "createtxg": snap["createtxg"]}
+        bookmarks[target] = {
+            "guid": snap["guid"],
+            "createtxg": snap["createtxg"],
+            # Ein Lesezeichen behält creation seines Snapshots (ab Version 6 gelesen).
+            "creation": snap["creation"],
+        }
         return 0
     if command == "snapshot" and options == ["-o", "twinraid:created-by=source-guard"]:
         return _zfs_snapshot(zfs, names)
@@ -254,6 +259,14 @@ def _zfs_locked(zfs: dict[str, Any], argv: list[str]) -> int:
         return _zfs_diff(zfs, names[0], names[1])
     if command == "send" and options[:6] == ["-n", "-v", "-P", "-L", "-c", "-e"]:
         return _zfs_estimate(zfs, options[6:], names)
+    if command == "destroy" and options == [] and len(names) == 1 and "#" in names[0]:
+        # Lesezeichen (ab Version 6): nur genau dieser Name, ohne Schalter.
+        name = names[0]
+        if "@" in name or name not in bookmarks or _failing(zfs, "destroy_bookmark"):
+            _err(f"cannot destroy '{name}': bookmark does not exist")
+            return 1
+        del bookmarks[name]
+        return 0
     if command == "destroy" and options == [] and len(names) == 1:
         name = names[0]
         snap = snapshots.get(name)
@@ -291,7 +304,7 @@ def _zfs_list(zfs: dict[str, Any], options: list[str], name: str) -> int:
         "-t",
         "bookmark",
         "-o",
-        "name,guid,createtxg",
+        "name,guid,createtxg,creation",
         "-s",
         "createtxg",
     ]:
@@ -300,7 +313,7 @@ def _zfs_list(zfs: dict[str, Any], options: list[str], name: str) -> int:
             return 1
         marks = [(n, b) for n, b in zfs.get("bookmarks", {}).items() if n.split("#")[0] == name]
         for mark, values in sorted(marks, key=lambda item: int(item[1]["createtxg"])):
-            _out(f"{mark}\t{values['guid']}\t{values['createtxg']}")
+            _out(f"{mark}\t{values['guid']}\t{values['createtxg']}\t{values.get('creation', '-')}")
         return 0
     dataset = zfs.get("datasets", {}).get(name)
     if dataset is None:
@@ -580,6 +593,26 @@ def _findmnt(argv: list[str]) -> int:
     return 1
 
 
+# Stufen von Unraids notify, die der Wächter verwendet (ab Version 6).
+_NOTIFY_LEVELS = ("normal", "warning", "alert")
+
+
+def _notify(argv: list[str]) -> int:
+    """Unraids notify: genau -e TwinRaid -s <Betreff> -d <Text> -i <Stufe> (ab Version 6)."""
+    if (
+        len(argv) != 8
+        or argv[0:2] != ["-e", "TwinRaid"]
+        or argv[2] != "-s"
+        or argv[4] != "-d"
+        or argv[6] != "-i"
+        or argv[7] not in _NOTIFY_LEVELS
+    ):
+        return 99
+    if _flag("notify-slow"):
+        time.sleep(30)
+    return 1 if _flag("notify-fail") else 0
+
+
 def main(tool: str, argv: list[str]) -> int:
     _record(tool, argv)
     if tool == "docker":
@@ -604,6 +637,8 @@ def main(tool: str, argv: list[str]) -> int:
         return _ssh_keygen(argv)
     if tool == "ssh-keyscan":
         return _ssh_keyscan(argv)
+    if tool == "notify":
+        return _notify(argv)
     if tool == "ip":
         return _ip(argv)
     return 99

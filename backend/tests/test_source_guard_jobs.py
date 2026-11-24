@@ -422,7 +422,7 @@ def test_snapshot_interval_from_the_config(make: Callable[..., Host]) -> None:
     host.stop_run(host.processes[-1])
     host.start_run()
     status = host.wait_status(lambda s: s["limits"]["min_snapshot_interval_minutes"] == 30)
-    assert status["protocol"] == 4
+    assert status["protocol"] == 5
     time.sleep(max(0.0, 5.3 - (time.monotonic() - second)))
     assert host.send("snapshot")["result"] == "too_soon"
 
@@ -1781,9 +1781,11 @@ def test_zfs_is_called_only_with_fixed_arguments() -> None:
         'send -L -c -e -v -P "${increment[@]+"${increment[@]}"}"',
     ]
     destroys = [line for line in lines if " destroy " in line]
-    # Aufbewahrung und, ab Version 5, Verwerfen eines vorläufigen Snapshots.
+    # Aufbewahrung, ab Version 5 Verwerfen eines vorläufigen Snapshots, ab Version 6 Aufräumen
+    # der Lesezeichen (Konzept 3.6, CLAUDE.md Regel 7): immer genau ein Name nach "--".
     assert destroys == [
         'if zfs_call "${ZFS}" destroy -- "${snap}" >/dev/null 2>&1; then',
+        'if zfs_call "${ZFS}" destroy -- "${ds}#${OB_NAMES[i]}" >/dev/null 2>&1; then',
         'elif zfs_call "${ZFS}" destroy -- "${snap}" >/dev/null 2>&1; then',
     ]
     recursive = [line for line in lines if " -r " in line]

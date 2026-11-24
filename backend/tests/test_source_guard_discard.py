@@ -413,13 +413,14 @@ def test_snapshot_name_and_guid_come_from_the_job(make: Callable[..., Host]) -> 
     assert re.search(r"^created_up [0-9]+$", text, re.MULTILINE)
 
 
-# --- Status (Protokoll 4) ---------------------------------------------------------------------
+# --- Status (Protokoll 4, ab Version 6 Protokoll 5) ------------------------------------------
 
 
 def test_status_protocol_4(make: Callable[..., Host]) -> None:  # noqa: F811
+    """Die Felder von Protokoll 4 bleiben in Protokoll 5 (Version 6) unverändert."""
     host = started(make())
     status = host.status()
-    assert (status["protocol"], status["version"]) == (4, 5)
+    assert (status["protocol"], status["version"]) == (5, 6)
     assert status["snapshot_allowed_at"] is None
     assert status["probe_allowed_at"] is None
     base_created = host.zfs()["snapshots"][f"{DS}@{BASE}"]["creation"]
@@ -428,9 +429,9 @@ def test_status_protocol_4(make: Callable[..., Host]) -> None:  # noqa: F811
     assert item["base"] == {"guid": BASE_GUID, "created_at": base_created}
     assert host.send("snapshot")["result"] == "created"
     job = host.status()["job"]
-    status = host.wait_status(
-        lambda s: s["zfs"]["datasets"][0]["newest_snapshot_at"] == job["created_at"]
-    )
+    # creation setzt zfs selbst; sie kann eine Sekunde nach created_at des Jobs liegen.
+    created = host.zfs()["snapshots"][new_name(job)]["creation"]
+    status = host.wait_status(lambda s: s["zfs"]["datasets"][0]["newest_snapshot_at"] == created)
     assert host.send("close")["result"] == "closed"
     # Nach dem Verwerfen sofort wieder die Basis als neuester Snapshot.
     host.wait_status(lambda s: s["zfs"]["datasets"][0]["newest_snapshot_at"] == base_created, 3)

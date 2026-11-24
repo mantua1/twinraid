@@ -35,6 +35,10 @@ RELEASE_0_5_2 = {
 # Abschnitt 17 gilt für v0.5.3; v0.5.4 ändert keine Skripte, v0.5.5 nur source-guard.sh
 # (Version 5). Den Stand von v0.5.3/v0.5.4 lädt auch der Rückweg in 20.4.
 RELEASE_0_5_3_GUARD = "97f0eefda626f7623d780b5263b04fa752db091ff14c0908bd4e2d71ba1e4756"
+# Abschnitt 20 lädt source-guard.sh Version 5 aus v0.5.5; ab v0.6.1 ändert sich die Datei
+# (Version 6).
+RELEASE_0_5_5_GUARD = "e2d54cecfe6ed34cc3cf6a348f96b5487fde186dca5adb3fd0916f95c1ceb07b"
+HEADER_0_5_5_GUARD = "# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 5 (Konzept 3.6)."
 HEADER_0_5_3_GUARD = "# TwinRaid: Wächter auf dem Host von Unraid Klein, Version 4 (Konzept 3.6)."
 HEADERS_0_5_2 = {
     "guard.sh": "# TwinRaid: SSH-Wächter auf Unraid Groß, Version 3 (Konzept 3.5, 3.7 und 5.6).",
@@ -307,13 +311,11 @@ def test_section_17_names_the_header_of_the_guard() -> None:
 def test_section_20_loads_the_guard_of_this_version() -> None:
     """Version 5 aus v0.5.5 mit der SHA-256 der Datei im Repo; der Rückweg Version 4."""
     update = re.findall(r"([0-9a-f]{64})  /tmp/source-guard\.sh", _section_20_update())
-    assert update == [_sha256("source-guard.sh")] * 2
+    assert update == [RELEASE_0_5_5_GUARD] * 2
     rollback = re.findall(r"([0-9a-f]{64})  /tmp/source-guard\.sh", _rollback_0_5_4())
     assert rollback == [RELEASE_0_5_3_GUARD] * 2
     assert "Rückweg beschrieben, bis 1.0 nicht auf den Servern geprüft." in _rollback_0_5_4()
-    header = (SCRIPTS / "source-guard.sh").read_text(encoding="utf-8").splitlines()[1]
-    assert "Version 5" in header
-    assert f"Die zweite Zeile lautet `{header}`" in _section(20)
+    assert f"Die zweite Zeile lautet `{HEADER_0_5_5_GUARD}`" in _section(20)
 
 
 def test_section_20_waits_for_the_pause_of_the_guard() -> None:

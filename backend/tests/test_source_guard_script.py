@@ -58,8 +58,10 @@ def test_start_mounts_tmpfs_and_creates_files(host: Host) -> None:
     assert host.private.stat().st_mode & 0o777 == 0o700
     status = host.wait_status(lambda s: s["error"] is None)
     assert host.status_file.stat().st_mode & 0o777 == 0o644
-    assert status["protocol"] == 4
-    assert status["version"] == 5
+    assert status["protocol"] == 5
+    assert status["version"] == 6
+    # Ab Version 6: Benachrichtigungen ohne die Zeile notify aus.
+    assert status["notify"] == "off"
     assert status["snapshot_allowed_at"] is None
     assert status["probe_allowed_at"] is None
     assert len(status["instance"]) == 16
