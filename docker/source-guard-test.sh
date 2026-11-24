@@ -19,7 +19,8 @@
 # Nummer) und dass ihr Inhalt nie in Syslog oder status.json landet, Hardlink und
 # fremden Besitzer auf dem Host, den Totmannschalter, selftest, Neustarts und
 # Auftragsnummern, eine mit kill -9 beendete Überwachungsschleife, den verlorenen Zustand, das Verzeichnis, das Docker anlegt, wenn
-# TwinRaid vor dem Wächter startet, und die Merkmale von Unraid Connect.
+# TwinRaid vor dem Wächter startet, die Merkmale von Unraid Connect und ab Version 6 den Auftrag
+# notify durch die echte Auftragsdatei mit einem nachgebauten notify.
 #
 # Aufruf aus dem Repo-Hauptordner:
 #   sudo SOURCE_GUARD_TEST_HOST=disposable docker/source-guard-test.sh
@@ -213,7 +214,13 @@ cleanup() {
     umount "${BASE}/in" || true
   fi
   rm -rf "${BASE}" "${CONF_DIR}" "${PLUGIN}" "${FLASH_INI}" "${DATA}"
+  # Nur das nachgebaute notify aus dem Abschnitt „Benachrichtigungen“, nie ein vorhandenes.
+  if ((NOTIFY_CREATED)); then
+    rm -f /usr/local/emhttp/webGui/scripts/notify
+    rmdir -p /usr/local/emhttp/webGui/scripts 2>/dev/null || true
+  fi
 }
+NOTIFY_CREATED=0
 trap cleanup EXIT
 
 write_conf() { mkdir -p "${CONF_DIR}" && printf '%s' "$1" >"${CONF}"; }
@@ -562,6 +569,46 @@ printf 'activated="yes"\n' >"${FLASH_INI}"
 guard restart >/dev/null
 expect_wait "connect marker" host.connect present 30
 expect_equal "flash backup active" "$(status_field host.flash_backup)" active
+
+echo "== Benachrichtigungen (ab Version 6, Konzept 3.6)"
+# Auf dem Runner gibt es Unraids notify nicht: Ein nachgebautes Skript am selben Pfad schreibt
+# seine Argumente mit, eins je Zeile. Es entsteht nur hier und nur, wenn der Pfad noch fehlt.
+NOTIFY=/usr/local/emhttp/webGui/scripts/notify
+if [[ -e "${NOTIFY}" ]]; then
+  die "${NOTIFY} gibt es schon; das ist kein Wegwerf-Rechner"
+fi
+send "notify schedule_missed -"
+expect_equal "notify is off without the line" "${RESULT}" "notify_off"
+mkdir -p "${NOTIFY%/*}"
+NOTIFY_CREATED=1
+printf '#!/bin/bash\nprintf "%%s\\n" "$@" "--" >>%q\n' "${DATA}/notify.log" >"${NOTIFY}"
+chmod 0755 "${NOTIFY}"
+write_conf "$(cat "${CONF}")
+notify on
+"
+guard restart >/dev/null
+expect_wait "notify on in the status" notify on 30
+send "notify schedule_failed send_failed"
+expect_equal "notify through the real order file" "${RESULT}" "notified"
+expect_equal "fixed arguments for notify" "$(cat "${DATA}/notify.log")" "-e
+TwinRaid
+-s
+TwinRaid: Geplanter Sync gescheitert
+-d
+TwinRaid meldet: Der geplante Sync ist gescheitert (send_failed). Details in der Kachel Sync.
+-i
+alert
+--"
+send "notify schedule_failed send_failed"
+expect_equal "one message per minute" "${RESULT}" "notify_limited"
+send "notify deadman deadman_max"
+expect_equal "own events are not an order" "${RESULT}" "notify_invalid"
+# shellcheck disable=SC2016 # Der Text soll unverändert in der Auftragsdatei stehen.
+order_line "$(next_seq)" 'notify schedule_ok $(touch /tmp/sg-pwned)' >"${DATA}/shell-notify"
+expect_rejected "shell characters in notify" "${DATA}/shell-notify"
+expect_equal "nothing ran" "$(ls /tmp/sg-pwned 2>/dev/null || true)" ""
+expect_equal "notify called once" "$(grep -c -- '^--$' "${DATA}/notify.log")" "1"
+expect_contains "syslog names event and result" "$(syslog)" "notify schedule_failed send_failed: notified"
 
 echo "== Aufräumen"
 guard stop >/dev/null

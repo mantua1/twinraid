@@ -603,6 +603,44 @@ done
 expect_equal "every discard without -r, -R, -d or -f" \
   "$(zpool history "${KLEIN}" | grep 'zfs destroy' | grep -c -E 'destroy -[rRdf]' || true)" "0"
 
+echo "== Lesezeichen aufräumen (ab Version 6, Konzept 3.6)"
+# Groß hat den ältesten Snapshot des Spiegels nicht mehr (hier von Hand gelöscht, wie es die
+# Aufbewahrung nach 30 Tagen täte). Das Lesezeichen dieses Snapshots auf Klein kann danach nie
+# mehr Basis sein; der nächste erfolgreiche Sync löscht es, nie das neueste und nie die Basis.
+ds="${KLEIN}/twinraidtest"
+first_mark="$(zfs list -H -t bookmark -o name -s createtxg -- "${ds}" | head -1)"
+first_mirror="$(zfs list -H -t snapshot -o name -s createtxg -- "${ROOT}/twinraidtest" | head -1)"
+expect_equal "the oldest bookmark belongs to the oldest snapshot of the mirror" \
+  "$(value guid "${first_mark}")" "$(value guid "${first_mirror}")"
+marks_before="$(zfs list -H -t bookmark -o name -- "${ds}" | wc -l)"
+other_before="$(zfs list -H -t bookmark -o name -- "${KLEIN}/dokumente" | wc -l)"
+zfs destroy -- "${first_mirror}"
+printf 'noch mehr\n' >"/mnt/${KLEIN}/twinraidtest/lesezeichen.txt"
+full_run
+if [[ "$(job state)" == awaiting_confirm ]]; then
+  order confirm confirmed
+fi
+order send sending
+wait_job "done|failed"
+expect_equal "sync for the cleanup" "$(job state):$(job result)" "done:ok"
+snap="$(job snapshot)"
+if zfs list -H -t bookmark -o name -- "${first_mark}" >/dev/null 2>&1; then
+  fail "the bookmark older than the mirror is still there"
+else
+  pass "the bookmark older than the mirror is gone"
+fi
+expect_equal "newest bookmark and base stay" \
+  "$(zfs list -H -t bookmark -o name -s createtxg -- "${ds}" | tail -1):$(held "${ds}@${snap}")" \
+  "${ds}#${snap}:twinraid-base "
+expect_equal "only that one bookmark went, the new one came" \
+  "$(zfs list -H -t bookmark -o name -- "${ds}" | wc -l)" "${marks_before}"
+expect_equal "bookmarks of the other dataset only grew" \
+  "$(zfs list -H -t bookmark -o name -- "${KLEIN}/dokumente" | wc -l)" "$((other_before + 1))"
+expect_contains "syslog counts the bookmark" "$(cat "${WORK}/syslog-klein.log")" \
+  "bookmarks: 1 own bookmarks destroyed, 0 failed"
+expect_equal "bookmarks only destroyed by name without options" \
+  "$(zpool history "${KLEIN}" | grep 'zfs destroy' | grep '#' | grep -c -v -E "zfs destroy -- ${KLEIN}/[A-Za-z0-9._-]+#twinraid-[0-9]{8}T[0-9]{6}Z$" || true)" "0"
+
 echo "== testdata.sh bulk mit einem echten Pool"
 # Am Ende des Tests: Die Zufallsdaten gingen sonst in die nächsten Läufe ein.
 too_much="$(bash "${WORK}/testdata-klein.sh" bulk 500 2>&1)" && rc=0 || rc=$?
